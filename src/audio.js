@@ -380,7 +380,7 @@ export function playRevive() {
  * 环境音（按地图切换）
  * ---------------------------------------------------------- */
 
-// 每张地图一条底色：city 雨、jungle 虫鸣、desert 风沙、moon 真空嗡鸣、snow 寒风、lava 岩浆轰鸣
+// 每张地图一条底色：city 雨、jungle 虫鸣、desert 风沙、moon 真空嗡鸣、snow 寒风、lava 岩浆轰鸣、base 铁皮风
 const AMBIENT = {
   city: { buf: 'white', type: 'bandpass', freq: 1400, q: 0.6, gain: 0.085, lfo: 0.12, lfoDepth: 0.03 },
   jungle: { buf: 'white', type: 'bandpass', freq: 4200, q: 3, gain: 0.05, lfo: 3.5, lfoDepth: 0.035 },
@@ -388,6 +388,8 @@ const AMBIENT = {
   moon: { buf: 'brown', type: 'lowpass', freq: 180, q: 1, gain: 0.1, lfo: 0.07, lfoDepth: 0.03 },
   snow: { buf: 'brown', type: 'bandpass', freq: 900, q: 1.2, gain: 0.12, lfo: 0.3, lfoDepth: 0.07 },
   lava: { buf: 'brown', type: 'lowpass', freq: 260, q: 1.5, gain: 0.15, lfo: 0.09, lfoDepth: 0.05 },
+  // 军事基地：铁皮上的风 + 远处电流嗡鸣
+  base: { buf: 'white', type: 'bandpass', freq: 2100, q: 0.9, gain: 0.07, lfo: 0.5, lfoDepth: 0.04 },
 };
 
 export function setAmbient(mapId) {

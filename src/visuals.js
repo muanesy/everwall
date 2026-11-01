@@ -94,6 +94,16 @@ const MAPS = {
     key: { color: 0xf2f6ff, intensity: 1.7 },
     fill: { color: 0x6a90c0, intensity: 45, pos: [14, 12, -16] },
   },
+  base: {
+    name: '军事基地（封锁区）',
+    tex: 'b-map-base',      // worn_corrugated_iron
+    tint: 0x9aa3a8,
+    roughness: 0.5,
+    bg: 0x0d1116, fogNear: 30, fogFar: 84,
+    hemi: { sky: 0xa8bccd, ground: 0x141a1f, intensity: 1.5 },
+    key: { color: 0xf2f6ff, intensity: 2.8 },
+    fill: { color: 0x6a86b0, intensity: 55, pos: [-16, 12, -18] },
+  },
   lava: {
     name: '火山灰烬（机制建议：岩浆裂隙烫脚）',
     tex: 'b-map-lava',      // burned_ground_01
@@ -124,6 +134,7 @@ const MAP_ZOMBIE_TINT = {
   moon: [0.94, 0.99, 1.12], // 月球：真空冷蓝
   snow: [0.88, 0.96, 1.08], // 雪原：寒白
   lava: [1.18, 0.82, 0.72], // 火山：岩浆红
+  base: [0.92, 0.98, 1.02],  // 军事基地：冷钢色
 };
 let MAP_TINT = MAP_ZOMBIE_TINT[MAP_ID] || MAP_ZOMBIE_TINT.city;
 
@@ -260,6 +271,7 @@ const MAP_TYPE_SRC = {
   snow:   { 0: 'cyber' },    // 雪地：后现代生化改造体
   moon:   { 0: 'blue' },     // 月球：星际蓝甲（配色再往冷里拉）
   lava:   { 0: 'pirate' },   // 熔岩：终幕海盗
+  base:   { 0: 'blue' },     // 军事基地：装甲兵
 };
 const MAP_TYPE_OVERRIDE = MAP_TYPE_SRC[MAP_ID] || null;
 const animMixers = new Set(); // 所有活着的骨骼动画，每帧 update
@@ -1694,6 +1706,7 @@ function buildProps(mapId = MAP_ID) {
     moon: buildMoonProps,
     snow: buildSnowProps,
     lava: buildLavaProps,
+    base: buildBaseProps,
   }[mapId] || buildCityProps;
 
   builder(group, rng);
@@ -1707,6 +1720,7 @@ function buildProps(mapId = MAP_ID) {
     moon:   { color: 0x1a1c22, count: 8 },
     snow:   { color: 0x5c6672, count: 7 },
     lava:   { color: 0x140806, count: 8 },
+    base:   { color: 0x141a20, count: 8 },
   }[mapId] || { color: 0x11151b, count: 7 };
 
   const silMat = mat(silhouette.color, { flat: true, rough: 1 });
@@ -2096,6 +2110,102 @@ function buildSnowProps(g, rng) {
     const rk = rockMesh(rng, r, rockC);
     rk.position.set((rng() - 0.5) * 26, r * 0.4, 15.8 + rng() * 4);
     g.add(rk);
+  }
+}
+
+/* 军事基地：集装箱堆、铁丝网、沙袋、探照灯塔、雷达天线
+ * 战场被军方封锁过：锈蚀铁皮地面 + 冷钢色调，和其他五张图完全不是一路。 */
+function buildBaseProps(g, rng) {
+  const steel = 0x4c545c;
+  const rust = 0x7a4a32;
+  const sand = 0x8a7d5e;
+
+  // 远景：仓库与集装箱墙，挡住地平线
+  for (let i = 0; i < 8; i++) {
+    const w = 6 + rng() * 8;
+    const h = 4 + rng() * 6;
+    const b = boxMesh(w, h, 6 + rng() * 4, rng() > 0.5 ? steel : rust, { rough: 1, flat: true });
+    b.position.set(-36 + i * 10 + rng() * 2, h / 2, -35 - rng() * 4);
+    g.add(b);
+  }
+
+  // 集装箱：几个不同颜色的大箱子，错落堆放
+  const boxColors = [0x2f5f6b, 0x6b3f2f, 0x3f5f2f, 0x5f5f3f];
+  for (let i = 0; i < 10; i++) {
+    const w = 3.2;
+    const h = 2.4;
+    const d = 6.4;
+    const c = boxMesh(w, h, d, boxColors[i % boxColors.length], { rough: 1, flat: true });
+    const side = i % 2 ? 1 : -1;
+    c.position.set(side * (10 + rng() * 7), h / 2, -24 + rng() * 34);
+    c.rotation.y = (rng() - 0.5) * 0.3;
+    g.add(c);
+  }
+
+  // 铁丝网：两排柱子加横杆
+  for (const side of [-1, 1]) {
+    for (let i = 0; i < 7; i++) {
+      const post = boxMesh(0.22, 2.6, 0.22, steel, { rough: 1, flat: true });
+      post.position.set(side * (13 + rng() * 2), 1.3, -26 + i * 6 + rng() * 2);
+      g.add(post);
+    }
+    for (let k = 0; k < 3; k++) {
+      const wire = boxMesh(0.1, 0.1, 40, 0x6d737a, { rough: 1, flat: true });
+      wire.position.set(side * (13.6 + rng() * 1.6), 0.8 + k * 0.9, -12);
+      g.add(wire);
+    }
+  }
+
+  // 沙袋墙：矮矮一排，压在通道外侧
+  for (let i = 0; i < 12; i++) {
+    const bag = boxMesh(1.3, 0.55, 0.8, sand, { rough: 1, flat: true });
+    const side = i % 2 ? 1 : -1;
+    bag.position.set(side * (9.2 + rng() * 2.5), 0.28, -20 + i * 3.4 + rng() * 1.5);
+    bag.rotation.y = (rng() - 0.5) * 0.2;
+    g.add(bag);
+  }
+
+  // 探照灯塔：细杆加一个亮灯头，夜里是场景里最亮的点
+  for (let i = 0; i < 3; i++) {
+    const side = i % 2 ? 1 : -1;
+    const poleH = 6 + rng() * 2;
+    const pole = boxMesh(0.3, poleH, 0.3, steel, { rough: 1, flat: true });
+    pole.position.set(side * (15 + rng() * 3), poleH / 2, -22 + i * 12 + rng() * 3);
+    g.add(pole);
+
+    const lamp = new THREE.Mesh(
+      new THREE.SphereGeometry(0.55, 10, 8),
+      new THREE.MeshBasicMaterial({ color: 0xfff0c0, fog: true })
+    );
+    lamp.position.set(pole.position.x, poleH + 0.3, pole.position.z);
+    g.add(lamp);
+    // 灯头会一闪一闪
+    propAnim.push({ kind: 'flicker', obj: lamp, phase: rng() * 10, base: 1 });
+  }
+
+  // 雷达天线：斜着的圆盘
+  const dish = new THREE.Mesh(
+    new THREE.SphereGeometry(2.6, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.42),
+    new THREE.MeshStandardMaterial({ color: 0xb9c2c9, roughness: 0.6, metalness: 0.4, side: THREE.DoubleSide })
+  );
+  dish.position.set(-19, 5.5, -33);
+  dish.rotation.set(-0.9, 0.5, 0.2);
+  g.add(dish);
+  const mast = boxMesh(0.35, 5, 0.35, steel, { rough: 1, flat: true });
+  mast.position.set(-19, 2.5, -33);
+  g.add(mast);
+
+  // 前景：翻倒的油桶和破板
+  for (let i = 0; i < 8; i++) {
+    const r = 0.4 + rng() * 0.5;
+    const drum = new THREE.Mesh(
+      new THREE.CylinderGeometry(r, r, r * 2, 12),
+      mat(rng() > 0.5 ? rust : 0x3f5a44, { rough: 0.85 })
+    );
+    const side = i % 2 ? 1 : -1;
+    drum.position.set(side * (4.5 + rng() * 7), r, 15.5 + rng() * 3);
+    drum.rotation.set(rng() > 0.6 ? Math.PI / 2 : 0, rng() * Math.PI, 0);
+    g.add(drum);
   }
 }
 
@@ -2858,6 +2968,7 @@ const AMBIENT_FX = {
   moon:   { kind: 'star',   count: 70,  color: [0.72, 0.86, 1.0], size: 0.16, speed: 0.25, area: [26, 24] },
   snow:   { kind: 'snow',   count: 110, color: [0.92, 0.96, 1.0], size: 0.075, speed: 2.6, area: [26, 24] },
   lava:   { kind: 'ember',  count: 95,  color: [1.0, 0.6, 0.22], size: 0.13, speed: 3.8, area: [22, 18] },
+  base:   { kind: 'sand',   count: 55,  color: [0.78, 0.82, 0.85], size: 0.045, speed: 4.5, area: [28, 20] },
 };
 
 let ambientFx = null;   // { points, geo, pos, col, cfg, state }
