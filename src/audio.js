@@ -311,9 +311,33 @@ export function playWaveStart() {
   noise(t, 0.4, { type: 'lowpass', freq: 600, sweepTo: 120, gain: 0.12 });
 }
 
+// 炸药桶：引信嘶嘶声（打中时）+ 爆炸（炸响 + 低频冲击 + 碎片）
+export function playBarrelFuse() {
+  if (!ready('barrelFuse', 0.12)) return;
+  const t = ctx.currentTime;
+  noise(t, 0.16, { type: 'highpass', freq: 3200, gain: 0.09 });
+  tone(t, { type: 'sawtooth', from: 1800, to: 2600, dur: 0.14, gain: 0.04 });
+}
+
+export function playBarrelExplode() {
+  if (!ready('barrelExplode', 0.15)) return;
+  const t = ctx.currentTime;
+
+  // 主体：低频冲击 + 宽带爆响
+  tone(t, { type: 'sine', from: 120, to: 28, dur: 0.7, gain: 0.34, attack: 0.008 });
+  noise(t, 0.55, { type: 'lowpass', freq: 1800, sweepTo: 180, gain: 0.26 });
+  // 碎片：爆响后一小串噼啪
+  for (let i = 0; i < 5; i++) {
+    noise(t + 0.06 + i * 0.055, 0.06, {
+      type: 'highpass',
+      freq: 2400 + i * 500,
+      gain: 0.05,
+    });
+  }
+}
+
 // 界面点击
-export function playClick() {
-  if (!ready()) return;
+export function playClick() {  if (!ready()) return;
   const t = ctx.currentTime;
   tone(t, { type: 'square', from: 880, to: 660, dur: 0.05, gain: 0.09 });
 }

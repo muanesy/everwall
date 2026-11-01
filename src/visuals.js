@@ -23,6 +23,8 @@ import {
   playBarrierApply,
   playArmyHurt,
   playWaveStart,
+  playBarrelFuse,
+  playBarrelExplode,
 } from './audio.js';
 // 三个乙层模块：兵种阶级外观表、昼夜轮转、炸药桶（新文件，按文件边界属乙）
 import { TIERS, getTier, getTierIndex } from './visuals-tiers.js';
@@ -838,6 +840,12 @@ export function initVisuals(container, events) {
     spawnBurst(0, 1.1, 6.5, 0xb06bff, 12, { speed: 3.0, up: 2.4, spread: 2.2, life: 0.7 });
     shake = Math.max(shake, 0.16);
   });
+
+  // 炸药桶爆炸：甲那边派发这个事件结算伤害，这里负责声音和余震
+  events.addEventListener('barrelExploded', () => {
+    playBarrelExplode();
+    shake = Math.max(shake, 0.45);
+  });
 }
 
 /* ----------------------------------------------------------
@@ -851,7 +859,9 @@ export function hitBarrel(x, z, radius = 0.5) {
   // 甲传的 radius 是"额外容差"，模块内部会收敛到合理范围。
   // 桶是三只横排的，用胶囊判定（点到横排线段的距离），视觉和判定完全对齐，
   // 不会出现"明明瞄准了却打不到"。
-  return hitTestBarrel(x, z, radius);
+  const hit = hitTestBarrel(x, z, radius);
+  if (hit) playBarrelFuse(); // 点燃引信的嘶嘶声
+  return hit;
 }
 
 /* 运行时补一个炸药桶，归甲调用；场上最多 3 个，位置太近会返回 null */
