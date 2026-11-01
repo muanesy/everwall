@@ -147,8 +147,19 @@ let playerVisual = null; // 玩家的真模型（加载完成后替代蓝方块�
 const modelLib = {
   loaded: false,
   soldier: null,   // gltf.scene 原型（只作克隆源，不直接进场）
-  zombies: [],     // 两种僵尸混用：男 4046 面 / 女 9750 面
+  zombies: [],     // 五种僵尸原型，下标 = game.js 的 z.type，约定见 docs/僵尸类型.md
 };
+
+// 五种僵尸的外观表（数值归 game.js，这里只管外观）。
+// tint 是乘色：白 = 原色。材质各自独立克隆，乘色不会互相串。
+// walkSpeed 只影响走路动画节奏——比颜色更能传达"笨重"和"快"。
+const ZOMBIE_LOOKS = [
+  { src: 'male',   scale: 1.0,  tint: [0.80, 0.90, 0.84], walkSpeed: 1.0 },               // 0 普通 灰绿
+  { src: 'male',   scale: 1.25, tint: [0.88, 0.62, 0.58], walkSpeed: 0.85 },              // 1 大块头 暗红灰
+  { src: 'male',   scale: 0.85, tint: [0.92, 1.00, 0.55], walkSpeed: 1.3 },               // 2 快鬼 黄绿
+  { src: 'female', scale: 1.1,  tint: [1.05, 1.06, 1.12], walkSpeed: 1.0, emissive: 0.08 }, // 3 精英 灰白提亮
+  { src: 'female', scale: 1.0,  tint: [0.70, 0.78, 0.74], walkSpeed: 1.0 },               // 4 女僵尸 原色压暗
+];
 const animMixers = new Set(); // 所有活着的骨骼动画，每帧 update
 
 const MODEL_TARGET = {
@@ -193,6 +204,37 @@ function preparePrototype(proto, targetHeight, tint) {
   return proto;
 }
 
+// 把一种僵尸外观做成独立原型：独立克隆 + 独立材质（骨架克隆默认共享材质，
+// 直接乘色会让同源的类型互相串色），再缩放到目标身高并乘色。
+function prepareZombieType(rawProto, look) {
+  const proto = skeletonClone(rawProto);
+  // Object3D.clone 会把 userData 做 JSON 拷贝，AnimationClip 引用会被换成普通对象，
+  // 这里必须把真动画引用补回来，否则这一类型的僵尸不会走路
+  proto.userData.clip = rawProto.userData.clip;
+  proto.traverse((o) => {
+    if ((o.isMesh || o.isSkinnedMesh) && o.material) {
+      o.material = Array.isArray(o.material)
+        ? o.material.map((m) => m.clone())
+        : o.material.clone();
+    }
+  });
+  preparePrototype(
+    proto,
+    MODEL_TARGET.zombieHeight * look.scale,
+    new THREE.Color(look.tint[0], look.tint[1], look.tint[2])
+  );
+  if (look.emissive) {
+    // 精英在暗图上要能读出来，给一点点自发光提亮
+    proto.traverse((o) => {
+      if ((o.isMesh || o.isSkinnedMesh) && o.material?.emissive) {
+        o.material.emissive.setScalar(look.emissive);
+      }
+    });
+  }
+  proto.userData.walkSpeed = look.walkSpeed;
+  return proto;
+}
+
 function loadModels() {
   const loader = new GLTFLoader();
   const base = new URL('../assets/models/', import.meta.url).href;
@@ -216,11 +258,11 @@ function loadModels() {
   ])
     .then(([s, zm, zf]) => {
       modelLib.soldier = preparePrototype(grab(s, /idle/i), MODEL_TARGET.soldierHeight);
-      const zombieTint = new THREE.Color(0.8, 0.9, 0.84); // 压暗、偏灰绿，贴合雨夜
-      modelLib.zombies = [
-        preparePrototype(grab(zm, /walk/i), MODEL_TARGET.zombieHeight, zombieTint),
-        preparePrototype(grab(zf, /walk/i), MODEL_TARGET.zombieHeight, zombieTint),
-      ];
+      // 男/女两个原始场景只作克隆源，五种类型各自从这里克隆
+      const rawZombie = { male: grab(zm, /walk/i), female: grab(zf, /walk/i) };
+      modelLib.zombies = ZOMBIE_LOOKS.map((look) =>
+        prepareZombieType(rawZombie[look.src], look)
+      );
       modelLib.loaded = true;
       // 玩家也换成模型：面向僵尸潮（-z），移动交给 syncScene 只改 x/z
       const vis = spawnModel(modelLib.soldier, Math.PI);
@@ -257,6 +299,8 @@ function spawnModel(proto, faceDir) {
       mixer = new THREE.AnimationMixer(root);
       const action = mixer.clipAction(clip);
       action.play();
+      // 走路节奏按类型调：大块头慢（笨重）、快鬼快（窜）——比颜色更能传达体型差异
+      if (proto.userData.walkSpeed) action.timeScale = proto.userData.walkSpeed;
       action.time = Math.random() * clip.duration; // 打散步伐
       animMixers.add(mixer);
     }
@@ -561,8 +605,8 @@ function syncZombies(state, dt) {
 
     if (!entry) {
       if (modelLib.loaded && modelLib.zombies.length) {
-        // 每 5 只里出 1 只女僵尸（面数更高），按 type 稳定分配不闪烁
-        const proto = modelLib.zombies[z.type % 5 === 4 ? 1 : 0];
+        // 原型下标 = z.type（0-4），约定见 docs/僵尸类型.md；越界兜底回普通
+        const proto = modelLib.zombies[z.type] || modelLib.zombies[0];
         const vis = spawnModel(proto, 0); // 面朝玩家（+z）
         entry = vis
           ? { isModel: true, vis }
@@ -1222,7 +1266,9 @@ function updateBarrierAppearance(mesh, bar) {
 }
 
 function makeZombieMesh(type) {
-  const colors = [0x8f5a5a, 0x6b8f5a, 0x5a6f8f];
+  // 色块版的五色：和 ZOMBIE_LOOKS 的 tint 方向一致（普通绿/暗红灰/黄绿/灰白/灰绿）
+  const colors = [0x6f8f6a, 0x8f5a4a, 0x9aa04a, 0xb8bcc4, 0x647f68];
+  const look = ZOMBIE_LOOKS[type] || ZOMBIE_LOOKS[0];
 
   const mesh = new THREE.Mesh(
     new THREE.BoxGeometry(0.7, 1.15, 0.7),
@@ -1231,6 +1277,9 @@ function makeZombieMesh(type) {
       roughness: 0.85,
     })
   );
+  // 体型也跟着类型走，色块版和模型版观感一致
+  mesh.scale.setScalar(look.scale);
+  if (look.emissive) mesh.material.emissive.setScalar(look.emissive);
 
   // 脚下的影子跟着僵尸一起动
   const shadow = makeBlobShadow(0.45);
