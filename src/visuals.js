@@ -474,9 +474,12 @@ export function initVisuals(container, events) {
 
   // 事件 → 特效 + 音效
   events.addEventListener('shoot', (e) => {
-    spawnMuzzleFlash(e.detail.x, e.detail.z);
+    const origins = e.detail.origins || [{ x: e.detail.x, z: e.detail.z }];
+    for (const o of origins) spawnMuzzleFlash(o.x, o.z);
+
     if (muzzleLight) {
-      muzzleLight.position.set(e.detail.x, 0.9, e.detail.z - 0.9);
+      const mid = origins[Math.floor(origins.length / 2)] || origins[0];
+      muzzleLight.position.set(mid.x, 0.9, mid.z - 0.15);
       muzzleLight.intensity = 22;
     }
     playShoot();
@@ -574,13 +577,27 @@ export function syncScene(state, dt) {
 }
 
 function soldierSlot(i, state) {
-  // 三角形队列：第 r 排有 r+1 个人，1+2+...+15 = 120
-  const row = Math.floor((Math.sqrt(8 * i + 1) - 1) / 2);
-  const col = i - (row * (row + 1)) / 2;
+  // 前排最宽的三角阵：第 0 排 frontCount 人，往后每排少一人
+  const r = state.formation ? state.formation.frontCount : 1;
+  const spacing = 0.42;
+  const rowGap = 0.32;
+
+  let row = 0;
+  let start = 0;
+  let len = r;
+
+  while (i >= start + len && len > 1) {
+    start += len;
+    row += 1;
+    len = r - row;
+  }
+
+  const col = i - start;
+  const width = Math.max(1, len);
 
   return {
-    x: state.player.x + (col - row / 2) * 0.42,
-    z: state.player.z + 0.55 + row * 0.32,
+    x: state.player.x + (col - (width - 1) / 2) * spacing,
+    z: state.player.z + 0.25 + row * rowGap,
   };
 }
 
@@ -1458,7 +1475,7 @@ function spawnMuzzleFlash(x, z) {
     new THREE.SphereGeometry(0.2, 8, 8),
     new THREE.MeshBasicMaterial({ color: 0xffd27a, transparent: true, opacity: 1 })
   );
-  mesh.position.set(x, 0.9, z - 0.9);
+  mesh.position.set(x, 0.9, z - 0.15);
   scene.add(mesh);
   effects.push({ mesh, life: 0, maxLife: 0.09, type: 'flash' });
 }

@@ -37,9 +37,14 @@ const CONFIG = {
     maxVolley: 5,          // 总火力上限，越大总射速越高
   },
   weapon: {
-    lineGap: 1.1,        // 多条弹道之间的横向间距
-    maxLines: 5,         // 最多几条弹道
-    spreadMaxRatio: 0.15, // 扩散器：到屏幕顶端时单侧最大偏移 / 纵向距离
+    maxLines: 8,         // 最多几个枪位
+    jitterBase: 0.01,    // 普通状态下的枪口抖动
+    jitterSpread: 0.04,  // 扩散器解锁后的枪口抖动
+  },
+  formation: {
+    spacing: 0.42,       // 前排士兵之间的横向间距
+    rowGap: 0.32,        // 排与排之间的纵向间距
+    maxSoldiers: 120,    // 最多显示多少个士兵
   },
   barrier: {
     speed: 6.5,            // 压下来的速度
@@ -118,17 +123,22 @@ const state = {
     z: CONFIG.world.playerZ,
   },
 
-  // 武器状态：默认一条弹道，没有扩散
+  // 武器状态：默认一个枪位，没有扩散
   weapon: {
     lines: 1,
     spread: false,
+    timers: [0], // 每个枪位各自的发射计时，错开节奏
+  },
+
+  // 阵型：前排人数，由士兵总数算出来
+  formation: {
+    frontCount: 1,
   },
 
   bullets: [],  // { id, x, z, vz, damage }
   barriers: [], // { id, x, z, hp, speed }
   zombies: [],  // { id, x, z, hp, speed, type }
 
-  fireTimer: 0,
   barrierTimer: 0,
   zombieTimer: 0,
   nextId: 1,
@@ -218,12 +228,12 @@ function resetState() {
   state.player.x = 0;
   state.weapon.lines = 1;
   state.weapon.spread = false;
+  state.weapon.timers = [0];
 
   state.bullets.length = 0;
   state.barriers.length = 0;
   state.zombies.length = 0;
 
-  state.fireTimer = 0;
   state.barrierTimer = 0.6;
   state.zombieTimer = 1.0;
   state.nextId = 1;
@@ -243,7 +253,6 @@ function revive() {
   state.bullets.length = 0;
   state.barriers.length = 0;
   state.zombies.length = 0;
-  state.fireTimer = 0;
   state.barrierTimer = 0.4;
   state.zombieTimer = 0.8;
 }
@@ -260,11 +269,18 @@ function update(dt) {
     emit('waveStart', { wave: nextWave });
   }
 
+  updateFormation();
   updatePlayer(dt);
   updateFiring(dt);
   updateBullets(dt);
   updateBarriers(dt);
   updateZombies(dt);
+}
+
+// 前排人数：1+2+...+r >= 士兵数，r 就是前排宽度
+function updateFormation() {
+  const n = Math.min(state.soldiers, CONFIG.formation.maxSoldiers);
+  state.formation.frontCount = Math.ceil((Math.sqrt(8 * n + 1) - 1) / 2);
 }
 
 function updatePlayer(dt) {
@@ -288,12 +304,9 @@ function updatePlayer(dt) {
 }
 
 function updateFiring(dt) {
-  state.fireTimer -= dt;
-  if (state.fireTimer > 0) return;
+  const shooters = state.weapon.lines;
 
-  const lines = state.weapon.lines;
-
-  // 总射速由士兵数决定，拆到几条弹道上，总子弹数不变
+  // 总射速由士兵数决定，拆到几个枪位上，总子弹数不变
   const baseCount = Math.min(
     CONFIG.player.maxVolley,
     1 + Math.floor(state.soldiers / 10)
@@ -303,29 +316,49 @@ function updateFiring(dt) {
     CONFIG.player.baseFireInterval / Math.max(1, state.soldiers)
   );
   const totalRate = baseCount / baseInterval; // 每秒多少发
+  const interval = shooters / totalRate;
 
-  state.fireTimer = lines / totalRate;
+  // 每个枪位各自计时，新枪位随机错开，避免整排同时开火
+  const timers = state.weapon.timers;
+  while (timers.length < shooters) {
+    timers.push(Math.random() * interval * 0.6);
+  }
 
-  const gap = CONFIG.weapon.lineGap;
-  const maxVx = state.weapon.spread
-    ? CONFIG.weapon.spreadMaxRatio * CONFIG.player.bulletSpeed
-    : 0;
+  const front = state.formation;
+  const width = Math.max(0, (front.frontCount - 1) * CONFIG.formation.spacing);
+  const jitter =
+    (state.weapon.spread
+      ? CONFIG.weapon.jitterSpread
+      : CONFIG.weapon.jitterBase) * CONFIG.player.bulletSpeed;
 
-  for (let i = 0; i < lines; i++) {
-    const offset = (i - (lines - 1) / 2) * gap;
-    const vx = maxVx ? (Math.random() * 2 - 1) * maxVx : 0;
+  const origins = [];
+
+  for (let i = 0; i < shooters; i++) {
+    timers[i] -= dt;
+    if (timers[i] > 0) continue;
+
+    timers[i] += interval;
+    if (timers[i] < 0) timers[i] = interval;
+
+    const t = shooters === 1 ? 0.5 : i / (shooters - 1);
+    const x = state.player.x + (t - 0.5) * width;
+    const vx = (Math.random() * 2 - 1) * jitter;
 
     state.bullets.push({
       id: state.nextId++,
-      x: state.player.x + offset,
-      z: state.player.z - 0.25,
+      x,
+      z: state.player.z - 0.1,
       vx,
       vz: -CONFIG.player.bulletSpeed,
       damage: CONFIG.player.bulletDamage,
     });
+
+    origins.push({ x, z: state.player.z });
   }
 
-  emit('shoot', { x: state.player.x, z: state.player.z });
+  if (origins.length) {
+    emit('shoot', { origins, x: state.player.x, z: state.player.z });
+  }
 }
 
 /* ----------------------------------------------------------
