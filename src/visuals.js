@@ -222,8 +222,15 @@ export function initVisuals(container, events) {
 
   // 事件 → 特效
   events.addEventListener('shoot', (e) => spawnMuzzleFlash(e.detail.x, e.detail.z));
-  events.addEventListener('barrierHit', (e) => spawnRing(e.detail.x, e.detail.z, 0x6dffb0, 0.22));
-  events.addEventListener('barrierBreak', (e) => spawnRing(e.detail.x, e.detail.z, 0x6dffb0, 0.4));
+  // barrierHit 只在打中负数屏障时触发，所以是红色小环（提示"这个不能碰"）
+  events.addEventListener('barrierHit', (e) => spawnRing(e.detail.x, e.detail.z, 0xff5a5a, 0.2));
+  // barrierApply 是数值真正生效（打满上限，或屏障撞到士兵）：正数绿、负数红，数值越大环越大
+  events.addEventListener('barrierApply', (e) => {
+    const v = e.detail?.value ?? 1;
+    const size = Math.min(0.9, 0.34 + Math.abs(v) * 0.02);
+    spawnRing(e.detail.x, e.detail.z, v >= 0 ? 0x6dffb0 : 0xff5a5a, size);
+    if (v < 0) shake = Math.max(shake, 0.35);
+  });
   events.addEventListener('zombieDie', (e) => spawnRing(e.detail.x, e.detail.z, 0xff6a4a, 0.3));
   events.addEventListener('armyHurt', (e) => {
     const amount = e.detail?.amount ?? 1;
@@ -669,17 +676,16 @@ function buildMoonProps(g, rng) {
   }
 
   // 远处的地球：贴着地平线升起的大星球，一眼就知道这是月球。
-  // 位置要精确：这个相机下"天空"只占画面顶部一小条（地面尽头之上），
-  // 球心放 y≈7、z 在背景墙之前，看起来就是从地平线探出来半个球。
+  // 球心压到地面高度（y≈0.5），一半沉在"地面尽头"之下，看起来就是从地平线探出大半个球。
   const earth = new THREE.Mesh(
-    new THREE.SphereGeometry(5, 24, 24),
+    new THREE.SphereGeometry(3, 24, 24),
     new THREE.MeshBasicMaterial({ color: 0x3f78b8, fog: false })
   );
-  earth.position.set(4, 7, GROUND_Z - GROUND_H / 2 + 3);
+  earth.position.set(4, -1, -20);
   g.add(earth);
 
   const glow = new THREE.Mesh(
-    new THREE.SphereGeometry(6.2, 20, 20),
+    new THREE.SphereGeometry(3.9, 20, 20),
     new THREE.MeshBasicMaterial({
       color: 0x6fa8e0,
       transparent: true,
