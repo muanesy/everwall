@@ -5,6 +5,8 @@
  * 这里不碰 3D，也不改游戏数值。
  * ========================================================== */
 
+import { initAudio, playClick, playRevive, toggleMute, isMuted } from './audio.js';
+
 let els = null;
 let actions = null;
 
@@ -87,6 +89,14 @@ function buildDom() {
   `;
   document.body.appendChild(overScreen);
 
+  // 静音开关：不影响游戏，只控制声音。现场演示嫌吵可以按一下。
+  const soundBtn = document.createElement('button');
+  soundBtn.className = 'sound-toggle';
+  soundBtn.type = 'button';
+  soundBtn.setAttribute('aria-label', '开关声音');
+  soundBtn.textContent = '🔊';
+  document.body.appendChild(soundBtn);
+
   return {
     hud,
     soldiersText: hud.querySelector('[data-soldiers]'),
@@ -97,11 +107,34 @@ function buildDom() {
     overScreen,
     finalScore: overScreen.querySelector('[data-final-score]'),
     finalWave: overScreen.querySelector('[data-final-wave]'),
+    soundBtn,
   };
 }
 
 function bindEvents() {
-  els.startScreen.querySelector('[data-start]').addEventListener('click', () => actions.start());
-  els.overScreen.querySelector('[data-revive]').addEventListener('click', () => actions.revive());
-  els.overScreen.querySelector('[data-restart]').addEventListener('click', () => actions.restart());
+  els.startScreen.querySelector('[data-start]').addEventListener('click', () => {
+    initAudio(); // 音频必须由用户点击触发，这里是最早的手势
+    playClick();
+    actions.start();
+  });
+
+  els.overScreen.querySelector('[data-revive]').addEventListener('click', () => {
+    initAudio();
+    playRevive();
+    actions.revive();
+  });
+
+  els.overScreen.querySelector('[data-restart]').addEventListener('click', () => {
+    initAudio();
+    playClick();
+    actions.restart();
+  });
+
+  els.soundBtn.addEventListener('click', () => {
+    initAudio();
+    const muted = toggleMute();
+    els.soundBtn.textContent = muted ? '🔇' : '🔊';
+    els.soundBtn.classList.toggle('is-muted', muted);
+    if (!muted) playClick();
+  });
 }

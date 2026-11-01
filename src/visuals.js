@@ -9,6 +9,16 @@
  * ========================================================== */
 
 import * as THREE from 'three';
+import {
+  setAmbient,
+  updateAudio,
+  playShoot,
+  playZombieDie,
+  playBarrierHit,
+  playBarrierApply,
+  playArmyHurt,
+  playWaveStart,
+} from './audio.js';
 
 /* ----------------------------------------------------------
  * 地图配置表
@@ -220,23 +230,45 @@ export function initVisuals(container, events) {
   window.addEventListener('resize', resize);
   resize();
 
-  // 事件 → 特效
-  events.addEventListener('shoot', (e) => spawnMuzzleFlash(e.detail.x, e.detail.z));
+  // 环境音跟着地图走（雨林虫鸣、沙漠风沙、月球真空……）
+  setAmbient(MAP_ID);
+
+  // 事件 → 特效 + 音效
+  events.addEventListener('shoot', (e) => {
+    spawnMuzzleFlash(e.detail.x, e.detail.z);
+    playShoot();
+  });
+
   // barrierHit 只在打中负数屏障时触发，所以是红色小环（提示"这个不能碰"）
-  events.addEventListener('barrierHit', (e) => spawnRing(e.detail.x, e.detail.z, 0xff5a5a, 0.2));
+  events.addEventListener('barrierHit', (e) => {
+    spawnRing(e.detail.x, e.detail.z, 0xff5a5a, 0.2);
+    playBarrierHit();
+  });
+
   // barrierApply 是数值真正生效（打满上限，或屏障撞到士兵）：正数绿、负数红，数值越大环越大
   events.addEventListener('barrierApply', (e) => {
     const v = e.detail?.value ?? 1;
     const size = Math.min(0.9, 0.34 + Math.abs(v) * 0.02);
     spawnRing(e.detail.x, e.detail.z, v >= 0 ? 0x6dffb0 : 0xff5a5a, size);
     if (v < 0) shake = Math.max(shake, 0.35);
+    playBarrierApply(v);
   });
-  events.addEventListener('zombieDie', (e) => spawnRing(e.detail.x, e.detail.z, 0xff6a4a, 0.3));
+
+  events.addEventListener('zombieDie', (e) => {
+    spawnRing(e.detail.x, e.detail.z, 0xff6a4a, 0.3);
+    playZombieDie();
+  });
+
   events.addEventListener('armyHurt', (e) => {
     const amount = e.detail?.amount ?? 1;
     shake = 0.3 + amount * 0.12;
+    playArmyHurt(amount);
   });
-  events.addEventListener('waveStart', () => { shake = 0.2; });
+
+  events.addEventListener('waveStart', () => {
+    shake = 0.2;
+    playWaveStart();
+  });
 }
 
 /* ----------------------------------------------------------
@@ -244,6 +276,9 @@ export function initVisuals(container, events) {
  * ---------------------------------------------------------- */
 export function syncScene(state, dt) {
   if (!renderer) return;
+
+  // 僵尸低吼的氛围音：交给音频层自己计时，这里只报数量和是否在局内
+  updateAudio(dt, state.zombies ? state.zombies.length : 0, state.status === 'playing');
 
   // 队长
   playerMesh.position.set(state.player.x, 0.675, state.player.z);
