@@ -1233,12 +1233,27 @@ function collectZombieMats() {
 function swapSoldierModel(proto) {
   if (!proto || proto === modelLib.soldier) return;
 
+  const oldProto = modelLib.soldier;
+
   for (const vis of soldierVisuals) {
     scene.remove(vis.root);
     despawnModel(vis);
   }
   soldierVisuals.length = 0;
   modelLib.soldier = proto;
+
+  // 旧原型的材质只有旧克隆在用，换装完可以释放（不释放会随换装次数累积内存）
+  if (oldProto && oldProto !== proto) {
+    oldProto.traverse((o) => {
+      if (!o.isMesh || !o.material) return;
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      for (const m of mats) {
+        if (!m) continue;
+        m.map?.dispose();
+        m.dispose();
+      }
+    });
+  }
 
   // 新原型的材质和旧的不是一套，基准色要重新抓一遍
   soldierMats = null;
