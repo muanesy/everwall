@@ -94,6 +94,16 @@ const MAPS = {
     key: { color: 0xf2f6ff, intensity: 1.7 },
     fill: { color: 0x6a90c0, intensity: 45, pos: [14, 12, -16] },
   },
+  harbor: {
+    name: '港口码头（潮汐区）',
+    tex: 'b-map-harbor',    // aerial_asphalt_01
+    tint: 0x9fb0bc,
+    roughness: 0.62,
+    bg: 0x0b1a22, fogNear: 32, fogFar: 92,
+    hemi: { sky: 0xa8c8dc, ground: 0x121e26, intensity: 1.6 },
+    key: { color: 0xfff4e2, intensity: 2.9 },
+    fill: { color: 0x3f7fa8, intensity: 60, pos: [16, 11, -20] },
+  },
   lab: {
     name: '废弃医院（生化实验室）',
     tex: 'b-map-lab',       // worn_tile_floor
@@ -146,6 +156,7 @@ const MAP_ZOMBIE_TINT = {
   lava: [1.18, 0.82, 0.72], // 火山：岩浆红
   base: [0.92, 0.98, 1.02],  // 军事基地：冷钢色
   lab: [0.80, 1.00, 0.88],    // 废弃医院：病态绿
+  harbor: [0.98, 0.94, 0.88],  // 港口码头：咸湿的灰白
 };
 let MAP_TINT = MAP_ZOMBIE_TINT[MAP_ID] || MAP_ZOMBIE_TINT.city;
 
@@ -286,6 +297,7 @@ const MAP_TYPE_SRC = {
   lava:   { 0: 'pirate' },   // 熔岩：终幕海盗
   base:   { 0: 'blue' },     // 军事基地：装甲兵
   lab:    { 0: 'cyber' },    // 废弃医院：生化体
+  harbor: { 0: 'pirate' },   // 港口码头：海盗
 };
 const MAP_TYPE_OVERRIDE = MAP_TYPE_SRC[MAP_ID] || null;
 const animMixers = new Set(); // 所有活着的骨骼动画，每帧 update
@@ -1899,6 +1911,7 @@ function buildProps(mapId = MAP_ID) {
     lava: buildLavaProps,
     base: buildBaseProps,
     lab: buildLabProps,
+    harbor: buildHarborProps,
   }[mapId] || buildCityProps;
 
   builder(group, rng);
@@ -1914,6 +1927,7 @@ function buildProps(mapId = MAP_ID) {
     lava:   { color: 0x140806, count: 8 },
     base:   { color: 0x141a20, count: 8 },
     lab:    { color: 0x121a16, count: 7 },
+    harbor: { color: 0x101a20, count: 7 },
   }[mapId] || { color: 0x11151b, count: 7 };
 
   const silMat = mat(silhouette.color, { flat: true, rough: 1 });
@@ -2404,6 +2418,122 @@ function buildBaseProps(g, rng) {
 
 /* 废弃医院 / 生化实验室：走廊墙、病床、器械架、垂落的管道、闪烁的荧光灯
  * 冷白加病态绿，和其他七张图都不一样。 */
+/* 港口码头：海面、栈桥、集装箱吊车、远处货轮、系缆桩
+ * 靠海的地方风大光冷，僵尸是海盗（地图覆盖表里配好了）。 */
+function buildHarborProps(g, rng) {
+  const steel = 0x53606a;
+  const rust = 0x7d4f33;
+  const wood = 0x6b5638;
+
+  // 远处的海：一片大水面，把地平线压住
+  const sea = new THREE.Mesh(
+    new THREE.PlaneGeometry(GROUND_W * 1.6, 120),
+    new THREE.MeshStandardMaterial({
+      color: 0x1d4a63,
+      emissive: 0x0d2c40,
+      emissiveIntensity: 0.9,
+      roughness: 0.12,
+      metalness: 0.5,
+    })
+  );
+  sea.rotation.x = -Math.PI / 2;
+  sea.position.set(0, -0.3, -58);
+  g.add(sea);
+
+  // 远景：龙门吊和仓库剪影
+  for (let i = 0; i < 6; i++) {
+    const w = 4 + rng() * 3;
+    const h = 10 + rng() * 8;
+    const leg1 = boxMesh(1.1, h, 1.1, steel, { rough: 1, flat: true });
+    const leg2 = boxMesh(1.1, h, 1.1, steel, { rough: 1, flat: true });
+    const x = -40 + i * 15 + rng() * 3;
+    leg1.position.set(x, h / 2, -38);
+    leg2.position.set(x + w + 3, h / 2, -38);
+    const top = boxMesh(w + 4, 1.2, 1.6, rust, { rough: 1, flat: true });
+    top.position.set(x + (w + 3) / 2, h, -38);
+    g.add(leg1, leg2, top);
+  }
+
+  // 集装箱堆：两层三列，颜色不同
+  const boxColors = [0x2f5f6b, 0x6b3f2f, 0x3f5f2f, 0x5a5f3f, 0x6b5f2f];
+  for (let i = 0; i < 9; i++) {
+    const c = boxMesh(3.2, 2.4, 6.4, boxColors[i % boxColors.length], { rough: 1, flat: true });
+    const side = i % 2 ? 1 : -1;
+    c.position.set(side * (11 + rng() * 5), 1.2 + (rng() > 0.7 ? 2.4 : 0), -26 + rng() * 30);
+    c.rotation.y = (rng() - 0.5) * 0.25;
+    g.add(c);
+  }
+
+  // 栈桥：木板的桥从两侧伸向海面
+  for (const side of [-1, 1]) {
+    const deck = boxMesh(5, 0.3, 34, wood, { rough: 0.95, flat: true });
+    deck.position.set(side * 15, 0.12, -36);
+    g.add(deck);
+    for (let i = 0; i < 8; i++) {
+      const pile = boxMesh(0.4, 2.4, 0.4, wood, { rough: 0.95, flat: true });
+      pile.position.set(side * (13 + rng() * 4), -1.0, -20 - i * 5);
+      g.add(pile);
+    }
+  }
+
+  // 系缆桩和缆绳
+  for (let i = 0; i < 5; i++) {
+    const side = i % 2 ? 1 : -1;
+    const bollard = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.32, 0.42, 0.9, 10),
+      mat(steel, { rough: 0.8, flat: true })
+    );
+    bollard.position.set(side * (8.6 + rng() * 1.6), 0.45, -18 + i * 7 + rng() * 2);
+    g.add(bollard);
+  }
+
+  // 远处的货轮：一条大船的剪影
+  const hull = boxMesh(16, 3.2, 5, 0x2a3038, { rough: 1, flat: true });
+  hull.position.set(-15, 0.5, -52);
+  const cabin = boxMesh(4, 3, 3.4, 0x3a444e, { rough: 1, flat: true });
+  cabin.position.set(-19, 3.2, -52);
+  const mast = boxMesh(0.4, 6, 0.4, 0x4a545e, { rough: 1, flat: true });
+  mast.position.set(-18, 7.2, -52);
+  g.add(hull, cabin, mast);
+
+  // 桅灯：夜里港口的标志性一点光
+  const shipLamp = new THREE.Mesh(
+    new THREE.SphereGeometry(0.3, 8, 6),
+    new THREE.MeshBasicMaterial({ color: 0xffe9b8, fog: true })
+  );
+  shipLamp.position.set(-18, 10.2, -52);
+  g.add(shipLamp);
+  propAnim.push({ kind: 'flicker', obj: shipLamp, phase: 3.1, base: 1 });
+
+  // 岸灯
+  for (let i = 0; i < 3; i++) {
+    const side = i % 2 ? 1 : -1;
+    const poleH = 5 + rng() * 1.5;
+    const pole = boxMesh(0.22, poleH, 0.22, steel, { rough: 1, flat: true });
+    pole.position.set(side * (13 + rng() * 3), poleH / 2, -20 + i * 13 + rng() * 3);
+    g.add(pole);
+    const lamp = new THREE.Mesh(
+      new THREE.SphereGeometry(0.42, 10, 8),
+      new THREE.MeshBasicMaterial({ color: 0xffe6b0, fog: true })
+    );
+    lamp.position.set(pole.position.x, poleH + 0.2, pole.position.z);
+    g.add(lamp);
+    propAnim.push({ kind: 'flicker', obj: lamp, phase: rng() * 10, base: 1 });
+  }
+
+  // 前景：缆绳盘和油桶
+  for (let i = 0; i < 7; i++) {
+    const side = i % 2 ? 1 : -1;
+    const coil = new THREE.Mesh(
+      new THREE.TorusGeometry(0.55, 0.16, 8, 14),
+      mat(0x8a7a5e, { rough: 0.95, flat: true })
+    );
+    coil.rotation.x = -Math.PI / 2;
+    coil.position.set(side * (4.8 + rng() * 6), 0.16, 15.5 + rng() * 3);
+    g.add(coil);
+  }
+}
+
 function buildLabProps(g, rng) {
   const wall = 0xc8d4cc;
   const metal = 0x9aa8a2;
@@ -3244,6 +3374,7 @@ const AMBIENT_FX = {
   lava:   { kind: 'ember',  count: 95,  color: [1.0, 0.6, 0.22], size: 0.13, speed: 3.8, area: [22, 18] },
   base:   { kind: 'sand',   count: 55,  color: [0.78, 0.82, 0.85], size: 0.045, speed: 4.5, area: [28, 20] },
   lab:    { kind: 'motes',  count: 60,  color: [0.55, 1.0, 0.78], size: 0.085, speed: 0.5, area: [22, 20] },
+  harbor: { kind: 'fog',    count: 45,  color: [0.72, 0.82, 0.9], size: 0.22, speed: 0.35, area: [26, 22] },
 };
 
 let ambientFx = null;   // { points, geo, pos, col, cfg, state }
@@ -3312,6 +3443,9 @@ function randomAmbientPoint(cfg, init) {
     case 'motes':
       // 废弃医院里飘着的尘埃和孢子
       return { x, y: 0.6 + Math.random() * 5, z };
+    case 'fog':
+      // 港口贴着地面的海雾
+      return { x, y: 0.3 + Math.random() * 1.6, z };
     case 'star':
       // 低空漂浮的冷光尘埃：这个世界里没有真正的天空，撒太高看不见
       return { x, y: 1.5 + Math.random() * 5.5, z };
@@ -3370,6 +3504,14 @@ function updateAmbientFx(dt) {
         col[o] = cfg.color[0] * glow;
         col[o + 1] = cfg.color[1] * glow;
         col[o + 2] = cfg.color[2] * glow * 0.6;
+        break;
+      case 'fog':
+        pos[o] += Math.sin(t * 0.25 + s.phase) * cfg.speed * dt;
+        pos[o + 1] += Math.cos(t * 0.2 + s.phase * 1.2) * cfg.speed * 0.2 * dt;
+        const fg = 0.25 + 0.35 * Math.max(0, Math.sin(t * 0.5 + s.phase));
+        col[o] = cfg.color[0] * fg;
+        col[o + 1] = cfg.color[1] * fg;
+        col[o + 2] = cfg.color[2] * fg;
         break;
       case 'motes':
         pos[o] += Math.sin(t * 0.4 + s.phase) * cfg.speed * dt;

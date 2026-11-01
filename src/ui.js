@@ -24,6 +24,7 @@ const MAP_LIST = [
   { id: 'lava', name: '熔岩' },
   { id: 'base', name: '军事基地' },
   { id: 'lab', name: '废弃医院' },
+  { id: 'harbor', name: '港口码头' },
 ];
 
 const currentMap = new URLSearchParams(window.location.search).get('map') || 'city';

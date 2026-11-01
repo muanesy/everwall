@@ -392,6 +392,8 @@ const AMBIENT = {
   base: { buf: 'white', type: 'bandpass', freq: 2100, q: 0.9, gain: 0.07, lfo: 0.5, lfoDepth: 0.04 },
   // 废弃医院：通风管道的低鸣 + 一点高频电流声
   lab: { buf: 'brown', type: 'lowpass', freq: 300, q: 1.2, gain: 0.12, lfo: 0.4, lfoDepth: 0.05 },
+  // 港口码头：海浪，一涨一落
+  harbor: { buf: 'brown', type: 'lowpass', freq: 420, q: 0.8, gain: 0.14, lfo: 0.22, lfoDepth: 0.09 },
 };
 
 export function setAmbient(mapId) {
