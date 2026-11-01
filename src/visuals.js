@@ -1,7 +1,7 @@
 /* ==========================================================
  * 画面层（乙负责）
  *
- * 职责：搭 3D 场景、相机、灯光、地面，把 state 里的东西画出来，
+ * 职责：搭 3D 场景、相机、灯光、地面、背景物，把 state 里的东西画出来，
  *      并接收 game.js 发来的事件播放特效。
  *
  * 这里只读 state，不改 state。
@@ -10,14 +10,110 @@
 
 import * as THREE from 'three';
 
-const BG_COLOR = 0x0b0f14;
-const WORLD_HEIGHT = 32;
+/* ----------------------------------------------------------
+ * 地图配置表
+ *
+ * 六套地面，全部是 Poly Haven 的 CC0 扫描材质（免署名可商用）。
+ * 预览方式：在地址后面加 ?map=jungle / desert / moon / snow / lava / city
+ * 例如 http://127.0.0.1:5173/index.html?map=moon
+ *
+ * 每张地图自带：贴图三件套、地面乘色、雾色、灯光方案、背景物套件。
+ * 机制（洪水、沙暴、失重……）归 game.js 管，这里只负责"长得像"。
+ * ========================================================== */
+const MAPS = {
+  city: {
+    name: '废墟街道（雨夜）',
+    tex: 'b-map-city',      // road_damaged_2
+    tint: 0x8d99ab,
+    roughness: 0.42,
+    bg: 0x0b0f14, fogNear: 30, fogFar: 82,
+    hemi: { sky: 0x9fb8d8, ground: 0x10141a, intensity: 1.0 },
+    key: { color: 0xfff1de, intensity: 2.4 },
+    fill: { color: 0x4a7ab8, intensity: 60, pos: [16, 12, -18] },
+  },
+  jungle: {
+    name: '热带雨林（机制建议：洪水上涨）',
+    tex: 'b-map-jungle',    // brown_mud_rocks_01
+    tint: 0x9aa69a,
+    roughness: 0.75,
+    bg: 0x081009, fogNear: 26, fogFar: 70,
+    hemi: { sky: 0x9fc9a8, ground: 0x0d150f, intensity: 0.85 },
+    key: { color: 0xfff3d9, intensity: 2.0 },
+    fill: { color: 0x3f8f5f, intensity: 45, pos: [14, 11, -16] },
+  },
+  desert: {
+    name: '沙漠（机制建议：沙尘暴遮视野）',
+    tex: 'b-map-desert',    // aerial_sand
+    tint: 0xd8c4a2,
+    roughness: 0.9,
+    bg: 0x8a7452, fogNear: 24, fogFar: 80,
+    hemi: { sky: 0xe8d4a8, ground: 0x4a3a26, intensity: 1.1 },
+    key: { color: 0xffe8c0, intensity: 2.4 },
+    fill: { color: 0xff9a4d, intensity: 70, pos: [18, 10, -18] },
+  },
+  moon: {
+    name: '月球（机制建议：低重力）',
+    tex: 'b-map-moon',      // rocks_ground_04
+    tint: 0xaeb6bd,
+    roughness: 0.95,
+    bg: 0x05060a, fogNear: 42, fogFar: 100,
+    hemi: { sky: 0x8a94a8, ground: 0x0a0c10, intensity: 0.45 },
+    key: { color: 0xffffff, intensity: 2.6 },
+    fill: { color: 0x223044, intensity: 24, pos: [-16, 11, -18] },
+  },
+  snow: {
+    name: '雪原（机制建议：暴风雪减速）',
+    tex: 'b-map-snow',      // snow_02
+    tint: 0xdfe6ee,
+    roughness: 0.6,
+    bg: 0xb8c2cc, fogNear: 22, fogFar: 74,
+    hemi: { sky: 0xdde8f2, ground: 0x3a4148, intensity: 1.15 },
+    key: { color: 0xf2f6ff, intensity: 1.7 },
+    fill: { color: 0x6a90c0, intensity: 45, pos: [14, 12, -16] },
+  },
+  lava: {
+    name: '火山灰烬（机制建议：岩浆裂隙烫脚）',
+    tex: 'b-map-lava',      // burned_ground_01
+    tint: 0xa89a90,
+    roughness: 0.85,
+    bg: 0x120b08, fogNear: 26, fogFar: 88,
+    hemi: { sky: 0xd8a878, ground: 0x140a06, intensity: 0.75 },
+    key: { color: 0xffb070, intensity: 2.0 },
+    fill: { color: 0xff5a2a, intensity: 90, pos: [12, 9, -14] },
+  },
+};
+
+// 当前地图：从地址参数读，默认废墟街道
+const MAP_ID = new URLSearchParams(window.location.search).get('map') || 'city';
+const MAP = MAPS[MAP_ID] || MAPS.city;
+
+/* ----------------------------------------------------------
+ * 相机：斜视 2.5D
+ *
+ * 正交投影没有远近尺度差，物体不管多远都一样大，画面像航拍图。
+ * 换成透视相机、45° 俯角：远处的东西会变小、收窄，纵深感就出来了。
+ * ---------------------------------------------------------- */
+const CAM = {
+  tilt: 45,      // 俯角：90 = 正俯视，0 = 平视
+  fov: 55,       // 垂直视角，越大越近，画面越有压迫感
+  halfWidth: 9.4, // 玩家所在平面（z=9）必须能看见的左右半宽
+};
+
 const MAX_SOLDIER_VISUALS = 60;
+
+const GROUND_TILE = 40;  // 一格贴图铺多少世界单位。1k 贴图在这个尺度下约 1:1 像素
+const GROUND_W = 140;
+const GROUND_H = 56;     // 从 z=+22 铺到 z=-34，再远靠背景墙和雾收掉
+const GROUND_Z = -6;
 
 let renderer = null;
 let scene = null;
 let camera = null;
 let containerEl = null;
+
+let camDist = 40;  // 相机到注视点的距离，由 resize() 按视口算
+let camY = 28;
+let camZ = 28;
 
 let playerMesh = null;
 let playerShadow = null;
@@ -45,34 +141,58 @@ export function initVisuals(container, events) {
   container.appendChild(renderer.domElement);
 
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(BG_COLOR);
-  scene.fog = new THREE.Fog(BG_COLOR, 30, 56);
+  scene.background = new THREE.Color(MAP.bg);
+  scene.fog = new THREE.Fog(MAP.bg, MAP.fogNear, MAP.fogFar);
 
-  camera = new THREE.OrthographicCamera(-10, 10, 16, -16, 0.1, 200);
-  camera.position.set(0, 18, 12);
-  camera.lookAt(0, 0, -2);
+  camera = new THREE.PerspectiveCamera(CAM.fov, 1, 0.5, 260);
 
-  const hemi = new THREE.HemisphereLight(0xcfe2ff, 0x151a20, 1.15);
+  // 灯光：按地图走。整体思路是环境光压低、主光斜射，
+  // 地面颗粒感靠主光 + 法线贴图，环境光太高会把细节冲平。
+  const hemi = new THREE.HemisphereLight(MAP.hemi.sky, MAP.hemi.ground, MAP.hemi.intensity);
   scene.add(hemi);
 
-  const keyLight = new THREE.DirectionalLight(0xffffff, 1.7);
-  keyLight.position.set(-8, 16, 10);
+  const keyLight = new THREE.DirectionalLight(MAP.key.color, MAP.key.intensity);
+  keyLight.position.set(-10, 20, 14);
   scene.add(keyLight);
 
+  // 一盏彩色补光，营造氛围（雨夜路灯 / 岩浆红光 / 沙漠热浪）
+  const fillLight = new THREE.PointLight(MAP.fill.color, MAP.fill.intensity, 90, 1.6);
+  fillLight.position.set(...MAP.fill.pos);
+  scene.add(fillLight);
+
+  // 地面：按地图加载贴图。路径用 import.meta.url 解析，避免受页面位置影响。
+  const groundTex = loadGroundTextures(renderer, MAP.tex);
+
   const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(60, 80),
-    new THREE.MeshStandardMaterial({ color: 0x1c242e, roughness: 0.95, metalness: 0.05 })
+    new THREE.PlaneGeometry(GROUND_W, GROUND_H),
+    new THREE.MeshStandardMaterial({
+      map: groundTex.map,
+      normalMap: groundTex.normalMap,
+      normalScale: new THREE.Vector2(1.1, 1.1),
+      roughnessMap: groundTex.roughnessMap,
+      color: MAP.tint, // 乘色：统一色调，往地图氛围拉
+      roughness: MAP.roughness, // 数值越小越"湿"，反光越明显
+      metalness: 0.05,
+    })
   );
   ground.rotation.x = -Math.PI / 2;
+  ground.position.z = GROUND_Z;
   scene.add(ground);
 
-  const grid = new THREE.GridHelper(60, 60, 0x2b3644, 0x1f2731);
-  grid.position.y = 0.01;
-  scene.add(grid);
+  // 远处的背景墙：把地面尽头挡住，配合雾看起来就是地平线
+  const backdrop = new THREE.Mesh(
+    new THREE.PlaneGeometry(GROUND_W, 70),
+    new THREE.MeshBasicMaterial({ color: MAP.bg, fog: true })
+  );
+  backdrop.position.set(0, 30, GROUND_Z - GROUND_H / 2);
+  scene.add(backdrop);
+
+  // 背景物：每张地图一套，全部是程序化生成的低面数道具，不占下载体积
+  buildProps();
 
   // 队长
   playerMesh = new THREE.Mesh(
-    new THREE.BoxGeometry(0.8, 1.2, 0.8),
+    new THREE.BoxGeometry(0.9, 1.35, 0.9),
     new THREE.MeshStandardMaterial({
       color: 0x4ea1ff,
       roughness: 0.4,
@@ -80,7 +200,7 @@ export function initVisuals(container, events) {
       emissive: 0x0b2a4a,
     })
   );
-  playerMesh.position.set(0, 0.6, 9);
+  playerMesh.position.set(0, 0.675, 9);
   scene.add(playerMesh);
 
   playerShadow = makeBlobShadow(0.7);
@@ -89,7 +209,7 @@ export function initVisuals(container, events) {
 
   // 士兵：用实例化渲染，最多同时画 60 个
   soldierMesh = new THREE.InstancedMesh(
-    new THREE.BoxGeometry(0.32, 0.45, 0.32),
+    new THREE.BoxGeometry(0.4, 0.55, 0.4),
     new THREE.MeshStandardMaterial({ color: 0x6fc2ff, roughness: 0.5 }),
     MAX_SOLDIER_VISUALS
   );
@@ -119,7 +239,7 @@ export function syncScene(state, dt) {
   if (!renderer) return;
 
   // 队长
-  playerMesh.position.set(state.player.x, 0.6, state.player.z);
+  playerMesh.position.set(state.player.x, 0.675, state.player.z);
   playerShadow.position.set(state.player.x, 0.02, state.player.z);
 
   // 士兵队伍
@@ -150,8 +270,8 @@ function updateSoldiers(state) {
 
     dummy.position.set(
       state.player.x + (col - 2.5) * 0.5,
-      0.22,
-      state.player.z + 0.7 + row * 0.5
+      0.275,
+      state.player.z + 0.7 + row * 0.55
     );
     dummy.rotation.set(0, 0, 0);
     dummy.scale.set(1, 1, 1);
@@ -200,7 +320,7 @@ function syncZombies(state) {
       scene.add(mesh);
       zombieMeshes.set(z.id, mesh);
     }
-    mesh.position.set(z.x, 0.45, z.z);
+    mesh.position.set(z.x, 0.575, z.z);
   }
 
   for (const [id, mesh] of zombieMeshes) {
@@ -240,7 +360,7 @@ function syncBullets(state) {
 }
 
 /* ----------------------------------------------------------
- * 相机
+ * 相机：轻微跟随玩家 + 受伤震动
  * ---------------------------------------------------------- */
 function updateCamera(state, dt) {
   camBaseX += (state.player.x * 0.22 - camBaseX) * Math.min(1, dt * 5);
@@ -254,8 +374,526 @@ function updateCamera(state, dt) {
     sy = (Math.random() - 0.5) * shake;
   }
 
-  camera.position.set(camBaseX + sx, 18 + sy, 12);
-  camera.lookAt(camBaseX, 0, -2);
+  camera.position.set(camBaseX + sx, camY + sy, camZ);
+  camera.lookAt(camBaseX, 0, 0);
+}
+
+/* ----------------------------------------------------------
+ * 背景物
+ *
+ * 全部程序化生成：低面数的方块 / 岩石 / 树，一套几十个，不增加下载体积。
+ * 摆放避开玩法区：
+ *   侧边  |x| ≥ 9.5    —— 左区屏障、右区僵尸都在 |x| < 8，摆在外面不挡
+ *   后方  z ≤ -28      —— 僵尸和屏障从 z = -26 出生，摆得更远
+ *   前景  z ≥ 13       —— 只有矮的东西，不然会挡住士兵队列
+ *
+ * 这些道具的作用不是"好看"，是给画面提供高度和遮挡：
+ * 有高度的东西才有受光面和阴影面，眼睛才读得出这是斜视而不是俯视。
+ * ---------------------------------------------------------- */
+function buildProps() {
+  const group = new THREE.Group();
+  const rng = mulberry32(20261101);
+
+  const builder = {
+    city: buildCityProps,
+    jungle: buildJungleProps,
+    desert: buildDesertProps,
+    moon: buildMoonProps,
+    snow: buildSnowProps,
+    lava: buildLavaProps,
+  }[MAP_ID] || buildCityProps;
+
+  builder(group, rng);
+  scene.add(group);
+}
+
+function buildCityProps(g, rng) {
+  const concrete = 0x3c434d;
+  const rust = 0x6b4630;
+
+  // 远景：楼群剪影，挡住地平线
+  for (let i = 0; i < 9; i++) {
+    const w = 5 + rng() * 7;
+    const h = 9 + rng() * 14;
+    const d = 5 + rng() * 5;
+    const b = boxMesh(w, h, d, 0x161b23, { rough: 1 });
+    b.position.set(-38 + i * 9 + rng() * 2, h / 2, -30 - rng() * 3);
+    g.add(b);
+
+    // 零星几扇亮着的窗，冷白或暖黄，只放几个，多了像圣诞树
+    const winCount = 2 + Math.floor(rng() * 3);
+    for (let k = 0; k < winCount; k++) {
+      const win = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.7, 1.0),
+        new THREE.MeshBasicMaterial({
+          color: rng() > 0.5 ? 0xffcc88 : 0x9fc8ff,
+          transparent: true,
+          opacity: 0.55,
+          fog: true,
+        })
+      );
+      win.position.set(
+        b.position.x + (rng() - 0.5) * (w - 1.5),
+        1.5 + rng() * (h - 3),
+        b.position.z + d / 2 + 0.02
+      );
+      g.add(win);
+    }
+  }
+
+  // 侧边：集装箱、卡车车厢，沿着街道排
+  const containers = [
+    [-13.5, -8, 3.2, 2.8, 7.5, 0x2f4a52],
+    [12.5, -14, 3.0, 2.6, 8.0, 0x4a3226],
+    [-12.0, 2, 3.0, 2.6, 6.5, 0x2a3a34],
+    [13.0, 4, 3.4, 3.0, 7.0, 0x3a3540],
+  ];
+  for (const [x, z, w, h, d, c] of containers) {
+    const box = boxMesh(w, h, d, c, { rough: 0.85, metal: 0.25 });
+    box.position.set(x, h / 2, z);
+    box.rotation.y = (rng() - 0.5) * 0.12;
+    g.add(box);
+
+    // 箱顶压条，远看有细节
+    const rim = boxMesh(w + 0.1, 0.14, d + 0.1, 0x1b2026, { rough: 1 });
+    rim.position.set(x, h + 0.07, z);
+    rim.rotation.y = box.rotation.y;
+    g.add(rim);
+  }
+
+  // 混凝土隔离墩
+  for (let i = 0; i < 7; i++) {
+    const side = i % 2 ? 1 : -1;
+    const block = boxMesh(1.0, 0.95, 2.4, concrete, { rough: 1 });
+    block.position.set(side * (10.6 + rng() * 0.9), 0.48, -10 + i * 3.4 + rng());
+    block.rotation.y = (rng() - 0.5) * 0.2;
+    g.add(block);
+  }
+
+  // 两盏路灯：灯头自发光，不真的打光（省性能）
+  for (const lx of [-10.2, 10.8]) {
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.09, 0.13, 7.2, 6),
+      mat(0x1e242c, { rough: 0.8, metal: 0.4 })
+    );
+    pole.position.set(lx, 3.6, lx < 0 ? -4 : 6);
+    g.add(pole);
+
+    const head = new THREE.Mesh(
+      new THREE.BoxGeometry(0.5, 0.16, 1.1),
+      mat(0x1e242c, { rough: 0.8, metal: 0.4 })
+    );
+    head.position.set(lx + (lx < 0 ? 0.5 : -0.5), 7.1, lx < 0 ? -4 : 6);
+    g.add(head);
+
+    const bulb = new THREE.Mesh(
+      new THREE.SphereGeometry(0.34, 10, 10),
+      new THREE.MeshBasicMaterial({ color: 0xffd9a0, fog: true })
+    );
+    bulb.position.set(lx + (lx < 0 ? 0.7 : -0.7), 6.95, lx < 0 ? -4 : 6);
+    g.add(bulb);
+  }
+
+  // 报废汽车：车身 + 车顶，两个盒子就够读出来了
+  const car = new THREE.Group();
+  const body = boxMesh(2.0, 0.85, 4.4, rust, { rough: 0.7, metal: 0.35 });
+  body.position.y = 0.55;
+  car.add(body);
+  const cabin = boxMesh(1.75, 0.75, 2.2, 0x2b2a2a, { rough: 0.5, metal: 0.3 });
+  cabin.position.set(0, 1.35, -0.2);
+  car.add(cabin);
+  car.position.set(-11.4, 0, 8.5);
+  car.rotation.y = 0.28;
+  g.add(car);
+
+  // 前景碎石堆：矮，只压画面下缘
+  for (let i = 0; i < 10; i++) {
+    const r = 0.25 + rng() * 0.5;
+    const rock = rockMesh(rng, r, 0x4a4f57);
+    rock.position.set((rng() - 0.5) * 26, r * 0.5, 13 + rng() * 5);
+    g.add(rock);
+  }
+}
+
+function buildJungleProps(g, rng) {
+  const trunk = 0x3a2e22;
+  const leafA = 0x1f3a24;
+  const leafB = 0x2b4a2c;
+
+  // 后面一整片树墙，挡住地平线
+  for (let i = 0; i < 16; i++) {
+    const h = 7 + rng() * 6;
+    const t = treeMesh(rng, h, trunk, rng() > 0.5 ? leafA : leafB);
+    t.position.set(-40 + i * 5.2 + rng() * 2, 0, -28 - rng() * 5);
+    t.rotation.y = rng() * Math.PI;
+    g.add(t);
+  }
+
+  // 两侧的树，靠近镜头，形成框景
+  for (const side of [-1, 1]) {
+    for (let i = 0; i < 6; i++) {
+      const h = 8 + rng() * 5;
+      const t = treeMesh(rng, h, trunk, rng() > 0.5 ? leafA : leafB);
+      t.position.set(side * (11 + rng() * 6), 0, -16 + i * 5.5 + rng() * 2);
+      t.rotation.y = rng() * Math.PI;
+      g.add(t);
+    }
+  }
+
+  // 灌木：压扁的球
+  for (let i = 0; i < 18; i++) {
+    const r = 0.8 + rng() * 1.1;
+    const bush = new THREE.Mesh(
+      new THREE.IcosahedronGeometry(r, 1),
+      mat(rng() > 0.5 ? leafA : leafB, { flat: true, rough: 1 })
+    );
+    bush.scale.y = 0.55;
+    const x = (rng() - 0.5) * 34;
+    bush.position.set(Math.abs(x) < 9.6 ? Math.sign(x || 1) * (10 + rng() * 4) : x, r * 0.4, -26 + rng() * 40);
+    g.add(bush);
+  }
+
+  // 石块
+  for (let i = 0; i < 12; i++) {
+    const r = 0.4 + rng() * 0.9;
+    const rock = rockMesh(rng, r, 0x4a4f42);
+    const x = (rng() - 0.5) * 32;
+    rock.position.set(Math.abs(x) < 9.6 ? Math.sign(x || 1) * (10 + rng() * 4) : x, r * 0.5, -24 + rng() * 36);
+    g.add(rock);
+  }
+
+  // 前景：倒伏的树干，横在画面下缘
+  const log = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.45, 0.55, 9, 8),
+    mat(0x2f2419, { flat: true, rough: 1 })
+  );
+  log.rotation.z = Math.PI / 2;
+  log.rotation.y = 0.15;
+  log.position.set(-4, 0.5, 15.5);
+  g.add(log);
+}
+
+function buildDesertProps(g, rng) {
+  const sand = 0x9a8360;
+  const rock = 0x7d6a4e;
+  const dry = 0x6b5a40;
+
+  // 远处岩壁，把地平线挡掉
+  for (let i = 0; i < 8; i++) {
+    const w = 7 + rng() * 8;
+    const h = 6 + rng() * 9;
+    const b = boxMesh(w, h, 4 + rng() * 4, 0x8a7250, { rough: 1, flat: true });
+    b.position.set(-42 + i * 12 + rng() * 3, h / 2, -30 - rng() * 4);
+    b.rotation.y = (rng() - 0.5) * 0.3;
+    b.rotation.z = (rng() - 0.5) * 0.06;
+    g.add(b);
+  }
+
+  // 沙丘：压扁的球
+  for (let i = 0; i < 10; i++) {
+    const r = 4 + rng() * 6;
+    const dune = new THREE.Mesh(
+      new THREE.SphereGeometry(r, 12, 8),
+      mat(sand, { rough: 1, flat: true })
+    );
+    dune.scale.set(1.4, 0.22, 1);
+    const x = (rng() - 0.5) * 46;
+    dune.position.set(Math.abs(x) < 12 ? Math.sign(x || 1) * (13 + rng() * 6) : x, -0.2, -26 + rng() * 46);
+    g.add(dune);
+  }
+
+  // 岩石群
+  for (let i = 0; i < 14; i++) {
+    const r = 0.6 + rng() * 1.8;
+    const rk = rockMesh(rng, r, rock);
+    const x = (rng() - 0.5) * 34;
+    rk.position.set(Math.abs(x) < 9.8 ? Math.sign(x || 1) * (10.2 + rng() * 5) : x, r * 0.5, -22 + rng() * 36);
+    g.add(rk);
+  }
+
+  // 枯树：细干 + 两三根歪枝
+  for (let i = 0; i < 5; i++) {
+    const h = 4 + rng() * 3;
+    const t = new THREE.Group();
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.24, h, 5), mat(dry, { flat: true, rough: 1 }));
+    trunk.position.y = h / 2;
+    t.add(trunk);
+    for (let k = 0; k < 3; k++) {
+      const bl = 1.2 + rng() * 1.2;
+      const branch = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.1, bl, 4), mat(dry, { flat: true, rough: 1 }));
+      branch.position.set(0, h * (0.5 + k * 0.15), 0);
+      branch.rotation.z = (rng() > 0.5 ? 1 : -1) * (0.7 + rng() * 0.5);
+      branch.rotation.y = rng() * Math.PI;
+      branch.translateY(bl / 2);
+      t.add(branch);
+    }
+    const side = i % 2 ? 1 : -1;
+    t.position.set(side * (10.5 + rng() * 5), 0, -14 + i * 6 + rng() * 2);
+    g.add(t);
+  }
+
+  // 前景：几块半埋的石头
+  for (let i = 0; i < 8; i++) {
+    const r = 0.5 + rng() * 1.0;
+    const rk = rockMesh(rng, r, rock);
+    rk.position.set((rng() - 0.5) * 28, r * 0.35, 13 + rng() * 6);
+    g.add(rk);
+  }
+}
+
+function buildMoonProps(g, rng) {
+  const rockA = 0x6a6d72;
+  const rockB = 0x4a4d52;
+
+  // 陨石坑：一圈低矮的环
+  for (let i = 0; i < 6; i++) {
+    const r = 4 + rng() * 5;
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(r, r * 0.09, 6, 24),
+      mat(rockB, { flat: true, rough: 1 })
+    );
+    ring.rotation.x = -Math.PI / 2;
+    const x = (rng() - 0.5) * 40;
+    ring.position.set(Math.abs(x) < 14 ? Math.sign(x || 1) * (16 + rng() * 6) : x, 0.25, -24 + rng() * 40);
+    g.add(ring);
+  }
+
+  // 巨石与碎石
+  for (let i = 0; i < 22; i++) {
+    const r = 0.7 + rng() * 3.2;
+    const rk = rockMesh(rng, r, rng() > 0.5 ? rockA : rockB);
+    const x = (rng() - 0.5) * 46;
+    rk.position.set(Math.abs(x) < 10 ? Math.sign(x || 1) * (10.5 + rng() * 6) : x, r * 0.4, -28 + rng() * 50);
+    rk.rotation.y = rng() * Math.PI;
+    g.add(rk);
+  }
+
+  // 远处的地球：贴着地平线升起的大星球，一眼就知道这是月球。
+  // 位置要精确：这个相机下"天空"只占画面顶部一小条（地面尽头之上），
+  // 球心放 y≈7、z 在背景墙之前，看起来就是从地平线探出来半个球。
+  const earth = new THREE.Mesh(
+    new THREE.SphereGeometry(5, 24, 24),
+    new THREE.MeshBasicMaterial({ color: 0x3f78b8, fog: false })
+  );
+  earth.position.set(4, 7, GROUND_Z - GROUND_H / 2 + 3);
+  g.add(earth);
+
+  const glow = new THREE.Mesh(
+    new THREE.SphereGeometry(6.2, 20, 20),
+    new THREE.MeshBasicMaterial({
+      color: 0x6fa8e0,
+      transparent: true,
+      opacity: 0.12,
+      fog: false,
+      depthWrite: false,
+    })
+  );
+  glow.position.copy(earth.position);
+  g.add(glow);
+}
+
+function buildSnowProps(g, rng) {
+  const snow = 0xe6eef6;
+  const ice = 0x9fc4d8;
+  const rockC = 0x5a6068;
+
+  // 远处雪脊
+  for (let i = 0; i < 9; i++) {
+    const w = 8 + rng() * 9;
+    const h = 5 + rng() * 8;
+    const peak = new THREE.Mesh(
+      new THREE.ConeGeometry(w / 2, h, 5),
+      mat(0xd3dde8, { flat: true, rough: 1 })
+    );
+    peak.position.set(-42 + i * 11 + rng() * 3, h / 2 - 0.4, -30 - rng() * 4);
+    peak.rotation.y = rng() * Math.PI;
+    g.add(peak);
+  }
+
+  // 积雪堆
+  for (let i = 0; i < 12; i++) {
+    const r = 2 + rng() * 4;
+    const mound = new THREE.Mesh(new THREE.SphereGeometry(r, 10, 8), mat(snow, { rough: 0.85 }));
+    mound.scale.set(1.3, 0.3, 1);
+    const x = (rng() - 0.5) * 44;
+    mound.position.set(Math.abs(x) < 12 ? Math.sign(x || 1) * (13 + rng() * 6) : x, -0.1, -24 + rng() * 42);
+    g.add(mound);
+  }
+
+  // 枯树
+  for (let i = 0; i < 7; i++) {
+    const h = 5 + rng() * 4;
+    const t = new THREE.Group();
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.3, h, 5), mat(0x3a4048, { flat: true, rough: 1 }));
+    trunk.position.y = h / 2;
+    t.add(trunk);
+    for (let k = 0; k < 4; k++) {
+      const bl = 1.4 + rng() * 1.4;
+      const branch = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.1, bl, 4), mat(0x3a4048, { flat: true, rough: 1 }));
+      branch.position.set(0, h * (0.45 + k * 0.13), 0);
+      branch.rotation.z = (rng() > 0.5 ? 1 : -1) * (0.6 + rng() * 0.6);
+      branch.rotation.y = rng() * Math.PI;
+      branch.translateY(bl / 2);
+      t.add(branch);
+    }
+    const side = i % 2 ? 1 : -1;
+    t.position.set(side * (10.8 + rng() * 5), 0, -16 + i * 5 + rng() * 2);
+    g.add(t);
+  }
+
+  // 冰棱
+  for (let i = 0; i < 8; i++) {
+    const h = 1.2 + rng() * 2.2;
+    const spike = new THREE.Mesh(
+      new THREE.ConeGeometry(0.28 + rng() * 0.2, h, 4),
+      mat(ice, { rough: 0.25, metal: 0.1, flat: true })
+    );
+    const x = (rng() - 0.5) * 30;
+    spike.position.set(Math.abs(x) < 9.6 ? Math.sign(x || 1) * (10.2 + rng() * 4) : x, h / 2, -14 + rng() * 26);
+    g.add(spike);
+  }
+
+  // 前景的岩石
+  for (let i = 0; i < 6; i++) {
+    const r = 0.6 + rng() * 1.2;
+    const rk = rockMesh(rng, r, rockC);
+    rk.position.set((rng() - 0.5) * 26, r * 0.4, 13 + rng() * 5);
+    g.add(rk);
+  }
+}
+
+function buildLavaProps(g, rng) {
+  const char = 0x2a2422;
+  const stone = 0x3a2e28;
+
+  // 远处火山锥
+  for (let i = 0; i < 3; i++) {
+    const w = 16 + rng() * 10;
+    const h = 12 + rng() * 8;
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(w / 2, h, 7), mat(0x241b18, { flat: true, rough: 1 }));
+    cone.position.set(-38 + i * 34 + rng() * 6, h / 2 - 1, -32 - rng() * 4);
+    cone.rotation.y = rng() * Math.PI;
+    g.add(cone);
+
+    // 火山口的红光
+    const glow = new THREE.Mesh(
+      new THREE.SphereGeometry(w * 0.14, 10, 10),
+      new THREE.MeshBasicMaterial({ color: 0xff5a2a, fog: true })
+    );
+    glow.position.set(cone.position.x, h - 1.5, cone.position.z);
+    glow.scale.y = 0.5;
+    g.add(glow);
+  }
+
+  // 焦黑石柱
+  for (let i = 0; i < 14; i++) {
+    const r = 0.5 + rng() * 1.6;
+    const h = 2 + rng() * 6;
+    const spire = rockMesh(rng, r, rng() > 0.5 ? char : stone);
+    spire.scale.y = h / (r * 0.9);
+    const x = (rng() - 0.5) * 42;
+    spire.position.set(Math.abs(x) < 10 ? Math.sign(x || 1) * (10.5 + rng() * 6) : x, 0, -28 + rng() * 46);
+    spire.rotation.y = rng() * Math.PI;
+    g.add(spire);
+  }
+
+  // 地面上的岩浆裂隙：自发光的长条，纯粹为了给画面一点暖色
+  for (let i = 0; i < 9; i++) {
+    const len = 2 + rng() * 5;
+    const crack = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.35 + rng() * 0.3, len),
+      new THREE.MeshBasicMaterial({
+        color: 0xff6420,
+        transparent: true,
+        opacity: 0.75,
+        fog: true,
+        depthWrite: false,
+      })
+    );
+    crack.rotation.x = -Math.PI / 2;
+    crack.rotation.z = (rng() - 0.5) * 1.6;
+    const x = (rng() - 0.5) * 38;
+    crack.position.set(Math.abs(x) < 9.6 ? Math.sign(x || 1) * (10 + rng() * 5) : x, 0.03, -26 + rng() * 44);
+    g.add(crack);
+  }
+
+  // 前景的焦炭块
+  for (let i = 0; i < 7; i++) {
+    const r = 0.5 + rng() * 1.0;
+    const rk = rockMesh(rng, r, char);
+    rk.position.set((rng() - 0.5) * 28, r * 0.4, 13 + rng() * 5);
+    g.add(rk);
+  }
+}
+
+/* ----------------------------------------------------------
+ * 道具用的小工具
+ * ---------------------------------------------------------- */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function mat(color, o = {}) {
+  return new THREE.MeshStandardMaterial({
+    color,
+    roughness: o.rough ?? 0.9,
+    metalness: o.metal ?? 0.04,
+    flatShading: o.flat ?? false,
+    emissive: o.emissive ?? 0x000000,
+    emissiveIntensity: o.ei ?? 1,
+  });
+}
+
+// 每个方块的原点都在底面中心，摆位时直接写 y = 0
+function boxMesh(w, h, d, color, o = {}) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat(color, o));
+  m.position.y = h / 2;
+  return m;
+}
+
+// 随机形变的石头：低面数，flatShading 让棱角更硬
+function rockMesh(rng, r, color) {
+  const geo = new THREE.IcosahedronGeometry(r, 1);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const k = 0.7 + rng() * 0.6;
+    pos.setXYZ(i, pos.getX(i) * k, pos.getY(i) * k * 0.85, pos.getZ(i) * k);
+  }
+  geo.computeVertexNormals();
+
+  const m = new THREE.Mesh(geo, mat(color, { flat: true, rough: 1 }));
+  m.position.y = r * 0.5;
+  return m;
+}
+
+function treeMesh(rng, h, trunkColor, leafColor) {
+  const g = new THREE.Group();
+
+  const trunk = new THREE.Mesh(
+    new THREE.CylinderGeometry(h * 0.04, h * 0.075, h * 0.62, 6),
+    mat(trunkColor, { flat: true, rough: 1 })
+  );
+  trunk.position.y = h * 0.31;
+  g.add(trunk);
+
+  for (let i = 0; i < 3; i++) {
+    const r = h * 0.3 * (1 - i * 0.22);
+    const cone = new THREE.Mesh(
+      new THREE.ConeGeometry(r, h * 0.42, 7),
+      mat(leafColor, { flat: true, rough: 1 })
+    );
+    cone.position.y = h * 0.52 + i * h * 0.2;
+    cone.rotation.y = rng() * Math.PI;
+    g.add(cone);
+  }
+
+  return g;
 }
 
 /* ----------------------------------------------------------
@@ -308,13 +946,20 @@ function updateBarrierAppearance(mesh, bar) {
 function makeZombieMesh(type) {
   const colors = [0x8f5a5a, 0x6b8f5a, 0x5a6f8f];
 
-  return new THREE.Mesh(
-    new THREE.BoxGeometry(0.55, 0.9, 0.55),
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(0.7, 1.15, 0.7),
     new THREE.MeshStandardMaterial({
       color: colors[type % colors.length],
       roughness: 0.85,
     })
   );
+
+  // 脚下的影子跟着僵尸一起动
+  const shadow = makeBlobShadow(0.45);
+  shadow.position.y = -0.55;
+  mesh.add(shadow);
+
+  return mesh;
 }
 
 function makeBlobShadow(radius) {
@@ -414,6 +1059,33 @@ function updateEffects(dt) {
 /* ----------------------------------------------------------
  * 小工具
  * ---------------------------------------------------------- */
+function loadGroundTextures(renderer, mapId) {
+  const loader = new THREE.TextureLoader();
+  const maxAniso = renderer.capabilities.getMaxAnisotropy();
+
+  // 一格贴图铺 GROUND_TILE 个世界单位。铺多大是关键参数：
+  // 太小会糊（纹理颗粒比屏幕像素还细，被平均掉），太大会失真。
+  // 全部贴图统一用 1k，所以六张地图共用同一个尺度。
+  const rx = GROUND_W / GROUND_TILE;
+  const ry = GROUND_H / GROUND_TILE;
+
+  const load = (file, isColor) => {
+    const tex = loader.load(new URL(`../assets/${file}.jpg`, import.meta.url).href);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(rx, ry);
+    tex.anisotropy = maxAniso;
+    if (isColor) tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  };
+
+  return {
+    map: load(`${mapId}-diff`, true),
+    normalMap: load(`${mapId}-nor_gl`, false),
+    roughnessMap: load(`${mapId}-rough`, false),
+  };
+}
+
 function disposeMesh(mesh) {
   mesh.traverse((obj) => {
     if (obj.geometry) obj.geometry.dispose();
@@ -421,6 +1093,15 @@ function disposeMesh(mesh) {
   });
 }
 
+/* ----------------------------------------------------------
+ * 视口变化：重算透视相机的距离
+ *
+ * 约束只有一个——玩家能左右走到 ±8，所以玩家所在平面（z=9）
+ * 必须看见至少 ±9.4。反过来解相机该站在多远：
+ *   斜距 S = halfWidth / tan(水平半角)
+ *   D² - 2·z0·cosθ·D + (z0² - S²) = 0
+ * 解出来的正根就是相机到注视点的距离。
+ * ---------------------------------------------------------- */
 function resize() {
   if (!containerEl || !renderer || !camera) return;
 
@@ -428,13 +1109,24 @@ function resize() {
   const h = containerEl.clientHeight;
   const aspect = w / h;
 
-  const viewH = Math.max(WORLD_HEIGHT, 18 / aspect);
-  const viewW = viewH * aspect;
+  const tilt = (CAM.tilt * Math.PI) / 180;
+  const c = Math.cos(tilt);
+  const s = Math.sin(tilt);
 
-  camera.left = -viewW / 2;
-  camera.right = viewW / 2;
-  camera.top = viewH / 2;
-  camera.bottom = -viewH / 2;
+  const tanV = Math.tan((CAM.fov * Math.PI) / 360);
+  const tanH = tanV * aspect;
+
+  const z0 = 9; // 玩家所在平面
+  const S = CAM.halfWidth / tanH; // 到该平面需要的斜距
+
+  const D = z0 * c + Math.sqrt(Math.max(4, S * S - z0 * z0 * s * s));
+
+  camDist = D;
+  camY = D * s;
+  camZ = D * c;
+
+  camera.aspect = aspect;
+  camera.fov = CAM.fov;
   camera.updateProjectionMatrix();
 
   renderer.setSize(w, h);

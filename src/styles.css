@@ -29,9 +29,21 @@ body {
   touch-action: none;
 }
 
+/* 竖屏舞台：把画面锁在 9:16 里居中显示。
+   游戏是竖屏构图，电脑上全屏打开会变成一条横的，两侧露出大片空地；
+   锁成手机比例后，投影仪和笔记本上看到的都是一块竖屏画面。 */
 #game-container {
   position: fixed;
-  inset: 0;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  height: 100%;
+  aspect-ratio: 9 / 16;
+  max-width: 100vw;
+  overflow: hidden;
+  background: #000;
+  box-shadow: 0 0 80px rgba(0, 0, 0, 0.9);
 }
 
 canvas {
@@ -47,8 +59,11 @@ canvas {
 .hud {
   position: fixed;
   top: 0;
-  left: 0;
-  right: 0;
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
+  /* 跟着竖屏舞台一起收窄，不然宽屏下会横跨整个窗口 */
+  width: min(100vw, calc(100vh * 9 / 16));
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -123,7 +138,12 @@ canvas {
 
 .overlay {
   position: fixed;
-  inset: 0;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
+  width: min(100vw, calc(100vh * 9 / 16));
   display: flex;
   align-items: center;
   justify-content: center;
