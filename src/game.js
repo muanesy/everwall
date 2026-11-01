@@ -29,7 +29,7 @@ const CONFIG = {
     rightZone: [0.6, 7.6],   // 僵尸出现的横向范围
   },
   player: {
-    speed: 18,
+    speed: 14,
     baseFireInterval: 0.5, // 1 个士兵时的射击间隔
     minFireInterval: 0.18, // 射击间隔的下限，防止子弹太多
     bulletSpeed: 28,
@@ -51,9 +51,9 @@ const CONFIG = {
   zombie: {
     baseHp: 20,
     hpPerWave: 8,
-    baseSpeed: 2.2,
+    baseSpeed: 3.2,
     speedPerWave: 0.3,
-    maxSpeed: 7,
+    maxSpeed: 8,
     spawnInterval: 0.35,
     minSpawnInterval: 0.14,
     intervalPerWave: 0.03,
@@ -61,9 +61,9 @@ const CONFIG = {
     passLoss: 5,       // 越过士兵扣 5
     maxAlive: 120,
     touchHalfWidth: 0.8, // 士兵队列的碰撞半宽
-    aggroStartZ: -30,    // 从出生点就开始追人
-    aggroRadius: 50,     // 全场都能感知到士兵，横向再远也能吸过来
-    turnSpeed: 3.5,      // 侧向追击速度
+    aggroStartZ: 5,      // 走到很靠近士兵的位置才开始动
+    aggroRadius: 4,      // 离士兵 4 以内才追
+    turnSpeed: 6,        // 侧向追击速度，保证近身的僵尸能贴上来
     separation: 0.6,     // 僵尸之间的最小间距，防止叠成一坨
   },
   wave: {
