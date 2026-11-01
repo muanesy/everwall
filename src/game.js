@@ -38,8 +38,9 @@ const CONFIG = {
   },
   weapon: {
     maxLines: 8,         // 最多几个枪位
-    jitterBase: 0.01,    // 普通状态下的枪口抖动
-    jitterSpread: 0.04,  // 扩散器解锁后的枪口抖动
+    jitterBase: 0.01,    // 枪口抖动
+    pierceChance: 0.08,  // 穿透器：每命中一只僵尸后继续穿透的概率
+    pierceMax: 3,        // 一颗子弹最多穿透几次
   },
   formation: {
     spacing: 0.42,       // 前排士兵之间的横向间距
@@ -56,21 +57,22 @@ const CONFIG = {
     positiveMax: 5,        // 普通屏障最多 +5
     negativeMin: 10,       // 负数屏障最少扣 10
     negativeBase: 30,      // 初始扣血上限的基础值
-    negativeGrowth: 3,     // 每波上限增加
+    negativeGrowth: 2,     // 每波上限增加，比之前慢
     capMin: 10,            // 打满后的下限
     capBase: 30,           // 打满上限的基础值
-    capGrowth: 4,          // 每波打满上限增加
+    capGrowth: 3,          // 每波打满上限增加，比之前慢
     negativeChanceBase: 0.15,   // 负数屏障的基础概率
     negativeChancePerWave: 0.02, // 每波增加
     negativeChanceMax: 0.35,    // 概率上限
-    negativeLengthEveryWaves: 4, // 每几波变长一次
-    negativeLengthMax: 3,        // 最长占几个格子
+    greyChance: 0.35,           // 负数屏障里有多少比例是灰色的
+    negativeLengthEveryWaves: 4, // 灰色屏障每几波变长一次
+    negativeLengthMax: 3,        // 灰色屏障最长占几个格子
     weaponChance: 0.02,          // 火力增援屏障的出现概率
-    spreaderChance: 0.02,        // 扩散器的出现概率
+    piercerChance: 0.02,         // 穿透器的出现概率
     weaponHitsBase: 30,          // 火力增援需要的基础命中数
     weaponHitsPerWave: 6,        // 每波增加
-    spreaderHitsBase: 20,        // 扩散器需要的基础命中数
-    spreaderHitsPerWave: 4,      // 每波增加
+    piercerHitsBase: 20,         // 穿透器需要的基础命中数
+    piercerHitsPerWave: 4,       // 每波增加
   },
   zombie: {
     baseHp: 20,
@@ -126,7 +128,7 @@ const state = {
   // 武器状态：默认一个枪位，没有扩散
   weapon: {
     lines: 1,
-    spread: false,
+    pierce: false,
     timers: [0], // 每个枪位各自的发射计时，错开节奏
   },
 
@@ -227,7 +229,7 @@ function resetState() {
   state.soldiers = 5;
   state.player.x = 0;
   state.weapon.lines = 1;
-  state.weapon.spread = false;
+  state.weapon.pierce = false;
   state.weapon.timers = [0];
 
   state.bullets.length = 0;
@@ -343,10 +345,7 @@ function updateFiring(dt) {
 
   const front = state.formation;
   const width = Math.max(0, (front.frontCount - 1) * CONFIG.formation.spacing);
-  const jitter =
-    (state.weapon.spread
-      ? CONFIG.weapon.jitterSpread
-      : CONFIG.weapon.jitterBase) * CONFIG.player.bulletSpeed;
+  const jitter = CONFIG.weapon.jitterBase * CONFIG.player.bulletSpeed;
 
   const origins = [];
   const offsets = shooterOffsets(shooters, width);
@@ -368,6 +367,7 @@ function updateFiring(dt) {
       vx,
       vz: -CONFIG.player.bulletSpeed,
       damage: CONFIG.player.bulletDamage,
+      pierces: 0,
     });
 
     origins.push({ x, z: state.player.z });
@@ -404,17 +404,19 @@ function updateBullets(dt) {
         Math.abs(b.x - bar.x) < bar.halfWidth + 0.12 &&
         Math.abs(b.z - bar.z) < 0.7
       ) {
-        if (bar.kind === 'negative') {
-          // 负数屏障：每打一发 +1，打满上限就生效
+        if (bar.kind === 'negative' || bar.kind === 'grey') {
+          // 红色和灰色：每打一发 +1。红色打满给兵，灰色打满只消失
           bar.value += 1;
           emit('barrierHit', { x: bar.x, z: bar.z, value: bar.value });
 
           if (bar.value >= bar.maxValue) {
-            applySoldiers(bar.value);
-            emit('barrierApply', { x: bar.x, z: bar.z, value: bar.value });
+            if (bar.kind === 'negative') {
+              applySoldiers(bar.value);
+              emit('barrierApply', { x: bar.x, z: bar.z, value: bar.value });
+            }
             state.barriers.splice(j, 1);
           }
-        } else if (bar.kind === 'weapon' || bar.kind === 'spreader') {
+        } else if (bar.kind === 'weapon' || bar.kind === 'pierce') {
           // 火力增援 / 扩散器：攒够命中才生效，没攒够就白打
           bar.hits += 1;
           emit('barrierHit', {
@@ -433,8 +435,8 @@ function updateBullets(dt) {
               );
               emit('weaponUpgrade', { lines: state.weapon.lines });
             } else {
-              state.weapon.spread = true;
-              emit('spreaderUnlock', {});
+              state.weapon.pierce = true;
+              emit('pierceUnlock', {});
             }
             state.barriers.splice(j, 1);
           }
@@ -459,14 +461,26 @@ function updateBullets(dt) {
 
       if (Math.abs(b.x - z.x) < 0.72 && Math.abs(b.z - z.z) < 0.7) {
         z.hp -= b.damage;
-        state.bullets.splice(i, 1);
 
         if (z.hp <= 0) {
           state.zombies.splice(j, 1);
           state.score += CONFIG.zombie.types[z.type].score;
           emit('zombieDie', { x: z.x, z: z.z, type: z.type });
         }
-        break;
+
+        // 穿透器：小概率不消耗子弹，继续打后面的僵尸
+        const pierced =
+          state.weapon.pierce &&
+          (b.pierces || 0) < CONFIG.weapon.pierceMax &&
+          Math.random() < CONFIG.weapon.pierceChance;
+
+        if (pierced) {
+          b.pierces = (b.pierces || 0) + 1;
+          emit('bulletPierce', { x: b.x, z: b.z });
+        } else {
+          state.bullets.splice(i, 1);
+          break;
+        }
       }
     }
   }
@@ -493,7 +507,11 @@ function updateBarriers(dt) {
       Math.abs(bar.x - state.player.x) < bar.halfWidth + 0.3
     ) {
       // 火力增援和扩散器错过就不生效，只有正负数屏障会结算
-      if (bar.kind === 'normal' || bar.kind === 'negative') {
+      if (
+        bar.kind === 'normal' ||
+        bar.kind === 'negative' ||
+        bar.kind === 'grey'
+      ) {
         applySoldiers(bar.value);
         emit('barrierApply', { x: bar.x, z: bar.z, value: bar.value });
       }
@@ -526,7 +544,7 @@ function spawnBarrierRow() {
   const valueCap =
     CONFIG.barrier.capBase + (wave - 1) * CONFIG.barrier.capGrowth;
 
-  // 负数屏障越到后期越多、越长
+  // 负数屏障越到后期越多；灰色屏障跟着变长，红色保持一格
   const negativeChance = Math.min(
     CONFIG.barrier.negativeChanceMax,
     CONFIG.barrier.negativeChanceBase +
@@ -545,10 +563,10 @@ function spawnBarrierRow() {
     state.weapon.lines < CONFIG.weapon.maxLines
       ? CONFIG.barrier.weaponChance
       : 0;
-  const spreaderChance = state.weapon.spread
+  const piercerChance = state.weapon.pierce
     ? 0
-    : CONFIG.barrier.spreaderChance;
-  const specialChance = weaponChance + spreaderChance;
+    : CONFIG.barrier.piercerChance;
+  const specialChance = weaponChance + piercerChance;
 
   let i = 0;
   while (i < xs.length) {
@@ -561,15 +579,17 @@ function spawnBarrierRow() {
       state.barriers.push(makeSpecialBarrier('weapon', x, z, wave));
       i += 1;
     } else if (roll < specialChance) {
-      state.barriers.push(makeSpecialBarrier('spreader', x, z, wave));
+      state.barriers.push(makeSpecialBarrier('pierce', x, z, wave));
       i += 1;
     } else if (roll < specialChance + negativeChance) {
-      const len = Math.min(negativeLength, xs.length - i);
+      const grey = Math.random() < CONFIG.barrier.greyChance;
+      // 只有灰色屏障随时间变长，红色保持一格
+      const len = grey ? Math.min(negativeLength, xs.length - i) : 1;
       const centerX = x + (step * (len - 1)) / 2;
 
       state.barriers.push({
         id: state.nextId++,
-        kind: 'negative',
+        kind: grey ? 'grey' : 'negative',
         x: centerX,
         z,
         value: -randInt(CONFIG.barrier.negativeMin, negativeCap),
@@ -605,8 +625,8 @@ function makeSpecialBarrier(kind, x, z, wave) {
     kind === 'weapon'
       ? CONFIG.barrier.weaponHitsBase +
         (wave - 1) * CONFIG.barrier.weaponHitsPerWave
-      : CONFIG.barrier.spreaderHitsBase +
-        (wave - 1) * CONFIG.barrier.spreaderHitsPerWave;
+      : CONFIG.barrier.piercerHitsBase +
+        (wave - 1) * CONFIG.barrier.piercerHitsPerWave;
 
   return {
     id: state.nextId++,

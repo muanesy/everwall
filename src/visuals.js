@@ -508,6 +508,10 @@ export function initVisuals(container, events) {
     playZombieDie();
   });
 
+  events.addEventListener('bulletPierce', (e) => {
+    spawnRing(e.detail.x, e.detail.z, 0xb06bff, 0.16);
+  });
+
   events.addEventListener('armyHurt', (e) => {
     const amount = e.detail?.amount ?? 1;
     shake = 0.3 + amount * 0.12;
@@ -1310,9 +1314,15 @@ function treeMesh(rng, h, trunkColor, leafColor) {
  * 模型
  * ---------------------------------------------------------- */
 function barrierKindColor(bar) {
-  if (bar.kind === 'negative') return { main: 0xff5a5a, emissive: 0x5c0d0d };
+  if (bar.kind === 'negative') {
+    // 打到 0 以上就变绿，表示已经中和
+    return bar.value >= 0
+      ? { main: 0x2fbf71, emissive: 0x0d5c33 }
+      : { main: 0xff5a5a, emissive: 0x5c0d0d };
+  }
+  if (bar.kind === 'grey') return { main: 0x8a9099, emissive: 0x2a2e35 };
   if (bar.kind === 'weapon') return { main: 0x39d0ff, emissive: 0x0b3f52 };
-  if (bar.kind === 'spreader') return { main: 0xb06bff, emissive: 0x3a0d5c };
+  if (bar.kind === 'pierce') return { main: 0xb06bff, emissive: 0x3a0d5c };
   return { main: 0x2fbf71, emissive: 0x0d5c33 };
 }
 
@@ -1320,8 +1330,11 @@ function barrierLabel(bar) {
   if (bar.kind === 'weapon') {
     return { title: '火力增援', sub: `${bar.hits}/${bar.required}` };
   }
-  if (bar.kind === 'spreader') {
-    return { title: '扩散器', sub: `${bar.hits}/${bar.required}` };
+  if (bar.kind === 'pierce') {
+    return { title: '穿透器', sub: `${bar.hits}/${bar.required}` };
+  }
+  if (bar.kind === 'grey') {
+    return { title: String(bar.value), sub: null };
   }
   return {
     title: bar.value > 0 ? `+${bar.value}` : String(bar.value),
