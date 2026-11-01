@@ -205,6 +205,7 @@ const modelLib = {
   loaded: false,
   soldier: null,   // gltf.scene 原型（只作克隆源，不直接进场）
   zombies: [],     // 五种僵尸原型，下标 = game.js 的 z.type，约定见 docs/僵尸类型.md
+  soldiersByEra: {}, // 时代 → 士兵模型原型，换时代时整队换装
 };
 
 // 五种僵尸的外观表（数值归 game.js，这里只管外观）。
@@ -393,6 +394,28 @@ function loadModels() {
         if (!raw[look.src]) return;
         modelLib.zombies[i] = prepareZombieType(raw[look.src], look);
       });
+
+      // 时代换装：同一批模型也拿来当"这个时代的士兵"，
+      // 换时代时士兵整队换模型（一眼就能看出换了个时代）
+      // 注意：skeletonClone 会把 userData 做 JSON 拷贝，AnimationClip 引用会被毁掉，
+      // 所以克隆后必须把 clip 的真引用补回去，否则换装后动画会报 createInterpolant 错误。
+      const soldierProto = (raw, clip) => {
+        if (!raw) return null;
+        const p = skeletonClone(raw);
+        p.userData.clip = clip;
+        p.userData.attackClip = raw.userData.attackClip;
+        return preparePrototype(p, MODEL_TARGET.soldierHeight);
+      };
+
+      modelLib.soldiersByEra = {
+        0: soldierProto(raw.knight, raw.knight?.userData.clip),   // 中世纪·骑士
+        1: soldierProto(raw.blue, raw.blue?.userData.clip),       // 二战·蓝军装
+        2: modelLib.soldier,                                        // 现代·现有军装
+        3: soldierProto(raw.casual, raw.casual?.userData.clip),   // 后现代·便装
+        4: soldierProto(raw.blue, raw.blue?.userData.clip),       // 星际·蓝甲
+        5: modelLib.soldier,                                        // 终幕·沿用军装（配色区分）
+      };
+
       // 新原型的材质要重新锁基准色，再补上当前时代的配色
       zombieMats = [];
       collectZombieMats();
@@ -985,6 +1008,24 @@ function collectZombieMats() {
   return zombieMats;
 }
 
+// 时代换装：换时代时整队士兵换模型。
+// 只换外观，数值一个都不动（数值归甲）。
+function swapSoldierModel(proto) {
+  if (!proto || proto === modelLib.soldier) return;
+
+  for (const vis of soldierVisuals) {
+    scene.remove(vis.root);
+    despawnModel(vis);
+  }
+  soldierVisuals.length = 0;
+  modelLib.soldier = proto;
+
+  // 新原型的材质和旧的不是一套，基准色要重新抓一遍
+  soldierMats = null;
+  captureSoldierMats();
+  applySoldierTier(getTier(lastSoldierCount));
+}
+
 function applyEra(era) {
   if (!era) return;
   currentEra = era;
@@ -994,6 +1035,10 @@ function applyEra(era) {
 
   // 士兵：走档位那条路（里面已经叠了时代乘色）
   applySoldierTier(getTier(lastSoldierCount));
+
+  // 时代换装：士兵整队换模型（模型没加载完之前没有可换的，跳过）
+  const eraProto = modelLib.soldiersByEra ? modelLib.soldiersByEra[era.id] : null;
+  if (eraProto) swapSoldierModel(eraProto);
 
   // 僵尸：基准色已锁定，这里只乘时代这一层
   if (modelLib.zombies.length) {
