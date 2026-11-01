@@ -50,39 +50,34 @@ canvas {
   left: 0;
   right: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  padding: calc(14px + env(safe-area-inset-top)) 18px 14px;
+  padding: calc(14px + env(safe-area-inset-top)) 18px 40px;
   pointer-events: none;
   font-variant-numeric: tabular-nums;
+  background: linear-gradient(180deg, rgba(5, 8, 12, 0.92) 0%, rgba(5, 8, 12, 0.55) 55%, rgba(5, 8, 12, 0) 100%);
 }
 
-.hp {
-  flex: 1;
-  max-width: 220px;
+.army {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
 }
 
-.hp__label {
-  margin-bottom: 4px;
+.army__label {
   font-size: 12px;
   letter-spacing: 0.08em;
   color: var(--muted);
 }
 
-.hp__bar {
-  height: 8px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.12);
-  overflow: hidden;
-}
-
-.hp__fill {
-  height: 100%;
-  width: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #3ddc84, #4ea1ff);
-  transition: width 0.12s linear;
+.army__value {
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1;
+  color: #6dffb0;
+  text-shadow: 0 0 16px rgba(109, 255, 176, 0.55);
 }
 
 .wave {

@@ -3,7 +3,6 @@
  *
  * 职责：生成 HUD、开始页、结束页，并根据 state 更新显示。
  * 这里不碰 3D，也不改游戏数值。
- * 需要加新界面（比如波次提示、暂停页），就在这里加 DOM。
  * ========================================================== */
 
 let els = null;
@@ -19,8 +18,7 @@ export function initUI(state, actionsRef) {
 export function updateUI(state) {
   if (!els) return;
 
-  els.hpText.textContent = Math.max(0, Math.ceil(state.player.hp));
-  els.hpFill.style.width = `${Math.max(0, (state.player.hp / state.player.maxHp) * 100)}%`;
+  els.soldiersText.textContent = state.soldiers;
   els.waveText.textContent = state.wave;
   els.scoreText.textContent = state.score;
 
@@ -40,9 +38,9 @@ function buildDom() {
   const hud = document.createElement('div');
   hud.className = 'hud hidden';
   hud.innerHTML = `
-    <div class="hp">
-      <div class="hp__label">生命 <span data-hp>100</span></div>
-      <div class="hp__bar"><div class="hp__fill"></div></div>
+    <div class="army">
+      <div class="army__label">士兵</div>
+      <div class="army__value" data-soldiers>5</div>
     </div>
     <div class="wave">第 <span data-wave>1</span> 波</div>
     <div class="score" data-score>0</div>
@@ -55,7 +53,11 @@ function buildDom() {
     <div class="card">
       <p class="eyebrow">广告里的游戏</p>
       <h1>向僵尸开炮</h1>
-      <p class="sub">左右移动，自动开火。活到最后一波。</p>
+      <p class="sub">
+        左右移动，自动开火。<br>
+        打中左边压下来的 +1 屏障加兵，<br>
+        挡住右边的僵尸潮。
+      </p>
       <button class="btn" data-start>开始游戏</button>
       <p class="hint">键盘 ← → 或 A / D<br>手机上按住屏幕左右拖动</p>
     </div>
@@ -66,12 +68,12 @@ function buildDom() {
   overScreen.className = 'overlay hidden';
   overScreen.innerHTML = `
     <div class="card">
-      <p class="eyebrow">你被啃了</p>
+      <p class="eyebrow">士兵打光了</p>
       <h2>游戏结束</h2>
       <p class="score-line">
         得分 <strong data-final-score>0</strong> · 第 <strong data-final-wave>1</strong> 波
       </p>
-      <button class="btn btn--ad" data-revive>看广告复活</button>
+      <button class="btn btn--ad" data-revive>看广告复活 +20 兵</button>
       <button class="btn btn--ghost" data-restart>重新开始</button>
     </div>
   `;
@@ -79,8 +81,7 @@ function buildDom() {
 
   return {
     hud,
-    hpText: hud.querySelector('[data-hp]'),
-    hpFill: hud.querySelector('.hp__fill'),
+    soldiersText: hud.querySelector('[data-soldiers]'),
     waveText: hud.querySelector('[data-wave]'),
     scoreText: hud.querySelector('[data-score]'),
     startScreen,
