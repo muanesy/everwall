@@ -24,7 +24,7 @@ const CONFIG = {
     spawnZ: -26,       // 在屏幕上方之外出生
     screenTopZ: -21.5, // 越过这条线才算进入屏幕，+1 屏障才能被打中
     touchZ: 8.2,       // 僵尸碰到士兵的判定线
-    killZ: 8.4,        // 僵尸越过这条线就算突过去，扣更多兵
+    killZ: 8.4,        // 僵尸走到这条线就停住，沿防线滑向士兵，永远不越线
     leftZone: [-7.6, -0.6],  // +1 屏障出现的横向范围
     rightZone: [0.6, 7.6],   // 僵尸出现的横向范围
   },
@@ -60,9 +60,10 @@ const CONFIG = {
     touchLoss: 1,      // 碰到士兵扣 1
     maxAlive: 120,
     touchHalfWidth: 0.8, // 士兵队列的碰撞半宽
-    aggroStartZ: -30,    // 从出生点就开始追人
-    aggroRadius: 50,     // 保证所有僵尸都能吸附到士兵身上
-    turnSpeed: 6,        // 侧向追击速度
+    aggroStartZ: 5,        // 走到很靠近士兵的位置才开始追
+    aggroRadius: 4,        // 只在这个范围内主动拐弯
+    turnSpeed: 6,          // 主动追击时的侧向速度
+    lineSlideSpeed: 18,    // 到线后沿防线滑向士兵的速度，必须快过士兵
     separation: 0.6,     // 僵尸之间的最小间距，防止叠成一坨
   },
   wave: {
@@ -422,13 +423,25 @@ function updateZombies(dt) {
       z.x += Math.sign(dx) * CONFIG.zombie.turnSpeed * dt;
     }
 
+    if (z.z >= CONFIG.world.killZ) {
+      // 到线就停住，不再往前，改为沿着防线滑向士兵
+      // 这样它永远不会越线，最终一定会贴上
+      z.z = CONFIG.world.killZ;
+      z.aggro = true;
+
+      if (Math.abs(dx) > 0.05) {
+        z.x += Math.sign(dx) * CONFIG.zombie.lineSlideSpeed * dt;
+      }
+    } else {
+      z.z += z.speed * dt;
+    }
+
     z.x = clamp(z.x, -CONFIG.world.halfWidth - 1, CONFIG.world.halfWidth + 1);
-    z.z += z.speed * dt;
   }
 
   separateZombies();
 
-  // 结算：碰到士兵扣 1，越过去扣 5
+  // 结算：碰到士兵扣 1
   for (let i = state.zombies.length - 1; i >= 0; i--) {
     const z = state.zombies[i];
 
@@ -441,10 +454,6 @@ function updateZombies(dt) {
       continue;
     }
 
-    // 越过防线只是清理，不再扣兵
-    if (z.z >= CONFIG.world.killZ) {
-      state.zombies.splice(i, 1);
-    }
   }
 }
 
