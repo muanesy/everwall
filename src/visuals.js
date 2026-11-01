@@ -158,12 +158,14 @@ const modelLib = {
 // 五种僵尸的外观表（数值归 game.js，这里只管外观）。
 // tint 是乘色：白 = 原色。材质各自独立克隆，乘色不会互相串。
 // walkSpeed 只影响走路动画节奏——比颜色更能传达"笨重"和"快"。
+// score 只用来决定"死了飘不飘字"和飘多少，必须跟 game.js CONFIG.zombie.types[].score 对齐；
+// 甲改那边分数的话这里跟着改。
 const ZOMBIE_LOOKS = [
-  { src: 'male',   scale: 1.0,  tint: [0.80, 0.90, 0.84], walkSpeed: 1.0, attackSpeed: 1.0 },               // 0 普通 灰绿
-  { src: 'male',   scale: 1.25, tint: [0.88, 0.62, 0.58], walkSpeed: 0.85, attackSpeed: 0.75 },             // 1 大块头 暗红灰（出拳慢而重）
-  { src: 'male',   scale: 0.85, tint: [0.92, 1.00, 0.55], walkSpeed: 1.3, attackSpeed: 1.6 },               // 2 快鬼 黄绿（挠拳飞快）
-  { src: 'female', scale: 1.1,  tint: [1.05, 1.06, 1.12], walkSpeed: 1.0, attackSpeed: 1.15, emissive: 0.08 }, // 3 精英 灰白提亮
-  { src: 'female', scale: 1.0,  tint: [0.70, 0.78, 0.74], walkSpeed: 1.0, attackSpeed: 1.2 },               // 4 女僵尸 原色压暗
+  { src: 'male',   scale: 1.0,  tint: [0.80, 0.90, 0.84], walkSpeed: 1.0, attackSpeed: 1.0, score: 1 },   // 0 普通 灰绿
+  { src: 'male',   scale: 1.25, tint: [0.88, 0.62, 0.58], walkSpeed: 0.85, attackSpeed: 0.75, score: 3 },  // 1 大块头 暗红灰（出拳慢而重）
+  { src: 'male',   scale: 0.85, tint: [0.92, 1.00, 0.55], walkSpeed: 1.3, attackSpeed: 1.6, score: 1 },    // 2 快鬼 黄绿（挠拳飞快）
+  { src: 'female', scale: 1.1,  tint: [1.05, 1.06, 1.12], walkSpeed: 1.0, attackSpeed: 1.15, score: 5, emissive: 0.08 }, // 3 精英 灰白提亮
+  { src: 'female', scale: 1.0,  tint: [0.70, 0.78, 0.74], walkSpeed: 1.0, attackSpeed: 1.2, score: 2 },    // 4 女僵尸 原色压暗
 ];
 const animMixers = new Set(); // 所有活着的骨骼动画，每帧 update
 
@@ -346,15 +348,36 @@ const bulletMeshes = new Map();
 const effects = [];
 
 // 战斗特效升级件（对象在 initVisuals 里创建）：
-// muzzleLight 枪口点光源、粒子池（血雾/魂火共用一套 Points）、HTML 覆盖层（波次横幅/扣兵红屏）
+// muzzleLight 枪口点光源、粒子池（血雾/魂火共用一套 Points）、HTML 覆盖层（波次横幅/扣兵红屏/击杀飘字/升级提示）
 let muzzleLight = null;
 let fxBanner = null;
 let fxHurt = null;
+let fxFloats = null;   // 击杀飘字的容器（绝对定位，位置每帧由相机投影算）
+let fxToast = null;    // 屏障升级之类的小提示条
 const FX_P_MAX = 500;
 const fxPool = Array.from({ length: FX_P_MAX }, () => ({ life: 0, maxLife: 1, vx: 0, vy: 0, vz: 0, g: 0 }));
 let fxGeo = null;
 let fxPos = null;
 let fxCol = null;
+
+// 击杀飘字：只给大块头/精英用，同屏最多 8 条，多了顶掉最老的
+const FLOAT_MAX = 8;
+const FLOAT_LIFE = 0.9;
+const floatFeed = [];
+
+// 地上血迹：僵尸死后留一片，10 秒淡出，场上最多 14 片（多了顶掉最早的，避免叠成一坨）
+const BLOOD_MAX = 14;
+const BLOOD_LIFE = 10;
+const bloodDecals = [];
+let bloodTex = null;
+
+// 开火后坐力：整队沿 z 方向轻微一顿，衰减很快，只是"枪有后坐"的体感，不是真的位移
+let soldierRecoil = 0;
+
+// 升级提示条：同一时刻只显示一条，其余排队
+const toastQueue = [];
+let toastLife = 0;
+const TOAST_LIFE = 1.5;
 
 const dummy = new THREE.Object3D();
 
@@ -471,14 +494,18 @@ export function initVisuals(container, events) {
   for (let i = 0; i < FX_P_MAX; i++) fxPos[i * 3 + 1] = -999; // 藏到地下
   scene.add(fxPoints);
 
-  // HTML 覆盖层：波次横幅 + 扣兵红屏（样式在 styles.css）
+  // HTML 覆盖层：波次横幅 + 扣兵红屏 + 击杀飘字 + 升级提示（样式在 styles.css）
   const fxLayer = document.createElement('div');
   fxLayer.innerHTML = `
     <div class="fx-banner"><div class="fx-banner__title"></div><div class="fx-banner__sub"></div></div>
-    <div class="fx-hurt"></div>`;
+    <div class="fx-hurt"></div>
+    <div class="fx-floats"></div>
+    <div class="fx-toast"></div>`;
   document.body.appendChild(fxLayer);
   fxBanner = fxLayer.querySelector('.fx-banner');
   fxHurt = fxLayer.querySelector('.fx-hurt');
+  fxFloats = fxLayer.querySelector('.fx-floats');
+  fxToast = fxLayer.querySelector('.fx-toast');
 
   window.addEventListener('resize', resize);
   resize();
@@ -499,6 +526,10 @@ export function initVisuals(container, events) {
       muzzleLight.position.set(mid.x, 0.9, mid.z - 0.15);
       muzzleLight.intensity = 22;
     }
+
+    // 后坐力：整队往后一顿，压着上限别让队伍真的跑位
+    soldierRecoil = Math.min(0.05, soldierRecoil + 0.022);
+
     playShoot();
   });
 
@@ -518,10 +549,22 @@ export function initVisuals(container, events) {
   });
 
   events.addEventListener('zombieDie', (e) => {
+    const x = e.detail.x;
+    const z = e.detail.z;
+    const type = e.detail.type ?? 0;
+    const look = ZOMBIE_LOOKS[type] || ZOMBIE_LOOKS[0];
+
     // 血雾 + 几粒绿色魂火 + 原有红环，死亡更有"交代"
-    spawnBurst(e.detail.x, 1.0, e.detail.z, 0x8a2f22, 16, { speed: 2.6, up: 2.4, spread: 0.5, life: 0.6 });
-    spawnBurst(e.detail.x, 0.8, e.detail.z, 0x86c06c, 6, { speed: 1.4, up: 2.0, spread: 0.4, life: 0.7 });
-    spawnRing(e.detail.x, e.detail.z, 0xff6a4a, 0.42);
+    spawnBurst(x, 1.0, z, 0x8a2f22, 16, { speed: 2.6, up: 2.4, spread: 0.5, life: 0.6 });
+    spawnBurst(x, 0.8, z, 0x86c06c, 6, { speed: 1.4, up: 2.0, spread: 0.4, life: 0.7 });
+    spawnRing(x, z, 0xff6a4a, 0.42);
+
+    // 地上留血：越大越肉的死得越有痕迹
+    spawnBlood(x, z, type === 1 ? 1.25 : type === 3 ? 1.1 : 0.9);
+
+    // 大块头和精英才飘分数，普通怪不飘——不然满屏数字看不清
+    if (look.score >= 3) spawnScoreFloat(x, z, look.score, type === 3);
+
     playZombieDie();
   });
 
@@ -553,6 +596,20 @@ export function initVisuals(container, events) {
       fxBanner.classList.add('show');
     }
     playWaveStart();
+  });
+
+  // 屏障攒满的两种升级：给一条短提示，让玩家知道刚才那波子弹换来了什么
+  events.addEventListener('weaponUpgrade', (e) => {
+    const lines = e.detail?.lines;
+    pushToast(lines ? `火力增援 · 前排 ${lines} 排` : '火力增援', 'weapon');
+    spawnBurst(0, 1.1, 6.5, 0x6fc2ff, 12, { speed: 3.0, up: 2.4, spread: 2.2, life: 0.7 });
+    shake = Math.max(shake, 0.16);
+  });
+
+  events.addEventListener('pierceUnlock', () => {
+    pushToast('穿透器已解锁', 'pierce');
+    spawnBurst(0, 1.1, 6.5, 0xb06bff, 12, { speed: 3.0, up: 2.4, spread: 2.2, life: 0.7 });
+    shake = Math.max(shake, 0.16);
   });
 }
 
@@ -588,6 +645,10 @@ export function syncScene(state, dt) {
 
   updateEffects(dt);
   updateParticleFx(dt);
+  updateFloats(dt);
+  updateBlood(dt);
+  updateToast(dt);
+  soldierRecoil = soldierRecoil > 0 ? Math.max(0, soldierRecoil - dt * 0.55) : 0;
   if (muzzleLight) muzzleLight.intensity = Math.max(0, muzzleLight.intensity - dt * 240);
   updateCamera(state, dt);
 
@@ -634,7 +695,7 @@ function updateSoldiers(state) {
 
     for (let i = 0; i < n; i++) {
       const p = soldierSlot(i, state);
-      dummy.position.set(p.x, 0.275, p.z);
+      dummy.position.set(p.x, 0.275, p.z + soldierRecoil);
       dummy.rotation.set(0, 0, 0);
       dummy.scale.set(1, 1, 1);
       dummy.updateMatrix();
@@ -665,7 +726,7 @@ function updateSoldiers(state) {
     if (active) {
       const p = soldierSlot(i, state);
       vis.root.position.x = p.x;
-      vis.root.position.z = p.z;
+      vis.root.position.z = p.z + soldierRecoil;
     }
   }
 }
@@ -791,10 +852,7 @@ function syncBullets(state) {
 
     let mesh = bulletMeshes.get(b.id);
     if (!mesh) {
-      mesh = new THREE.Mesh(
-        new THREE.SphereGeometry(0.13, 8, 8),
-        new THREE.MeshBasicMaterial({ color: 0xffe08a })
-      );
+      mesh = makeBulletMesh();
       scene.add(mesh);
       bulletMeshes.set(b.id, mesh);
     }
@@ -1647,6 +1705,250 @@ function updateEffects(dt) {
       fx.mesh.material.opacity = 1 - t;
     }
   }
+}
+
+/* ----------------------------------------------------------
+ * 击杀飘字：大块头/精英死了飘 +分数
+ *
+ * 位置每帧重新投影到屏幕，所以相机跟随时字会跟着尸体走，不会飘在半空。
+ * 外层的 left/top 用 transform 写，元素本身留在 (0,0)，避免每帧触发布局。
+ * ---------------------------------------------------------- */
+const _projV = new THREE.Vector3();
+
+function spawnScoreFloat(x, z, score, strong) {
+  if (!fxFloats || !score) return;
+  while (floatFeed.length >= FLOAT_MAX) {
+    const old = floatFeed.shift();
+    old.el.remove();
+  }
+  const el = document.createElement('div');
+  el.className = strong ? 'fx-float fx-float--elite' : 'fx-float';
+  el.textContent = `+${score}`;
+  fxFloats.appendChild(el);
+  floatFeed.push({ el, x, z, life: 0 });
+}
+
+function updateFloats(dt) {
+  if (!camera || !floatFeed.length) return;
+  const rect = containerEl
+    ? containerEl.getBoundingClientRect()
+    : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+  if (!rect.width || !rect.height) return;
+
+  camera.updateMatrixWorld();
+
+  for (let i = floatFeed.length - 1; i >= 0; i--) {
+    const f = floatFeed[i];
+    f.life += dt;
+    const t = f.life / FLOAT_LIFE;
+
+    if (t >= 1) {
+      f.el.remove();
+      floatFeed.splice(i, 1);
+      continue;
+    }
+
+    _projV.set(f.x, 1.3 + t * 1.05, f.z);
+    _projV.project(camera);
+
+    const sx = rect.left + (_projV.x * 0.5 + 0.5) * rect.width;
+    const sy = rect.top + (-_projV.y * 0.5 + 0.5) * rect.height;
+    const scale = t < 0.16 ? 0.65 + (t / 0.16) * 0.5 : 1.15 - (t - 0.16) * 0.12;
+
+    f.el.style.transform =
+      `translate(-50%, -50%) translate(${sx.toFixed(1)}px, ${sy.toFixed(1)}px) scale(${scale.toFixed(3)})`;
+    f.el.style.opacity = t < 0.62 ? '1' : (1 - (t - 0.62) / 0.38).toFixed(3);
+  }
+}
+
+/* ----------------------------------------------------------
+ * 地上血迹：贴地一层，10 秒淡出，最多 14 片
+ *
+ * 贴图只生成一次，14 片共用；材质各自独立（要单独淡出）。
+ * polygonOffset + renderOrder 把血迹压在贴地网格上面，避免 z-fighting 闪纹。
+ * ---------------------------------------------------------- */
+function ensureBloodTexture() {
+  if (bloodTex) return bloodTex;
+
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+
+  const blob = (cx, cy, r, a) => {
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    g.addColorStop(0, `rgba(98,17,13,${a})`);
+    g.addColorStop(0.6, `rgba(74,12,10,${a * 0.85})`);
+    g.addColorStop(1, 'rgba(48,8,6,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+  };
+
+  blob(size / 2, size / 2, size * 0.4, 0.95);
+  // 四周溅出几滴，形状不规则才像真的
+  for (let i = 0; i < 8; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const d = size * (0.13 + Math.random() * 0.26);
+    blob(
+      size / 2 + Math.cos(a) * d,
+      size / 2 + Math.sin(a) * d,
+      size * (0.06 + Math.random() * 0.12),
+      0.6 + Math.random() * 0.25
+    );
+  }
+
+  bloodTex = new THREE.CanvasTexture(canvas);
+  bloodTex.colorSpace = THREE.SRGBColorSpace;
+  return bloodTex;
+}
+
+function spawnBlood(x, z, scale = 1) {
+  if (!scene) return;
+
+  const size = (1.1 + Math.random() * 0.7) * scale;
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(size, size),
+    new THREE.MeshBasicMaterial({
+      map: ensureBloodTexture(),
+      transparent: true,
+      opacity: 0.7,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -4,
+      polygonOffsetUnits: -4,
+    })
+  );
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.rotation.z = Math.random() * Math.PI * 2;
+  mesh.position.set(
+    x + (Math.random() - 0.5) * 0.6,
+    0.02,
+    z + (Math.random() - 0.5) * 0.6
+  );
+  mesh.renderOrder = 1;
+  scene.add(mesh);
+  bloodDecals.push({ mesh, life: 0 });
+
+  // 超量就顶掉最早的一片（贴图是共享的，别 dispose）
+  while (bloodDecals.length > BLOOD_MAX) {
+    const old = bloodDecals.shift();
+    scene.remove(old.mesh);
+    old.mesh.geometry.dispose();
+    old.mesh.material.dispose();
+  }
+}
+
+function updateBlood(dt) {
+  if (!bloodDecals.length) return;
+  const fadeFrom = BLOOD_LIFE - 3;
+
+  for (let i = bloodDecals.length - 1; i >= 0; i--) {
+    const b = bloodDecals[i];
+    b.life += dt;
+
+    if (b.life >= BLOOD_LIFE) {
+      scene.remove(b.mesh);
+      b.mesh.geometry.dispose();
+      b.mesh.material.dispose();
+      bloodDecals.splice(i, 1);
+      continue;
+    }
+
+    if (b.life > fadeFrom) {
+      b.mesh.material.opacity = 0.7 * (1 - (b.life - fadeFrom) / 3);
+    }
+  }
+}
+
+/* ----------------------------------------------------------
+ * 升级提示条：屏幕中下部一行小字，同一时刻只显示一条
+ * ---------------------------------------------------------- */
+function pushToast(text, kind) {
+  toastQueue.push({ text, kind: kind || '' });
+}
+
+function updateToast(dt) {
+  if (!fxToast) return;
+
+  if (toastLife > 0) {
+    toastLife -= dt;
+    if (toastLife <= 0) fxToast.classList.remove('show');
+    return;
+  }
+  if (!toastQueue.length) return;
+
+  const item = toastQueue.shift();
+  fxToast.className = 'fx-toast' + (item.kind ? ` fx-toast--${item.kind}` : '');
+  fxToast.textContent = item.text;
+  void fxToast.offsetWidth; // 强制重排，让动画能连续重触发
+  fxToast.classList.add('show');
+  toastLife = TOAST_LIFE;
+}
+
+/* ----------------------------------------------------------
+ * 曳光弹：拉长的弹头 + 一条往身后拖的发光带
+ *
+ * 子弹都朝 -z 飞，所以尾迹固定挂在 +z 侧，不用每帧算朝向。
+ * ---------------------------------------------------------- */
+let trailTex = null;
+
+function ensureTrailTexture() {
+  if (trailTex) return trailTex;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 32;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+
+  // 纵向：头端最亮（v=1），尾端透明
+  const along = ctx.createLinearGradient(0, 128, 0, 0);
+  along.addColorStop(0, 'rgba(255,255,255,0)');
+  along.addColorStop(0.5, 'rgba(255,236,176,0.5)');
+  along.addColorStop(1, 'rgba(255,255,255,1)');
+  ctx.fillStyle = along;
+  ctx.fillRect(0, 0, 32, 128);
+
+  // 横向收窄，光带才有芯
+  const across = ctx.createLinearGradient(0, 0, 32, 0);
+  across.addColorStop(0, 'rgba(0,0,0,0)');
+  across.addColorStop(0.5, 'rgba(0,0,0,1)');
+  across.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.globalCompositeOperation = 'destination-in';
+  ctx.fillStyle = across;
+  ctx.fillRect(0, 0, 32, 128);
+
+  trailTex = new THREE.CanvasTexture(canvas);
+  trailTex.colorSpace = THREE.SRGBColorSpace;
+  return trailTex;
+}
+
+function makeBulletMesh() {
+  const group = new THREE.Group();
+
+  const core = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.055, 0.3, 3, 8),
+    new THREE.MeshBasicMaterial({ color: 0xfff2c0 })
+  );
+  core.rotation.x = Math.PI / 2; // 胶囊默认沿 y，转成沿 z 飞
+  group.add(core);
+
+  const trail = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.22, 0.95),
+    new THREE.MeshBasicMaterial({
+      map: ensureTrailTexture(),
+      transparent: true,
+      opacity: 0.55,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    })
+  );
+  trail.rotation.x = -Math.PI / 2;
+  trail.position.set(0, -0.01, 0.5);
+  group.add(trail);
+
+  return group;
 }
 
 /* ----------------------------------------------------------
