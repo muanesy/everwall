@@ -1299,16 +1299,23 @@ function barrierKindColor(bar) {
   return { main: 0x2fbf71, emissive: 0x0d5c33 };
 }
 
-function barrierLabelText(bar) {
-  if (bar.kind === 'weapon' || bar.kind === 'spreader') {
-    return `${bar.hits}/${bar.required}`;
+function barrierLabel(bar) {
+  if (bar.kind === 'weapon') {
+    return { title: '武器强化', sub: `${bar.hits}/${bar.required}` };
   }
-  return bar.value > 0 ? `+${bar.value}` : String(bar.value);
+  if (bar.kind === 'spreader') {
+    return { title: '扩散器', sub: `${bar.hits}/${bar.required}` };
+  }
+  return {
+    title: bar.value > 0 ? `+${bar.value}` : String(bar.value),
+    sub: null,
+  };
 }
 
 function makeBarrierMesh(bar) {
   const group = new THREE.Group();
   const color = barrierKindColor(bar);
+  const labelInfo = barrierLabel(bar);
 
   const barMat = new THREE.MeshStandardMaterial({
     color: color.main,
@@ -1322,23 +1329,29 @@ function makeBarrierMesh(bar) {
   barMesh.scale.x = bar.length || 1;
   group.add(barMesh);
 
-  // 浮在上面的数值标签，Sprite 永远朝向相机
+  // 浮在上面的标签，Sprite 永远朝向相机
   const label = new THREE.Sprite(
     new THREE.SpriteMaterial({
-      map: getLabelTexture(barrierLabelText(bar), color.main),
+      map: getLabelTexture(labelInfo.title, color.main, labelInfo.sub),
       transparent: true,
       depthWrite: false,
     })
   );
-  label.scale.set(1.8, 0.9, 1);
-  label.position.y = 1.0;
+
+  if (labelInfo.sub) {
+    label.scale.set(2.2, 1.45, 1);
+    label.position.y = 1.25;
+  } else {
+    label.scale.set(1.8, 0.9, 1);
+    label.position.y = 1.0;
+  }
   group.add(label);
 
   group.userData = {
     barMat,
     barMesh,
     label,
-    labelKey: `${barrierLabelText(bar)}|${color.main}`,
+    labelKey: `${labelInfo.title}|${labelInfo.sub || ''}|${color.main}`,
   };
   return group;
 }
@@ -1351,10 +1364,16 @@ function updateBarrierAppearance(mesh, bar) {
   barMat.emissive.setHex(color.emissive);
   barMesh.scale.x = bar.length || 1;
 
-  const key = `${barrierLabelText(bar)}|${color.main}`;
+  const labelInfo = barrierLabel(bar);
+  const key = `${labelInfo.title}|${labelInfo.sub || ''}|${color.main}`;
+
   if (mesh.userData.labelKey !== key) {
     mesh.userData.labelKey = key;
-    label.material.map = getLabelTexture(barrierLabelText(bar), color.main);
+    label.material.map = getLabelTexture(
+      labelInfo.title,
+      color.main,
+      labelInfo.sub
+    );
     label.material.needsUpdate = true;
   }
 }
@@ -1399,22 +1418,31 @@ function makeBlobShadow(radius) {
 
 const labelTextures = new Map();
 
-function getLabelTexture(text, color) {
-  const key = `${text}|${color}`;
+function getLabelTexture(title, color, sub) {
+  const key = `${title}|${sub || ''}|${color}`;
   const cached = labelTextures.get(key);
   if (cached) return cached;
 
   const canvas = document.createElement('canvas');
   canvas.width = 192;
-  canvas.height = 96;
+  canvas.height = sub ? 128 : 96;
 
   const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, 192, 96);
-  ctx.font = 'bold 54px "Microsoft YaHei", sans-serif';
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = `#${color.toString(16).padStart(6, '0')}`;
-  ctx.fillText(text, 96, 50);
+
+  if (sub) {
+    // 特殊屏障两行：上面写类型，下面写进度
+    ctx.font = 'bold 38px "Microsoft YaHei", sans-serif';
+    ctx.fillText(title, 96, 34);
+    ctx.font = 'bold 48px "Microsoft YaHei", sans-serif';
+    ctx.fillText(sub, 96, 92);
+  } else {
+    ctx.font = 'bold 54px "Microsoft YaHei", sans-serif';
+    ctx.fillText(title, 96, 50);
+  }
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
