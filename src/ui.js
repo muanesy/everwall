@@ -8,6 +8,17 @@
 let els = null;
 let actions = null;
 
+const MAP_LIST = [
+  { id: 'city', name: '废墟街道' },
+  { id: 'jungle', name: '热带雨林' },
+  { id: 'desert', name: '沙漠' },
+  { id: 'moon', name: '月球' },
+  { id: 'snow', name: '雪地' },
+  { id: 'lava', name: '熔岩' },
+];
+
+const currentMap = new URLSearchParams(window.location.search).get('map') || 'city';
+
 export function initUI(state, actionsRef) {
   actions = actionsRef;
   els = buildDom();
@@ -66,6 +77,16 @@ function buildDom() {
         打中左边压下来的 +1 屏障加兵，<br>
         挡住右边的僵尸潮。
       </p>
+      <div class="map-picker">
+        <p class="map-picker__label">地形</p>
+        <div class="map-picker__grid">
+          ${MAP_LIST.map((m) => `
+            <button class="map-chip${m.id === currentMap ? ' is-active' : ''}" data-map="${m.id}">
+              ${m.name}
+            </button>
+          `).join('')}
+        </div>
+      </div>
       <button class="btn" data-start>开始游戏</button>
       <p class="hint">键盘 ← → 或 A / D<br>手机上按住屏幕左右拖动</p>
     </div>
@@ -102,6 +123,13 @@ function buildDom() {
 
 function bindEvents() {
   els.startScreen.querySelector('[data-start]').addEventListener('click', () => actions.start());
+
+  els.startScreen.querySelectorAll('[data-map]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      window.location.search = `?map=${btn.dataset.map}`;
+    });
+  });
+
   els.overScreen.querySelector('[data-revive]').addEventListener('click', () => actions.revive());
   els.overScreen.querySelector('[data-restart]').addEventListener('click', () => actions.restart());
 }
