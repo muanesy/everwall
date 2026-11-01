@@ -875,17 +875,27 @@ function applySoldierTier(tier) {
 function updateSoldiers(state) {
   const n = Math.min(state.soldiers, MAX_SOLDIER_VISUALS);
 
-  // 档位变化：改外观 + 弹一条晋升提示（开局那次不弹）
+  // 档位变化：改外观 + 弹一条提示（开局那次不弹）
   const ti = getTierIndex(state.soldiers);
+  const prevTierIndex = soldierTierIndex;
   let tier = TIERS[ti];
   if (ti !== soldierTierIndex) {
     soldierTierIndex = ti;
     tier = getTier(state.soldiers);
     applySoldierTier(tier);
     if (tierAnnounced) {
-      pushToast(`晋升 · ${tier.name}`, 'tier');
-      spawnRing(state.player.x, state.player.z, tier.accent, 0.9);
-      shake = Math.max(shake, 0.14);
+      const demoted = ti < prevTierIndex;
+      pushToast(
+        `${demoted ? '降级' : '晋升'} · ${tier.name}`,
+        demoted ? 'tier-down' : 'tier'
+      );
+      spawnRing(
+        state.player.x,
+        state.player.z,
+        demoted ? 0xff6a4a : tier.accent,
+        0.9
+      );
+      shake = Math.max(shake, demoted ? 0.2 : 0.14);
     }
     tierAnnounced = true;
   }

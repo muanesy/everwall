@@ -451,12 +451,19 @@ canvas {
   100% { opacity: 0; transform: translate(-50%, -62%) scale(0.98); }
 }
 
-/* ---------- 晋升提示（兵种阶级）与夜幕提示 ---------- */
+/* ---------- 兵种变化提示与夜幕提示 ---------- */
 
 .fx-toast--tier {
   color: #fff1c9;
   border-color: rgba(255, 203, 107, 0.75);
   box-shadow: 0 0 22px rgba(255, 190, 80, 0.5);
+  font-weight: 800;
+}
+
+.fx-toast--tier-down {
+  color: #ffd9d1;
+  border-color: rgba(255, 106, 74, 0.75);
+  box-shadow: 0 0 22px rgba(255, 80, 50, 0.5);
   font-weight: 800;
 }
 
