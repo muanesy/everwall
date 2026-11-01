@@ -284,3 +284,39 @@ canvas {
   line-height: 1.7;
   color: rgba(143, 163, 184, 0.7);
 }
+
+/* ---------- 静音开关 ---------- */
+
+/* 贴在竖屏舞台的右下角，不挡 HUD，也不挡底部的操作提示 */
+.sound-toggle {
+  position: fixed;
+  bottom: calc(18px + env(safe-area-inset-bottom));
+  right: calc(50% - min(50vw, 100vh * 9 / 32) + 16px);
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--fg);
+  background: rgba(12, 18, 26, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 50%;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  transition: background 0.18s ease, transform 0.12s ease, opacity 0.18s ease;
+}
+
+.sound-toggle:hover {
+  background: rgba(24, 34, 46, 0.8);
+}
+
+.sound-toggle:active {
+  transform: scale(0.94);
+}
+
+/* 静音时压暗一点，一眼能看出当前是关着的 */
+.sound-toggle.is-muted {
+  opacity: 0.5;
+}
