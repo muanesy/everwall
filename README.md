@@ -22,6 +22,21 @@
 
 注意：直接双击 `index.html` 打不开，一定要通过本地服务器。3D 库需要通过服务器加载，这是浏览器的安全限制。
 
+## 地图预览
+
+默认是废墟街道。在地址后面加参数切换：
+
+```
+http://localhost:8765/?map=city
+http://localhost:8765/?map=jungle
+http://localhost:8765/?map=desert
+http://localhost:8765/?map=moon
+http://localhost:8765/?map=snow
+http://localhost:8765/?map=lava
+```
+
+每张图的外观配置在 `src/visuals.js` 顶部的 `MAPS` 里，包括贴图、地面颜色、雾、灯光和背景物。里面的“机制建议”只是备注，真正的机制要写在 `game.js` 里。
+
 ## 玩法
 
 - 我方士兵在屏幕下方，左右移动，自动开火，一次打出一束密集的子弹
