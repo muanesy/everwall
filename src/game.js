@@ -11,7 +11,7 @@
  * 这里不做任何画面渲染。想让特效出现，就 emit 一个事件。
  * ========================================================== */
 
-import { initVisuals, syncScene } from './visuals.js';
+import { initVisuals, syncScene, hitBarrel } from './visuals.js';
 import { initUI, updateUI } from './ui.js';
 
 /* ----------------------------------------------------------
@@ -31,10 +31,15 @@ const CONFIG = {
   player: {
     speed: 14,
     baseFireInterval: 0.5, // 1 个士兵时的射击间隔
-    minFireInterval: 0.18, // 射击间隔的下限，防止子弹太多
     bulletSpeed: 28,
     bulletDamage: 10,
     maxVolley: 5,          // 总火力上限，越大总射速越高
+    // 兵种阶级：门槛和 visuals-tiers.js 的 5/20/50 保持一致
+    tiers: [
+      { min: 0, name: '保安', damage: 1.0, fireInterval: 0.18 },
+      { min: 20, name: '正规军', damage: 1.15, fireInterval: 0.17 },
+      { min: 50, name: '特种兵', damage: 1.35, fireInterval: 0.16 },
+    ],
   },
   weapon: {
     maxLines: 8,         // 最多几个枪位
@@ -46,6 +51,10 @@ const CONFIG = {
     spacing: 0.42,       // 前排士兵之间的横向间距
     rowGap: 0.32,        // 排与排之间的纵向间距
     maxSoldiers: 120,    // 最多显示多少个士兵
+  },
+  barrel: {
+    damageBase: 20,      // 炸药桶爆炸伤害的基础值
+    damagePerWave: 4,    // 每波增加的伤害
   },
   barrier: {
     speed: 6.5,            // 压下来的速度
@@ -79,6 +88,7 @@ const CONFIG = {
     hpPerWave: 8,
     baseSpeed: 3.2,
     speedPerWave: 0.25,
+    nightSpeedMul: 1.15, // 夜晚僵尸移速加成
     maxSpeed: 7.5,
     speedCap: 9,       // 快鬼加速后也不会超过这个速度
     spawnInterval: 0.35,
@@ -162,6 +172,21 @@ const input = {
 const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
 const randInt = (min, max) => min + Math.floor(Math.random() * (max - min + 1));
 
+// 兵种阶级：按士兵总数取当前档位
+function getSoldierTier(soldiers) {
+  const tiers = CONFIG.player.tiers;
+  let current = tiers[0];
+  for (const t of tiers) {
+    if (soldiers >= t.min) current = t;
+  }
+  return current;
+}
+
+// 昼夜：每 3 波翻一次，和 visuals-daynight.js 的 nightForWave 一致
+function isNight(wave) {
+  return Math.floor((wave - 1) / 3) % 2 === 1;
+}
+
 // 士兵阵型的接触半宽：人越多站得越开，僵尸不需要滑到中心才算贴上
 function formationHalfWidth() {
   return (
@@ -184,6 +209,33 @@ initUI(state, {
   start: startGame,
   restart: startGame,
   revive: revive,
+});
+
+// 炸药桶爆炸：乙负责画面，这里按半径结算僵尸伤害
+events.addEventListener('barrelExploded', (e) => {
+  const detail = e.detail || {};
+  const { x, z } = detail;
+  if (!Number.isFinite(x) || !Number.isFinite(z)) return;
+
+  const radius = Number.isFinite(detail.radius) ? detail.radius : 3.2;
+  const damage =
+    CONFIG.barrel.damageBase +
+    (state.wave - 1) * CONFIG.barrel.damagePerWave;
+  const r2 = radius * radius;
+
+  for (let i = state.zombies.length - 1; i >= 0; i--) {
+    const zb = state.zombies[i];
+    const dx = zb.x - x;
+    const dz = zb.z - z;
+    if (dx * dx + dz * dz > r2) continue;
+
+    zb.hp -= damage;
+    if (zb.hp <= 0) {
+      state.zombies.splice(i, 1);
+      state.score += CONFIG.zombie.types[zb.type]?.score || 1;
+      emit('zombieDie', { x: zb.x, z: zb.z, type: zb.type });
+    }
+  }
 });
 
 /* ----------------------------------------------------------
@@ -330,8 +382,9 @@ function updateFiring(dt) {
     CONFIG.player.maxVolley,
     1 + Math.floor(state.soldiers / 10)
   );
+  const tier = getSoldierTier(state.soldiers);
   const baseInterval = Math.max(
-    CONFIG.player.minFireInterval,
+    tier.fireInterval,
     CONFIG.player.baseFireInterval / Math.max(1, state.soldiers)
   );
   const totalRate = baseCount / baseInterval; // 每秒多少发
@@ -366,7 +419,7 @@ function updateFiring(dt) {
       z: state.player.z - 0.1,
       vx,
       vz: -CONFIG.player.bulletSpeed,
-      damage: CONFIG.player.bulletDamage,
+      damage: CONFIG.player.bulletDamage * tier.damage,
       pierces: 0,
     });
 
@@ -388,6 +441,12 @@ function updateBullets(dt) {
     b.z += b.vz * dt;
 
     if (b.z < CONFIG.world.spawnZ - 1 || Math.abs(b.x) > 14) {
+      state.bullets.splice(i, 1);
+      continue;
+    }
+
+    // 打中炸药桶：点燃引信，子弹消失，爆炸伤害由 barrelExploded 结算
+    if (hitBarrel(b.x, b.z, 0.45)) {
       state.bullets.splice(i, 1);
       continue;
     }
@@ -771,13 +830,17 @@ function spawnZombie() {
     CONFIG.zombie.baseHp + (state.wave - 1) * CONFIG.zombie.hpPerWave;
   const baseSpeed =
     CONFIG.zombie.baseSpeed + (state.wave - 1) * CONFIG.zombie.speedPerWave;
+  const nightMul = isNight(state.wave) ? CONFIG.zombie.nightSpeedMul : 1;
 
   state.zombies.push({
     id: state.nextId++,
     x: minX + Math.random() * (maxX - minX),
     z: CONFIG.world.spawnZ - Math.random() * 4,
     hp: baseHp * type.hp,
-    speed: Math.min(CONFIG.zombie.speedCap, baseSpeed * type.speed),
+    speed: Math.min(
+      CONFIG.zombie.speedCap,
+      baseSpeed * type.speed * nightMul
+    ),
     touchLoss: type.touchLoss,
     type: type.id,
     aggro: false,
