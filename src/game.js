@@ -60,11 +60,13 @@ const CONFIG = {
     intervalPerWave: 0.03,
     touchLoss: 1,      // 碰到士兵扣 1
     maxAlive: 120,
-    touchHalfWidth: 0.8, // 士兵队列的碰撞半宽
-    aggroStartZ: 2,        // 比之前更早开始拐弯
+    aggroStartZ: 1,        // 比原来多一点点距离就开始拐弯
     aggroRadius: 6,        // 主动拐弯的范围
     turnSpeed: 3.8,        // 主动追击时的侧向速度，放慢一些
     lineSlideSpeed: 15,    // 到线后沿防线滑向士兵的速度，必须快过士兵
+    touchBase: 0.9,        // 士兵阵型的基础接触半宽
+    touchPerSoldier: 0.04, // 每多一个兵，接触范围加多少
+    touchMaxBonus: 0.6,    // 接触范围最多额外加多少
     separation: 0.6,     // 僵尸之间的最小间距，防止叠成一坨
   },
   wave: {
@@ -112,6 +114,17 @@ const input = {
 
 const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
 const randInt = (min, max) => min + Math.floor(Math.random() * (max - min + 1));
+
+// 士兵阵型的接触半宽：人越多站得越开，僵尸不需要滑到中心才算贴上
+function formationHalfWidth() {
+  return (
+    CONFIG.zombie.touchBase +
+    Math.min(
+      CONFIG.zombie.touchMaxBonus,
+      state.soldiers * CONFIG.zombie.touchPerSoldier
+    )
+  );
+}
 const emit = (name, detail = {}) =>
   events.dispatchEvent(new CustomEvent(name, { detail }));
 
@@ -448,7 +461,7 @@ function updateZombies(dt) {
 
     if (
       z.z >= CONFIG.world.touchZ &&
-      Math.abs(z.x - state.player.x) < CONFIG.zombie.touchHalfWidth
+      Math.abs(z.x - state.player.x) < formationHalfWidth()
     ) {
       state.zombies.splice(i, 1);
       damageArmy(CONFIG.zombie.touchLoss, 'touch');

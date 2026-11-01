@@ -446,7 +446,7 @@ export function syncScene(state, dt) {
   syncBarriers(state);
 
   // 僵尸
-  syncZombies(state);
+  syncZombies(state, dt);
 
   // 子弹
   syncBullets(state);
@@ -542,7 +542,7 @@ function syncBarriers(state) {
   }
 }
 
-function syncZombies(state) {
+function syncZombies(state, dt) {
   const alive = new Set();
 
   for (const z of state.zombies) {
@@ -574,11 +574,28 @@ function syncZombies(state) {
       zombieMeshes.set(z.id, entry);
     }
 
+    // 到线后沿防线滑行的最后一段：身体朝移动方向前倾，脚下扬一点灰
+    // 配合变短的滑行距离，读起来是"扑过去"，不是"被吸走"
+    const sliding = z.z > 7.6;
+    const dir = Math.sign(state.player.x - z.x) || 0;
+    const targetTilt = sliding ? dir * 0.22 : 0;
+
     if (entry.isModel) {
-      entry.vis.root.position.x = z.x;
-      entry.vis.root.position.z = z.z;
+      const root = entry.vis.root;
+      root.position.x = z.x;
+      root.position.z = z.z;
+      root.rotation.z += (targetTilt - root.rotation.z) * Math.min(1, dt * 14);
+
+      if (sliding) {
+        entry.dustTimer = (entry.dustTimer || 0) - dt;
+        if (entry.dustTimer <= 0 && effects.length < 60) {
+          entry.dustTimer = 0.18;
+          spawnDust(z.x, z.z);
+        }
+      }
     } else {
       entry.mesh.position.set(z.x, 0.575, z.z);
+      entry.mesh.rotation.z += (targetTilt - entry.mesh.rotation.z) * Math.min(1, dt * 14);
     }
   }
 
@@ -1275,6 +1292,22 @@ function spawnMuzzleFlash(x, z) {
   effects.push({ mesh, life: 0, maxLife: 0.09, type: 'flash' });
 }
 
+function spawnDust(x, z) {
+  const mesh = new THREE.Mesh(
+    new THREE.CircleGeometry(0.22, 10),
+    new THREE.MeshBasicMaterial({
+      color: 0x9aa4b2,
+      transparent: true,
+      opacity: 0.32,
+      depthWrite: false,
+    })
+  );
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.position.set(x, 0.04, z);
+  scene.add(mesh);
+  effects.push({ mesh, life: 0, maxLife: 0.35, type: 'dust' });
+}
+
 function spawnRing(x, z, color, maxLife) {
   const mesh = new THREE.Mesh(
     new THREE.RingGeometry(0.18, 0.32, 20),
@@ -1310,6 +1343,9 @@ function updateEffects(dt) {
       const s = 1 + t * 3;
       fx.mesh.scale.set(s, s, s);
       fx.mesh.material.opacity = (1 - t) * 0.9;
+    } else if (fx.type === 'dust') {
+      fx.mesh.scale.setScalar(0.7 + t * 0.8);
+      fx.mesh.material.opacity = (1 - t) * 0.32;
     } else {
       fx.mesh.scale.setScalar(1 + t * 0.6);
       fx.mesh.material.opacity = 1 - t;
