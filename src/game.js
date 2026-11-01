@@ -65,9 +65,9 @@ const CONFIG = {
     negativeChanceMax: 0.35,    // 概率上限
     negativeLengthEveryWaves: 4, // 每几波变长一次
     negativeLengthMax: 3,        // 最长占几个格子
-    weaponChance: 0.02,          // 武器强化屏障的出现概率
+    weaponChance: 0.02,          // 火力增援屏障的出现概率
     spreaderChance: 0.02,        // 扩散器的出现概率
-    weaponHitsBase: 30,          // 武器强化需要的基础命中数
+    weaponHitsBase: 30,          // 火力增援需要的基础命中数
     weaponHitsPerWave: 6,        // 每波增加
     spreaderHitsBase: 20,        // 扩散器需要的基础命中数
     spreaderHitsPerWave: 4,      // 每波增加
@@ -303,6 +303,23 @@ function updatePlayer(dt) {
   }
 }
 
+// 枪位从中间往两侧排：先中间两个，再依次向外，不会先占最左和最右
+function shooterOffsets(count, width) {
+  if (count <= 1) return [0];
+
+  const max = CONFIG.weapon.maxLines;
+  const step = width / Math.max(1, max - 1);
+  const order = [];
+
+  for (let k = 0; k < max; k++) {
+    const rank = Math.floor(k / 2) + 0.5;
+    const sign = k % 2 === 0 ? -1 : 1;
+    order.push(sign * rank * step);
+  }
+
+  return order.slice(0, count);
+}
+
 function updateFiring(dt) {
   const shooters = state.weapon.lines;
 
@@ -332,6 +349,7 @@ function updateFiring(dt) {
       : CONFIG.weapon.jitterBase) * CONFIG.player.bulletSpeed;
 
   const origins = [];
+  const offsets = shooterOffsets(shooters, width);
 
   for (let i = 0; i < shooters; i++) {
     timers[i] -= dt;
@@ -340,8 +358,7 @@ function updateFiring(dt) {
     timers[i] += interval;
     if (timers[i] < 0) timers[i] = interval;
 
-    const t = shooters === 1 ? 0.5 : i / (shooters - 1);
-    const x = state.player.x + (t - 0.5) * width;
+    const x = state.player.x + offsets[i];
     const vx = (Math.random() * 2 - 1) * jitter;
 
     state.bullets.push({
@@ -398,7 +415,7 @@ function updateBullets(dt) {
             state.barriers.splice(j, 1);
           }
         } else if (bar.kind === 'weapon' || bar.kind === 'spreader') {
-          // 武器强化 / 扩散器：攒够命中才生效，没攒够就白打
+          // 火力增援 / 扩散器：攒够命中才生效，没攒够就白打
           bar.hits += 1;
           emit('barrierHit', {
             x: bar.x,
@@ -475,7 +492,7 @@ function updateBarriers(dt) {
       bar.z >= CONFIG.world.touchZ &&
       Math.abs(bar.x - state.player.x) < bar.halfWidth + 0.3
     ) {
-      // 武器强化和扩散器错过就不生效，只有正负数屏障会结算
+      // 火力增援和扩散器错过就不生效，只有正负数屏障会结算
       if (bar.kind === 'normal' || bar.kind === 'negative') {
         applySoldiers(bar.value);
         emit('barrierApply', { x: bar.x, z: bar.z, value: bar.value });

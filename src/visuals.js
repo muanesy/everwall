@@ -1318,7 +1318,7 @@ function barrierKindColor(bar) {
 
 function barrierLabel(bar) {
   if (bar.kind === 'weapon') {
-    return { title: '武器强化', sub: `${bar.hits}/${bar.required}` };
+    return { title: '火力增援', sub: `${bar.hits}/${bar.required}` };
   }
   if (bar.kind === 'spreader') {
     return { title: '扩散器', sub: `${bar.hits}/${bar.required}` };
