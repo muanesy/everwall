@@ -22,6 +22,11 @@ export function updateUI(state) {
   els.waveText.textContent = state.wave;
   els.scoreText.textContent = state.score;
 
+  // 血条按 50 个兵算满格，超出的部分不显示
+  const pct = Math.min(100, (state.soldiers / 50) * 100);
+  els.armyFill.style.width = `${pct}%`;
+  els.armyFill.classList.toggle('is-low', state.soldiers <= 10);
+
   els.hud.classList.toggle('hidden', state.status !== 'playing');
   els.startScreen.classList.toggle('hidden', state.status !== 'menu');
   els.overScreen.classList.toggle('hidden', state.status !== 'over');
@@ -39,8 +44,11 @@ function buildDom() {
   hud.className = 'hud hidden';
   hud.innerHTML = `
     <div class="army">
-      <div class="army__label">士兵</div>
-      <div class="army__value" data-soldiers>5</div>
+      <div class="army__head">
+        <span class="army__label">士兵</span>
+        <span class="army__value" data-soldiers>5</span>
+      </div>
+      <div class="army__bar"><div class="army__fill"></div></div>
     </div>
     <div class="wave">第 <span data-wave>1</span> 波</div>
     <div class="score" data-score>0</div>
@@ -82,6 +90,7 @@ function buildDom() {
   return {
     hud,
     soldiersText: hud.querySelector('[data-soldiers]'),
+    armyFill: hud.querySelector('.army__fill'),
     waveText: hud.querySelector('[data-wave]'),
     scoreText: hud.querySelector('[data-score]'),
     startScreen,

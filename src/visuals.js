@@ -108,7 +108,10 @@ export function initVisuals(container, events) {
   events.addEventListener('barrierHit', (e) => spawnRing(e.detail.x, e.detail.z, 0x6dffb0, 0.22));
   events.addEventListener('barrierBreak', (e) => spawnRing(e.detail.x, e.detail.z, 0x6dffb0, 0.4));
   events.addEventListener('zombieDie', (e) => spawnRing(e.detail.x, e.detail.z, 0xff6a4a, 0.3));
-  events.addEventListener('armyHurt', () => { shake = 0.55; });
+  events.addEventListener('armyHurt', (e) => {
+    const amount = e.detail?.amount ?? 1;
+    shake = 0.3 + amount * 0.12;
+  });
   events.addEventListener('waveStart', () => { shake = 0.2; });
 }
 

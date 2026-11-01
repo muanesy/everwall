@@ -23,7 +23,8 @@ const CONFIG = {
     playerZ: 9,
     spawnZ: -26,       // 在屏幕上方之外出生
     screenTopZ: -21.5, // 越过这条线才算进入屏幕，+1 屏障才能被打中
-    killZ: 8.4,        // 僵尸越过这条线就让士兵减员
+    touchZ: 8.2,       // 僵尸碰到士兵的判定线
+    killZ: 8.4,        // 僵尸越过这条线就算突过去，扣更多兵
     leftZone: [-7.6, -0.6],  // +1 屏障出现的横向范围
     rightZone: [0.6, 7.6],   // 僵尸出现的横向范围
   },
@@ -35,11 +36,11 @@ const CONFIG = {
     bulletDamage: 10,
   },
   barrier: {
-    hp: 30,
-    speed: 2.2,
-    spawnInterval: 1.9,
-    rowSizeMin: 2,
-    rowSizeMax: 3,
+    hp: 10,            // 等于一发子弹的伤害，碰到一次就碎
+    speed: 6.5,        // 压下来的速度
+    spawnInterval: 2.2,
+    columnSize: 3,     // 每次刷一列，几个屏障共用同一个 x
+    columnGap: 3.2,    // 列内间隔
     soldierPerHit: 1,
   },
   zombie: {
@@ -51,8 +52,10 @@ const CONFIG = {
     spawnInterval: 0.55,
     minSpawnInterval: 0.18,
     intervalPerWave: 0.05,
-    soldierLoss: 1,
+    touchLoss: 1,      // 碰到士兵扣 1
+    passLoss: 5,       // 越过士兵扣 5
     maxAlive: 90,
+    touchHalfWidth: 1.2, // 士兵队列的碰撞半宽
   },
   wave: {
     duration: 15,
@@ -313,7 +316,7 @@ function updateBarriers(dt) {
   state.barrierTimer -= dt;
 
   if (state.barrierTimer <= 0) {
-    spawnBarrierRow();
+    spawnBarrierColumn();
     state.barrierTimer = CONFIG.barrier.spawnInterval;
   }
 
@@ -327,20 +330,15 @@ function updateBarriers(dt) {
   }
 }
 
-function spawnBarrierRow() {
+function spawnBarrierColumn() {
   const [minX, maxX] = CONFIG.world.leftZone;
-  const min = CONFIG.barrier.rowSizeMin;
-  const max = CONFIG.barrier.rowSizeMax;
-  const count = min + Math.floor(Math.random() * (max - min + 1));
+  const x = minX + Math.random() * (maxX - minX); // 一整列共用同一个 x
 
-  for (let i = 0; i < count; i++) {
-    const t = count === 1 ? 0.5 : i / (count - 1);
-    const x = minX + t * (maxX - minX);
-
+  for (let i = 0; i < CONFIG.barrier.columnSize; i++) {
     state.barriers.push({
       id: state.nextId++,
       x,
-      z: CONFIG.world.spawnZ - i * 1.2,
+      z: CONFIG.world.spawnZ - i * CONFIG.barrier.columnGap,
       hp: CONFIG.barrier.hp,
       speed: CONFIG.barrier.speed,
     });
@@ -370,9 +368,20 @@ function updateZombies(dt) {
     const z = state.zombies[i];
     z.z += z.speed * dt;
 
+    // 碰到士兵：扣 1
+    if (
+      z.z >= CONFIG.world.touchZ &&
+      Math.abs(z.x - state.player.x) < CONFIG.zombie.touchHalfWidth
+    ) {
+      state.zombies.splice(i, 1);
+      damageArmy(CONFIG.zombie.touchLoss, 'touch');
+      continue;
+    }
+
+    // 越过防线：扣 5
     if (z.z >= CONFIG.world.killZ) {
       state.zombies.splice(i, 1);
-      damageArmy(CONFIG.zombie.soldierLoss);
+      damageArmy(CONFIG.zombie.passLoss, 'pass');
     }
   }
 }
@@ -393,11 +402,11 @@ function spawnZombie() {
   });
 }
 
-function damageArmy(amount) {
+function damageArmy(amount, cause) {
   if (state.status !== 'playing') return;
 
   state.soldiers -= amount;
-  emit('armyHurt', { soldiers: state.soldiers });
+  emit('armyHurt', { soldiers: state.soldiers, amount, cause });
 
   if (state.soldiers <= 0) {
     state.soldiers = 0;
