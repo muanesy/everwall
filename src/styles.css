@@ -450,3 +450,18 @@ canvas {
   74% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
   100% { opacity: 0; transform: translate(-50%, -62%) scale(0.98); }
 }
+
+/* ---------- 晋升提示（兵种阶级）与夜幕提示 ---------- */
+
+.fx-toast--tier {
+  color: #fff1c9;
+  border-color: rgba(255, 203, 107, 0.75);
+  box-shadow: 0 0 22px rgba(255, 190, 80, 0.5);
+  font-weight: 800;
+}
+
+.fx-toast--night {
+  color: #d6e2ff;
+  border-color: rgba(140, 170, 255, 0.7);
+  box-shadow: 0 0 22px rgba(110, 140, 255, 0.45);
+}

@@ -24,6 +24,10 @@ import {
   playArmyHurt,
   playWaveStart,
 } from './audio.js';
+// 三个乙层模块：兵种阶级外观表、昼夜轮转、炸药桶（新文件，按文件边界属乙）
+import { TIERS, getTier, getTierIndex } from './visuals-tiers.js';
+import { createDayNight, nightForWave } from './visuals-daynight.js';
+import { initBarrels, updateBarrels, resetBarrels, hitTestBarrel } from './visuals-barrels.js';
 
 /* ----------------------------------------------------------
  * 地图配置表
@@ -139,6 +143,16 @@ let playerMesh = null;
 let playerShadow = null;
 let soldierMesh = null;
 let playerVisual = null; // 玩家的真模型（加载完成后替代蓝方块）
+
+// 昼夜轮转：初始化时创建，波次切换时改状态，每帧推进过渡
+let dayNight = null;
+
+// 兵种阶级：记录当前档位，只在升级那一帧变外观，不每帧重算
+let soldierTierIndex = -1;
+let tierAnnounced = false;   // 开局那次不算"晋升"，不弹提示
+let soldierBaseScale = 1;    // 原型归一化后的基准缩放（乘档位倍率用）
+let soldierMats = null;      // [{ mat, baseColor, baseEmissive }]，用来还原再乘色
+let lastWave = 1;            // 上一帧的波次，用来识别"重开一局"
 
 /* ----------------------------------------------------------
  * 模型库：Quaternius Ultimate Animated Characters（CC0，免署名）
@@ -413,6 +427,10 @@ export function initVisuals(container, events) {
   fillLight.position.set(...MAP.fill.pos);
   scene.add(fillLight);
 
+  // 昼夜轮转：把当前地图的灯光/雾/背景当基线记下来，之后只做倍数插值，
+  // 六张地图亮度差异大，写死绝对值会让月球糊成黑屏、沙漠看不出变化
+  dayNight = createDayNight({ scene, hemi, key: keyLight, ambient: fillLight });
+
   // 地面：按地图加载贴图。路径用 import.meta.url 解析，避免受页面位置影响。
   const groundTex = loadGroundTextures(renderer, MAP.tex);
 
@@ -442,6 +460,10 @@ export function initVisuals(container, events) {
 
   // 背景物：每张地图一套，全部是程序化生成的低面数道具，不占下载体积
   buildProps();
+
+  // 炸药桶：摆在两侧通道边（不压僵尸主路、不压士兵阵），模型全程序化生成。
+  // 爆炸伤害归甲，这里只负责桶的样子、爆炸特效，以及给甲查命中用的 hitTestBarrel
+  initBarrels({ scene, events });
 
   // 队长
   playerMesh = new THREE.Mesh(
@@ -587,11 +609,20 @@ export function initVisuals(container, events) {
 
   events.addEventListener('waveStart', (e) => {
     shake = 0.2;
-    // 金色波次横幅：放大进场 → 停留 → 淡出
     const wave = e.detail?.wave;
+
+    // 昼夜轮转：每 3 波换一次。夜晚画面变暗、雾变近（僵尸加速是甲的事）
+    const wasNight = dayNight ? dayNight.isNight : false;
+    const night = nightForWave(wave);
+    if (dayNight) dayNight.setNight(night);
+    if (night && !wasNight) pushToast('夜幕降临 · 僵尸加速', 'night');
+
+    // 金色波次横幅：放大进场 → 停留 → 淡出
     if (fxBanner && wave) {
       fxBanner.querySelector('.fx-banner__title').textContent = `第 ${wave} 波`;
-      fxBanner.querySelector('.fx-banner__sub').textContent = '— 僵尸潮来袭 —';
+      fxBanner.querySelector('.fx-banner__sub').textContent = night
+        ? '— 夜幕来袭 —'
+        : '— 僵尸潮来袭 —';
       fxBanner.classList.remove('show');
       void fxBanner.offsetWidth;
       fxBanner.classList.add('show');
@@ -615,10 +646,30 @@ export function initVisuals(container, events) {
 }
 
 /* ----------------------------------------------------------
+ * 给甲用的查询接口
+ * ---------------------------------------------------------- */
+
+/* 子弹有没有打中炸药桶。命中就点燃引信（0.12 秒后自动爆炸并派发
+ * barrelExploded 事件给甲结算范围伤害），返回命中的桶对象或 null。
+ * 用法：子弹每帧推进后调一次 hitBarrel(b.x, b.z)，非 null 就让子弹消失。 */
+export function hitBarrel(x, z, radius = 0.5) {
+  return hitTestBarrel(x, z, radius);
+}
+
+/* ----------------------------------------------------------
  * 每帧同步
  * ---------------------------------------------------------- */
 export function syncScene(state, dt) {
   if (!renderer) return;
+
+  // 重开一局：波次回到 1 而上一帧还在后面的波次，说明是新的一局
+  if (lastWave > 1 && state.wave === 1) {
+    resetBarrels();                      // 桶全部复原
+    if (dayNight) dayNight.setNight(false, true); // 立刻回到白天，不要跨局慢慢过渡
+    soldierTierIndex = -1;               // 兵种档位重算（不弹晋升提示）
+    tierAnnounced = false;
+  }
+  lastWave = state.wave;
 
   // 僵尸低吼的氛围音：交给音频层自己计时，这里只报数量和是否在局内
   updateAudio(dt, state.zombies ? state.zombies.length : 0, state.status === 'playing');
@@ -649,6 +700,8 @@ export function syncScene(state, dt) {
   updateFloats(dt);
   updateBlood(dt);
   updateToast(dt);
+  updateBarrels(dt);
+  if (dayNight) dayNight.update(dt);
   soldierRecoil = soldierRecoil > 0 ? Math.max(0, soldierRecoil - dt * 0.55) : 0;
   if (muzzleLight) muzzleLight.intensity = Math.max(0, muzzleLight.intensity - dt * 240);
   updateCamera(state, dt);
@@ -686,8 +739,80 @@ function soldierSlot(i, state) {
 
 const soldierVisuals = []; // 真模型池：{ root, mixer }
 
+/* 兵种阶级：把档位外观套到士兵身上
+ * 色块回退和真模型两条路都要管，而且只在档位变化那一帧做，不每帧重算材质。
+ * 门槛 5 / 20 / 50（保安 → 正规军 → 特种兵）在 visuals-tiers.js 里，
+ * 数值加成（伤害、射速）归甲，这里只管颜色、体型、微光。 */
+function captureSoldierMats() {
+  if (soldierMats) return;
+  const proto = modelLib.soldier;
+  if (!proto) return; // 模型还没加载完：下次再抓，别把空数组当"已抓过"
+  const found = [];
+  soldierBaseScale = proto.scale.x || 1;
+  const seen = new Set();
+  proto.traverse((o) => {
+    if (!o.isMesh || !o.material) return;
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    for (const m of mats) {
+      if (!m || !m.color || seen.has(m.uuid)) continue;
+      seen.add(m.uuid);
+      found.push({
+        mat: m,
+        baseColor: m.color.clone(),
+        baseEmissive: m.emissive ? m.emissive.clone() : null,
+      });
+    }
+  });
+  if (found.length) soldierMats = found;
+}
+
+function applySoldierTier(tier) {
+  // 色块回退：直接改材质颜色
+  if (soldierMesh) {
+    soldierMesh.material.color.setHex(tier.color);
+    if (soldierMesh.material.emissive) {
+      soldierMesh.material.emissive.setHex(tier.color);
+      soldierMesh.material.emissiveIntensity = tier.emissive || 0;
+    }
+  }
+
+  // 真模型：材质是骨架克隆共享的，全队同档位，改一次就够。
+  // 必须先还原基准色再乘，否则每次升级颜色会越乘越偏。
+  captureSoldierMats();
+  if (soldierMats) {
+    const tint = new THREE.Color(tier.tint[0], tier.tint[1], tier.tint[2]);
+    for (const rec of soldierMats) {
+      rec.mat.color.copy(rec.baseColor).multiply(tint);
+      if (rec.baseEmissive && rec.mat.emissive) {
+        rec.mat.emissive.copy(rec.baseEmissive).add(
+          new THREE.Color(tier.accent).multiplyScalar(tier.emissive || 0)
+        );
+      }
+    }
+  }
+
+  // 体型：两条路都按倍率缩放（模型缩放写进每帧的 root.scale，见下面）
+  if (soldierMesh) soldierMesh.scale.setScalar(1); // 方块靠实例矩阵缩放，网格本身保持 1
+}
+
 function updateSoldiers(state) {
   const n = Math.min(state.soldiers, MAX_SOLDIER_VISUALS);
+
+  // 档位变化：改外观 + 弹一条晋升提示（开局那次不弹）
+  const ti = getTierIndex(state.soldiers);
+  let tier = TIERS[ti];
+  if (ti !== soldierTierIndex) {
+    soldierTierIndex = ti;
+    tier = getTier(state.soldiers);
+    applySoldierTier(tier);
+    if (tierAnnounced) {
+      pushToast(`晋升 · ${tier.name}`, 'tier');
+      spawnRing(state.player.x, state.player.z, tier.accent, 0.9);
+      shake = Math.max(shake, 0.14);
+    }
+    tierAnnounced = true;
+  }
+  const tierScale = tier.scale || 1;
 
   // 模型没加载好（或加载失败）：维持甲写的实例化方块渲染，逻辑零风险
   if (!modelLib.loaded || !modelLib.soldier) {
@@ -696,9 +821,9 @@ function updateSoldiers(state) {
 
     for (let i = 0; i < n; i++) {
       const p = soldierSlot(i, state);
-      dummy.position.set(p.x, 0.275, p.z + soldierRecoil);
+      dummy.position.set(p.x, 0.275 * tierScale, p.z + soldierRecoil);
       dummy.rotation.set(0, 0, 0);
-      dummy.scale.set(1, 1, 1);
+      dummy.scale.setScalar(tierScale);
       dummy.updateMatrix();
       soldierMesh.setMatrixAt(i, dummy.matrix);
     }
@@ -707,6 +832,9 @@ function updateSoldiers(state) {
   }
 
   soldierMesh.visible = false;
+
+  // 模型是游戏开始后才异步加载完的：档位外观要补套一次，不然首批兵还是原色
+  if (!soldierMats) applySoldierTier(tier);
 
   // 补齐模型池（只在士兵变多时克隆，克隆失败就地保持方块）
   while (soldierVisuals.length < n) {
@@ -728,6 +856,8 @@ function updateSoldiers(state) {
       const p = soldierSlot(i, state);
       vis.root.position.x = p.x;
       vis.root.position.z = p.z + soldierRecoil;
+      // 体型跟档位走：精锐看着比新兵壮一圈
+      vis.root.scale.setScalar(soldierBaseScale * tierScale);
     }
   }
 }
