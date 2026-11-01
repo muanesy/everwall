@@ -23,6 +23,7 @@ const MAP_LIST = [
   { id: 'snow', name: '雪地' },
   { id: 'lava', name: '熔岩' },
   { id: 'base', name: '军事基地' },
+  { id: 'lab', name: '废弃医院' },
 ];
 
 const currentMap = new URLSearchParams(window.location.search).get('map') || 'city';

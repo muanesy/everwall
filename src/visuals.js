@@ -94,6 +94,16 @@ const MAPS = {
     key: { color: 0xf2f6ff, intensity: 1.7 },
     fill: { color: 0x6a90c0, intensity: 45, pos: [14, 12, -16] },
   },
+  lab: {
+    name: '废弃医院（生化实验室）',
+    tex: 'b-map-lab',       // worn_tile_floor
+    tint: 0xb6c2b8,
+    roughness: 0.38,
+    bg: 0x0a1210, fogNear: 26, fogFar: 76,
+    hemi: { sky: 0xbcd8cc, ground: 0x141c18, intensity: 1.45 },
+    key: { color: 0xeafff6, intensity: 2.6 },
+    fill: { color: 0x4ad9a0, intensity: 48, pos: [14, 10, -16] },
+  },
   base: {
     name: '军事基地（封锁区）',
     tex: 'b-map-base',      // worn_corrugated_iron
@@ -135,6 +145,7 @@ const MAP_ZOMBIE_TINT = {
   snow: [0.88, 0.96, 1.08], // 雪原：寒白
   lava: [1.18, 0.82, 0.72], // 火山：岩浆红
   base: [0.92, 0.98, 1.02],  // 军事基地：冷钢色
+  lab: [0.80, 1.00, 0.88],    // 废弃医院：病态绿
 };
 let MAP_TINT = MAP_ZOMBIE_TINT[MAP_ID] || MAP_ZOMBIE_TINT.city;
 
@@ -272,6 +283,7 @@ const MAP_TYPE_SRC = {
   moon:   { 0: 'blue' },     // 月球：星际蓝甲（配色再往冷里拉）
   lava:   { 0: 'pirate' },   // 熔岩：终幕海盗
   base:   { 0: 'blue' },     // 军事基地：装甲兵
+  lab:    { 0: 'cyber' },    // 废弃医院：生化体
 };
 const MAP_TYPE_OVERRIDE = MAP_TYPE_SRC[MAP_ID] || null;
 const animMixers = new Set(); // 所有活着的骨骼动画，每帧 update
@@ -1720,6 +1732,7 @@ function buildProps(mapId = MAP_ID) {
     snow: buildSnowProps,
     lava: buildLavaProps,
     base: buildBaseProps,
+    lab: buildLabProps,
   }[mapId] || buildCityProps;
 
   builder(group, rng);
@@ -1734,6 +1747,7 @@ function buildProps(mapId = MAP_ID) {
     snow:   { color: 0x5c6672, count: 7 },
     lava:   { color: 0x140806, count: 8 },
     base:   { color: 0x141a20, count: 8 },
+    lab:    { color: 0x121a16, count: 7 },
   }[mapId] || { color: 0x11151b, count: 7 };
 
   const silMat = mat(silhouette.color, { flat: true, rough: 1 });
@@ -2219,6 +2233,87 @@ function buildBaseProps(g, rng) {
     drum.position.set(side * (4.5 + rng() * 7), r, 15.5 + rng() * 3);
     drum.rotation.set(rng() > 0.6 ? Math.PI / 2 : 0, rng() * Math.PI, 0);
     g.add(drum);
+  }
+}
+
+/* 废弃医院 / 生化实验室：走廊墙、病床、器械架、垂落的管道、闪烁的荧光灯
+ * 冷白加病态绿，和其他七张图都不一样。 */
+function buildLabProps(g, rng) {
+  const wall = 0xc8d4cc;
+  const metal = 0x9aa8a2;
+  const rust = 0x6d5a3c;
+
+  // 远景：走廊两侧的墙，压低一点形成"走廊"的观感
+  for (const side of [-1, 1]) {
+    for (let i = 0; i < 8; i++) {
+      const h = 3.4 + rng() * 1.6;
+      const w = 5 + rng() * 3;
+      const b = boxMesh(w, h, 3 + rng() * 2, wall, { rough: 1, flat: true });
+      b.position.set(side * (13 + rng() * 3), h / 2, -32 + i * 8 + rng() * 2);
+      g.add(b);
+    }
+  }
+
+  // 病床：床架加床垫，倒着的也有
+  for (let i = 0; i < 8; i++) {
+    const side = i % 2 ? 1 : -1;
+    const g2 = new THREE.Group();
+    const frame = boxMesh(1.1, 0.16, 2.3, metal, { rough: 0.6, metalness: 0.3, flat: true });
+    frame.position.y = 0.62;
+    const mattress = boxMesh(1.0, 0.2, 2.1, 0xd8d2c4, { rough: 0.95, flat: true });
+    mattress.position.y = 0.78;
+    g2.add(frame, mattress);
+    for (const [lx, lz] of [[-0.45, -1.0], [0.45, -1.0], [-0.45, 1.0], [0.45, 1.0]]) {
+      const leg = boxMesh(0.1, 0.6, 0.1, metal, { rough: 0.6, flat: true });
+      leg.position.set(lx, 0.3, lz);
+      g2.add(leg);
+    }
+    g2.position.set(side * (9.5 + rng() * 2.5), 0, -24 + rng() * 32);
+    g2.rotation.y = (rng() - 0.5) * 0.5;
+    if (rng() > 0.7) g2.rotation.z = Math.PI / 2;   // 有的翻倒了
+    g.add(g2);
+  }
+
+  // 垂落的管道：横着挂在墙边
+  for (let i = 0; i < 7; i++) {
+    const side = i % 2 ? 1 : -1;
+    const r = 0.28 + rng() * 0.2;
+    const pipe = new THREE.Mesh(
+      new THREE.CylinderGeometry(r, r, 5 + rng() * 6, 10),
+      mat(rng() > 0.6 ? rust : metal, { rough: 0.7, metalness: 0.35, flat: true })
+    );
+    pipe.rotation.z = Math.PI / 2;
+    pipe.position.set(side * (11.5 + rng() * 2), 2.2 + rng() * 1.4, -26 + i * 7 + rng() * 2);
+    g.add(pipe);
+  }
+
+  // 荧光灯：横在天上，忽明忽暗
+  for (let i = 0; i < 5; i++) {
+    const tube = new THREE.Mesh(
+      new THREE.BoxGeometry(3.2, 0.14, 0.34),
+      new THREE.MeshBasicMaterial({ color: 0xdfffef, fog: true })
+    );
+    tube.position.set((rng() - 0.5) * 6, 3.6 + rng() * 0.8, -26 + i * 12 + rng() * 3);
+    g.add(tube);
+    propAnim.push({ kind: 'flicker', obj: tube, phase: rng() * 10, base: 1 });
+  }
+
+  // 器械推车和碎片
+  for (let i = 0; i < 8; i++) {
+    const side = i % 2 ? 1 : -1;
+    const cart = boxMesh(1.2, 0.9, 0.7, metal, { rough: 0.6, metalness: 0.35, flat: true });
+    cart.position.set(side * (8.8 + rng() * 3), 0.45, -22 + rng() * 30);
+    cart.rotation.y = rng() * Math.PI;
+    g.add(cart);
+  }
+
+  // 前景：碎瓷砖和倒下的轮椅
+  for (let i = 0; i < 7; i++) {
+    const side = i % 2 ? 1 : -1;
+    const shard = boxMesh(0.6 + rng() * 0.7, 0.12, 0.5 + rng() * 0.6, 0xcdd6cc, { rough: 0.8, flat: true });
+    shard.position.set(side * (4.5 + rng() * 7), 0.06, 15.5 + rng() * 3);
+    shard.rotation.y = rng() * Math.PI;
+    g.add(shard);
   }
 }
 
@@ -2982,6 +3077,7 @@ const AMBIENT_FX = {
   snow:   { kind: 'snow',   count: 110, color: [0.92, 0.96, 1.0], size: 0.075, speed: 2.6, area: [26, 24] },
   lava:   { kind: 'ember',  count: 95,  color: [1.0, 0.6, 0.22], size: 0.13, speed: 3.8, area: [22, 18] },
   base:   { kind: 'sand',   count: 55,  color: [0.78, 0.82, 0.85], size: 0.045, speed: 4.5, area: [28, 20] },
+  lab:    { kind: 'motes',  count: 60,  color: [0.55, 1.0, 0.78], size: 0.085, speed: 0.5, area: [22, 20] },
 };
 
 let ambientFx = null;   // { points, geo, pos, col, cfg, state }
@@ -3047,6 +3143,9 @@ function randomAmbientPoint(cfg, init) {
       return { x, y: 0.8 + Math.random() * 5, z };
     case 'sand':
       return { x, y: 0.4 + Math.random() * 2.5, z };
+    case 'motes':
+      // 废弃医院里飘着的尘埃和孢子
+      return { x, y: 0.6 + Math.random() * 5, z };
     case 'star':
       // 低空漂浮的冷光尘埃：这个世界里没有真正的天空，撒太高看不见
       return { x, y: 1.5 + Math.random() * 5.5, z };
@@ -3105,6 +3204,15 @@ function updateAmbientFx(dt) {
         col[o] = cfg.color[0] * glow;
         col[o + 1] = cfg.color[1] * glow;
         col[o + 2] = cfg.color[2] * glow * 0.6;
+        break;
+      case 'motes':
+        pos[o] += Math.sin(t * 0.4 + s.phase) * cfg.speed * dt;
+        pos[o + 1] += Math.cos(t * 0.6 + s.phase * 1.4) * cfg.speed * 0.5 * dt;
+        pos[o + 2] += Math.cos(t * 0.3 + s.phase * 0.8) * cfg.speed * 0.4 * dt;
+        const g3 = 0.3 + 0.7 * Math.max(0, Math.sin(t * 1.6 + s.phase));
+        col[o] = cfg.color[0] * g3;
+        col[o + 1] = cfg.color[1] * g3;
+        col[o + 2] = cfg.color[2] * g3;
         break;
       case 'sand':
         pos[o] -= cfg.speed * s.speed * dt;
