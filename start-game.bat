@@ -4,7 +4,7 @@ cd /d "%~dp0"
 set "PY=python"
 where python >nul 2>nul || set "PY=py -3"
 
-start /b %PY% -m http.server 8765
+start /b %PY% "%~dp0serve.py"
 timeout /t 2 /nobreak >nul
 
 start "" http://localhost:8765/
