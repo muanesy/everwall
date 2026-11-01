@@ -332,7 +332,7 @@ function updateBarriers(dt) {
 
 function spawnBarrierColumn() {
   const [minX, maxX] = CONFIG.world.leftZone;
-  const x = minX + Math.random() * (maxX - minX); // 一整列共用同一个 x
+  const x = (minX + maxX) / 2; // 固定在左区正中，全场始终只有一列
 
   for (let i = 0; i < CONFIG.barrier.columnSize; i++) {
     state.barriers.push({
