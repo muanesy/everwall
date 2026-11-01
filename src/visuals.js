@@ -18,11 +18,16 @@ import {
   updateAudio,
   playShoot,
   playZombieDie,
+  playZombieAttack,
   playBarrierHit,
   playBarrierApply,
   playArmyHurt,
   playWaveStart,
 } from './audio.js';
+// 三个乙层模块：兵种阶级外观表、昼夜轮转、炸药桶（新文件，按文件边界属乙）
+import { TIERS, getTier, getTierIndex } from './visuals-tiers.js';
+import { createDayNight, nightForWave } from './visuals-daynight.js';
+import { initBarrels, updateBarrels, resetBarrels, hitTestBarrel } from './visuals-barrels.js';
 
 /* ----------------------------------------------------------
  * 地图配置表
@@ -115,10 +120,15 @@ const CAM = {
 
 const MAX_SOLDIER_VISUALS = 120;
 
+// 僵尸开始挥拳的 z 线。game.js 里 touchZ=8.2（碰到扣兵）、killZ=8.4（停住滑行），
+// 这里取 7.4：贴到防线跟前就进入攻击动作，配合滑行前倾读起来是"扑上去挠"
+const ZOMBIE_ATK_Z = 7.4;
+
 const GROUND_TILE = 40;  // 一格贴图铺多少世界单位。1k 贴图在这个尺度下约 1:1 像素
 const GROUND_W = 140;
-const GROUND_H = 56;     // 从 z=+22 铺到 z=-34，再远靠背景墙和雾收掉
-const GROUND_Z = -6;
+const GROUND_H = 76;     // 从 z=+24 铺到 z=-52：地面要比战斗区远一截，
+                         // 后面的火山/雪脊/楼群这些大件才有地方站，不会悬空
+const GROUND_Z = -14;
 
 let renderer = null;
 let scene = null;
@@ -133,6 +143,16 @@ let playerMesh = null;
 let playerShadow = null;
 let soldierMesh = null;
 let playerVisual = null; // 玩家的真模型（加载完成后替代蓝方块）
+
+// 昼夜轮转：初始化时创建，波次切换时改状态，每帧推进过渡
+let dayNight = null;
+
+// 兵种阶级：记录当前档位，只在升级那一帧变外观，不每帧重算
+let soldierTierIndex = -1;
+let tierAnnounced = false;   // 开局那次不算"晋升"，不弹提示
+let soldierBaseScale = 1;    // 原型归一化后的基准缩放（乘档位倍率用）
+let soldierMats = null;      // [{ mat, baseColor, baseEmissive }]，用来还原再乘色
+let lastWave = 1;            // 上一帧的波次，用来识别"重开一局"
 
 /* ----------------------------------------------------------
  * 模型库：Quaternius Ultimate Animated Characters（CC0，免署名）
@@ -153,12 +173,14 @@ const modelLib = {
 // 五种僵尸的外观表（数值归 game.js，这里只管外观）。
 // tint 是乘色：白 = 原色。材质各自独立克隆，乘色不会互相串。
 // walkSpeed 只影响走路动画节奏——比颜色更能传达"笨重"和"快"。
+// score 只用来决定"死了飘不飘字"和飘多少，必须跟 game.js CONFIG.zombie.types[].score 对齐；
+// 甲改那边分数的话这里跟着改。
 const ZOMBIE_LOOKS = [
-  { src: 'male',   scale: 1.0,  tint: [0.80, 0.90, 0.84], walkSpeed: 1.0 },               // 0 普通 灰绿
-  { src: 'male',   scale: 1.25, tint: [0.88, 0.62, 0.58], walkSpeed: 0.85 },              // 1 大块头 暗红灰
-  { src: 'male',   scale: 0.85, tint: [0.92, 1.00, 0.55], walkSpeed: 1.3 },               // 2 快鬼 黄绿
-  { src: 'female', scale: 1.1,  tint: [1.05, 1.06, 1.12], walkSpeed: 1.0, emissive: 0.08 }, // 3 精英 灰白提亮
-  { src: 'female', scale: 1.0,  tint: [0.70, 0.78, 0.74], walkSpeed: 1.0 },               // 4 女僵尸 原色压暗
+  { src: 'male',   scale: 1.0,  tint: [0.80, 0.90, 0.84], walkSpeed: 1.0, attackSpeed: 1.0, score: 1 },   // 0 普通 灰绿
+  { src: 'male',   scale: 1.25, tint: [0.88, 0.62, 0.58], walkSpeed: 0.85, attackSpeed: 0.75, score: 3 },  // 1 大块头 暗红灰（出拳慢而重）
+  { src: 'male',   scale: 0.85, tint: [0.92, 1.00, 0.55], walkSpeed: 1.3, attackSpeed: 1.6, score: 1 },    // 2 快鬼 黄绿（挠拳飞快）
+  { src: 'female', scale: 1.1,  tint: [1.05, 1.06, 1.12], walkSpeed: 1.0, attackSpeed: 1.15, score: 5, emissive: 0.08 }, // 3 精英 灰白提亮
+  { src: 'female', scale: 1.0,  tint: [0.70, 0.78, 0.74], walkSpeed: 1.0, attackSpeed: 1.2, score: 2 },    // 4 女僵尸 原色压暗
 ];
 const animMixers = new Set(); // 所有活着的骨骼动画，每帧 update
 
@@ -211,6 +233,7 @@ function prepareZombieType(rawProto, look) {
   // Object3D.clone 会把 userData 做 JSON 拷贝，AnimationClip 引用会被换成普通对象，
   // 这里必须把真动画引用补回来，否则这一类型的僵尸不会走路
   proto.userData.clip = rawProto.userData.clip;
+  proto.userData.attackClip = rawProto.userData.attackClip;
   proto.traverse((o) => {
     if ((o.isMesh || o.isSkinnedMesh) && o.material) {
       o.material = Array.isArray(o.material)
@@ -232,6 +255,7 @@ function prepareZombieType(rawProto, look) {
     });
   }
   proto.userData.walkSpeed = look.walkSpeed;
+  proto.userData.attackSpeed = look.attackSpeed || 1.0;
   return proto;
 }
 
@@ -248,6 +272,9 @@ function loadModels() {
       clips.find((c) => /walk|run|idle/i.test(c.name)) ||
       clips[0] ||
       null;
+    // 攻击动画（UA 系列有 Punch 出拳），没有就留空 → 该类型不播攻击动作
+    proto.userData.attackClip =
+      clips.find((c) => /punch|attack|bite|slash/i.test(c.name)) || null;
     return proto;
   };
 
@@ -294,17 +321,24 @@ function spawnModel(proto, faceDir) {
     const shadow = makeBlobShadow(0.45);
     root.add(shadow);
     let mixer = null;
+    let walkAction = null;
+    let attackAction = null;
     const clip = proto.userData.clip;
     if (clip) {
       mixer = new THREE.AnimationMixer(root);
-      const action = mixer.clipAction(clip);
-      action.play();
+      walkAction = mixer.clipAction(clip);
+      walkAction.play();
       // 走路节奏按类型调：大块头慢（笨重）、快鬼快（窜）——比颜色更能传达体型差异
-      if (proto.userData.walkSpeed) action.timeScale = proto.userData.walkSpeed;
-      action.time = Math.random() * clip.duration; // 打散步伐
+      if (proto.userData.walkSpeed) walkAction.timeScale = proto.userData.walkSpeed;
+      walkAction.time = Math.random() * clip.duration; // 打散步伐
+      // 攻击动作待命：走到防线附近时由 syncZombies 切换（走 ↔ 打）
+      if (proto.userData.attackClip) {
+        attackAction = mixer.clipAction(proto.userData.attackClip);
+        attackAction.timeScale = proto.userData.attackSpeed || 1.0;
+      }
       animMixers.add(mixer);
     }
-    return { root, mixer };
+    return { root, mixer, walkAction, attackAction, attacking: false };
   } catch (err) {
     console.warn('[visuals] 模型克隆失败：', err);
     return null;
@@ -329,15 +363,36 @@ const bulletMeshes = new Map();
 const effects = [];
 
 // 战斗特效升级件（对象在 initVisuals 里创建）：
-// muzzleLight 枪口点光源、粒子池（血雾/魂火共用一套 Points）、HTML 覆盖层（波次横幅/扣兵红屏）
+// muzzleLight 枪口点光源、粒子池（血雾/魂火共用一套 Points）、HTML 覆盖层（波次横幅/扣兵红屏/击杀飘字/升级提示）
 let muzzleLight = null;
 let fxBanner = null;
 let fxHurt = null;
+let fxFloats = null;   // 击杀飘字的容器（绝对定位，位置每帧由相机投影算）
+let fxToast = null;    // 屏障升级之类的小提示条
 const FX_P_MAX = 500;
 const fxPool = Array.from({ length: FX_P_MAX }, () => ({ life: 0, maxLife: 1, vx: 0, vy: 0, vz: 0, g: 0 }));
 let fxGeo = null;
 let fxPos = null;
 let fxCol = null;
+
+// 击杀飘字：只给大块头/精英用，同屏最多 8 条，多了顶掉最老的
+const FLOAT_MAX = 8;
+const FLOAT_LIFE = 0.9;
+const floatFeed = [];
+
+// 地上血迹：僵尸死后留一片，10 秒淡出，场上最多 14 片（多了顶掉最早的，避免叠成一坨）
+const BLOOD_MAX = 14;
+const BLOOD_LIFE = 10;
+const bloodDecals = [];
+let bloodTex = null;
+
+// 开火后坐力：整队沿 z 方向轻微一顿，衰减很快，只是"枪有后坐"的体感，不是真的位移
+let soldierRecoil = 0;
+
+// 升级提示条：同一时刻只显示一条，其余排队
+const toastQueue = [];
+let toastLife = 0;
+const TOAST_LIFE = 1.5;
 
 const dummy = new THREE.Object3D();
 
@@ -372,6 +427,10 @@ export function initVisuals(container, events) {
   fillLight.position.set(...MAP.fill.pos);
   scene.add(fillLight);
 
+  // 昼夜轮转：把当前地图的灯光/雾/背景当基线记下来，之后只做倍数插值，
+  // 六张地图亮度差异大，写死绝对值会让月球糊成黑屏、沙漠看不出变化
+  dayNight = createDayNight({ scene, hemi, key: keyLight, ambient: fillLight });
+
   // 地面：按地图加载贴图。路径用 import.meta.url 解析，避免受页面位置影响。
   const groundTex = loadGroundTextures(renderer, MAP.tex);
 
@@ -401,6 +460,10 @@ export function initVisuals(container, events) {
 
   // 背景物：每张地图一套，全部是程序化生成的低面数道具，不占下载体积
   buildProps();
+
+  // 炸药桶：摆在两侧通道边（不压僵尸主路、不压士兵阵），模型全程序化生成。
+  // 爆炸伤害归甲，这里只负责桶的样子、爆炸特效，以及给甲查命中用的 hitTestBarrel
+  initBarrels({ scene, events });
 
   // 队长
   playerMesh = new THREE.Mesh(
@@ -454,14 +517,18 @@ export function initVisuals(container, events) {
   for (let i = 0; i < FX_P_MAX; i++) fxPos[i * 3 + 1] = -999; // 藏到地下
   scene.add(fxPoints);
 
-  // HTML 覆盖层：波次横幅 + 扣兵红屏（样式在 styles.css）
+  // HTML 覆盖层：波次横幅 + 扣兵红屏 + 击杀飘字 + 升级提示（样式在 styles.css）
   const fxLayer = document.createElement('div');
   fxLayer.innerHTML = `
     <div class="fx-banner"><div class="fx-banner__title"></div><div class="fx-banner__sub"></div></div>
-    <div class="fx-hurt"></div>`;
+    <div class="fx-hurt"></div>
+    <div class="fx-floats"></div>
+    <div class="fx-toast"></div>`;
   document.body.appendChild(fxLayer);
   fxBanner = fxLayer.querySelector('.fx-banner');
   fxHurt = fxLayer.querySelector('.fx-hurt');
+  fxFloats = fxLayer.querySelector('.fx-floats');
+  fxToast = fxLayer.querySelector('.fx-toast');
 
   window.addEventListener('resize', resize);
   resize();
@@ -482,6 +549,10 @@ export function initVisuals(container, events) {
       muzzleLight.position.set(mid.x, 0.9, mid.z - 0.15);
       muzzleLight.intensity = 22;
     }
+
+    // 后坐力：整队往后一顿，压着上限别让队伍真的跑位
+    soldierRecoil = Math.min(0.05, soldierRecoil + 0.022);
+
     playShoot();
   });
 
@@ -501,10 +572,22 @@ export function initVisuals(container, events) {
   });
 
   events.addEventListener('zombieDie', (e) => {
+    const x = e.detail.x;
+    const z = e.detail.z;
+    const type = e.detail.type ?? 0;
+    const look = ZOMBIE_LOOKS[type] || ZOMBIE_LOOKS[0];
+
     // 血雾 + 几粒绿色魂火 + 原有红环，死亡更有"交代"
-    spawnBurst(e.detail.x, 1.0, e.detail.z, 0x8a2f22, 16, { speed: 2.6, up: 2.4, spread: 0.5, life: 0.6 });
-    spawnBurst(e.detail.x, 0.8, e.detail.z, 0x86c06c, 6, { speed: 1.4, up: 2.0, spread: 0.4, life: 0.7 });
-    spawnRing(e.detail.x, e.detail.z, 0xff6a4a, 0.42);
+    spawnBurst(x, 1.0, z, 0x8a2f22, 16, { speed: 2.6, up: 2.4, spread: 0.5, life: 0.6 });
+    spawnBurst(x, 0.8, z, 0x86c06c, 6, { speed: 1.4, up: 2.0, spread: 0.4, life: 0.7 });
+    spawnRing(x, z, 0xff6a4a, 0.42);
+
+    // 地上留血：越大越肉的死得越有痕迹
+    spawnBlood(x, z, type === 1 ? 1.25 : type === 3 ? 1.1 : 0.9);
+
+    // 大块头和精英才飘分数，普通怪不飘——不然满屏数字看不清
+    if (look.score >= 3) spawnScoreFloat(x, z, look.score, type === 3);
+
     playZombieDie();
   });
 
@@ -526,17 +609,51 @@ export function initVisuals(container, events) {
 
   events.addEventListener('waveStart', (e) => {
     shake = 0.2;
-    // 金色波次横幅：放大进场 → 停留 → 淡出
     const wave = e.detail?.wave;
+
+    // 昼夜轮转：每 3 波换一次。夜晚画面变暗、雾变近（僵尸加速是甲的事）
+    const wasNight = dayNight ? dayNight.isNight : false;
+    const night = nightForWave(wave);
+    if (dayNight) dayNight.setNight(night);
+    if (night && !wasNight) pushToast('夜幕降临 · 僵尸加速', 'night');
+
+    // 金色波次横幅：放大进场 → 停留 → 淡出
     if (fxBanner && wave) {
       fxBanner.querySelector('.fx-banner__title').textContent = `第 ${wave} 波`;
-      fxBanner.querySelector('.fx-banner__sub').textContent = '— 僵尸潮来袭 —';
+      fxBanner.querySelector('.fx-banner__sub').textContent = night
+        ? '— 夜幕来袭 —'
+        : '— 僵尸潮来袭 —';
       fxBanner.classList.remove('show');
       void fxBanner.offsetWidth;
       fxBanner.classList.add('show');
     }
     playWaveStart();
   });
+
+  // 屏障攒满的两种升级：给一条短提示，让玩家知道刚才那波子弹换来了什么
+  events.addEventListener('weaponUpgrade', (e) => {
+    const lines = e.detail?.lines;
+    pushToast(lines ? `火力增援 · 前排 ${lines} 排` : '火力增援', 'weapon');
+    spawnBurst(0, 1.1, 6.5, 0x6fc2ff, 12, { speed: 3.0, up: 2.4, spread: 2.2, life: 0.7 });
+    shake = Math.max(shake, 0.16);
+  });
+
+  events.addEventListener('pierceUnlock', () => {
+    pushToast('穿透器已解锁', 'pierce');
+    spawnBurst(0, 1.1, 6.5, 0xb06bff, 12, { speed: 3.0, up: 2.4, spread: 2.2, life: 0.7 });
+    shake = Math.max(shake, 0.16);
+  });
+}
+
+/* ----------------------------------------------------------
+ * 给甲用的查询接口
+ * ---------------------------------------------------------- */
+
+/* 子弹有没有打中炸药桶。命中就点燃引信（0.12 秒后自动爆炸并派发
+ * barrelExploded 事件给甲结算范围伤害），返回命中的桶对象或 null。
+ * 用法：子弹每帧推进后调一次 hitBarrel(b.x, b.z)，非 null 就让子弹消失。 */
+export function hitBarrel(x, z, radius = 0.5) {
+  return hitTestBarrel(x, z, radius);
 }
 
 /* ----------------------------------------------------------
@@ -544,6 +661,15 @@ export function initVisuals(container, events) {
  * ---------------------------------------------------------- */
 export function syncScene(state, dt) {
   if (!renderer) return;
+
+  // 重开一局：波次回到 1 而上一帧还在后面的波次，说明是新的一局
+  if (lastWave > 1 && state.wave === 1) {
+    resetBarrels();                      // 桶全部复原
+    if (dayNight) dayNight.setNight(false, true); // 立刻回到白天，不要跨局慢慢过渡
+    soldierTierIndex = -1;               // 兵种档位重算（不弹晋升提示）
+    tierAnnounced = false;
+  }
+  lastWave = state.wave;
 
   // 僵尸低吼的氛围音：交给音频层自己计时，这里只报数量和是否在局内
   updateAudio(dt, state.zombies ? state.zombies.length : 0, state.status === 'playing');
@@ -571,6 +697,12 @@ export function syncScene(state, dt) {
 
   updateEffects(dt);
   updateParticleFx(dt);
+  updateFloats(dt);
+  updateBlood(dt);
+  updateToast(dt);
+  updateBarrels(dt);
+  if (dayNight) dayNight.update(dt);
+  soldierRecoil = soldierRecoil > 0 ? Math.max(0, soldierRecoil - dt * 0.55) : 0;
   if (muzzleLight) muzzleLight.intensity = Math.max(0, muzzleLight.intensity - dt * 240);
   updateCamera(state, dt);
 
@@ -607,8 +739,80 @@ function soldierSlot(i, state) {
 
 const soldierVisuals = []; // 真模型池：{ root, mixer }
 
+/* 兵种阶级：把档位外观套到士兵身上
+ * 色块回退和真模型两条路都要管，而且只在档位变化那一帧做，不每帧重算材质。
+ * 门槛 5 / 20 / 50（保安 → 正规军 → 特种兵）在 visuals-tiers.js 里，
+ * 数值加成（伤害、射速）归甲，这里只管颜色、体型、微光。 */
+function captureSoldierMats() {
+  if (soldierMats) return;
+  const proto = modelLib.soldier;
+  if (!proto) return; // 模型还没加载完：下次再抓，别把空数组当"已抓过"
+  const found = [];
+  soldierBaseScale = proto.scale.x || 1;
+  const seen = new Set();
+  proto.traverse((o) => {
+    if (!o.isMesh || !o.material) return;
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    for (const m of mats) {
+      if (!m || !m.color || seen.has(m.uuid)) continue;
+      seen.add(m.uuid);
+      found.push({
+        mat: m,
+        baseColor: m.color.clone(),
+        baseEmissive: m.emissive ? m.emissive.clone() : null,
+      });
+    }
+  });
+  if (found.length) soldierMats = found;
+}
+
+function applySoldierTier(tier) {
+  // 色块回退：直接改材质颜色
+  if (soldierMesh) {
+    soldierMesh.material.color.setHex(tier.color);
+    if (soldierMesh.material.emissive) {
+      soldierMesh.material.emissive.setHex(tier.color);
+      soldierMesh.material.emissiveIntensity = tier.emissive || 0;
+    }
+  }
+
+  // 真模型：材质是骨架克隆共享的，全队同档位，改一次就够。
+  // 必须先还原基准色再乘，否则每次升级颜色会越乘越偏。
+  captureSoldierMats();
+  if (soldierMats) {
+    const tint = new THREE.Color(tier.tint[0], tier.tint[1], tier.tint[2]);
+    for (const rec of soldierMats) {
+      rec.mat.color.copy(rec.baseColor).multiply(tint);
+      if (rec.baseEmissive && rec.mat.emissive) {
+        rec.mat.emissive.copy(rec.baseEmissive).add(
+          new THREE.Color(tier.accent).multiplyScalar(tier.emissive || 0)
+        );
+      }
+    }
+  }
+
+  // 体型：两条路都按倍率缩放（模型缩放写进每帧的 root.scale，见下面）
+  if (soldierMesh) soldierMesh.scale.setScalar(1); // 方块靠实例矩阵缩放，网格本身保持 1
+}
+
 function updateSoldiers(state) {
   const n = Math.min(state.soldiers, MAX_SOLDIER_VISUALS);
+
+  // 档位变化：改外观 + 弹一条晋升提示（开局那次不弹）
+  const ti = getTierIndex(state.soldiers);
+  let tier = TIERS[ti];
+  if (ti !== soldierTierIndex) {
+    soldierTierIndex = ti;
+    tier = getTier(state.soldiers);
+    applySoldierTier(tier);
+    if (tierAnnounced) {
+      pushToast(`晋升 · ${tier.name}`, 'tier');
+      spawnRing(state.player.x, state.player.z, tier.accent, 0.9);
+      shake = Math.max(shake, 0.14);
+    }
+    tierAnnounced = true;
+  }
+  const tierScale = tier.scale || 1;
 
   // 模型没加载好（或加载失败）：维持甲写的实例化方块渲染，逻辑零风险
   if (!modelLib.loaded || !modelLib.soldier) {
@@ -617,9 +821,9 @@ function updateSoldiers(state) {
 
     for (let i = 0; i < n; i++) {
       const p = soldierSlot(i, state);
-      dummy.position.set(p.x, 0.275, p.z);
+      dummy.position.set(p.x, 0.275 * tierScale, p.z + soldierRecoil);
       dummy.rotation.set(0, 0, 0);
-      dummy.scale.set(1, 1, 1);
+      dummy.scale.setScalar(tierScale);
       dummy.updateMatrix();
       soldierMesh.setMatrixAt(i, dummy.matrix);
     }
@@ -628,6 +832,9 @@ function updateSoldiers(state) {
   }
 
   soldierMesh.visible = false;
+
+  // 模型是游戏开始后才异步加载完的：档位外观要补套一次，不然首批兵还是原色
+  if (!soldierMats) applySoldierTier(tier);
 
   // 补齐模型池（只在士兵变多时克隆，克隆失败就地保持方块）
   while (soldierVisuals.length < n) {
@@ -648,7 +855,9 @@ function updateSoldiers(state) {
     if (active) {
       const p = soldierSlot(i, state);
       vis.root.position.x = p.x;
-      vis.root.position.z = p.z;
+      vis.root.position.z = p.z + soldierRecoil;
+      // 体型跟档位走：精锐看着比新兵壮一圈
+      vis.root.scale.setScalar(soldierBaseScale * tierScale);
     }
   }
 }
@@ -722,6 +931,25 @@ function syncZombies(state, dt) {
       root.position.z = z.z;
       root.rotation.z += (targetTilt - root.rotation.z) * Math.min(1, dt * 14);
 
+      // 走 ↔ 攻击切换：贴近防线（touchZ=8.2 之前一小段）就开始挥拳挠阵，
+      // 每种类型拳速不同（大块头慢而重、快鬼连挠）；切进攻击的瞬间吼一声
+      const vis = entry.vis;
+      if (vis.attackAction) {
+        const wantAttack = z.z >= ZOMBIE_ATK_Z;
+        if (wantAttack && !vis.attacking) {
+          vis.attacking = true;
+          vis.attackAction.reset();
+          vis.attackAction.crossFadeFrom(vis.walkAction, 0.12, false);
+          vis.attackAction.play();
+          playZombieAttack(z.type);
+        } else if (!wantAttack && vis.attacking) {
+          vis.attacking = false;
+          vis.walkAction.reset();
+          vis.walkAction.crossFadeFrom(vis.attackAction, 0.18, false);
+          vis.walkAction.play();
+        }
+      }
+
       if (sliding) {
         entry.dustTimer = (entry.dustTimer || 0) - dt;
         if (entry.dustTimer <= 0 && effects.length < 60) {
@@ -755,10 +983,7 @@ function syncBullets(state) {
 
     let mesh = bulletMeshes.get(b.id);
     if (!mesh) {
-      mesh = new THREE.Mesh(
-        new THREE.SphereGeometry(0.13, 8, 8),
-        new THREE.MeshBasicMaterial({ color: 0xffe08a })
-      );
+      mesh = makeBulletMesh();
       scene.add(mesh);
       bulletMeshes.set(b.id, mesh);
     }
@@ -797,14 +1022,36 @@ function updateCamera(state, dt) {
  * 背景物
  *
  * 全部程序化生成：低面数的方块 / 岩石 / 树，一套几十个，不增加下载体积。
- * 摆放避开玩法区：
- *   侧边  |x| ≥ 9.5    —— 左区屏障、右区僵尸都在 |x| < 8，摆在外面不挡
- *   后方  z ≤ -28      —— 僵尸和屏障从 z = -26 出生，摆得更远
- *   前景  z ≥ 13       —— 只有矮的东西，不然会挡住士兵队列
+ * 摆放规则（防止穿模）：
+ *   战斗安全区见 ARENA——僵尸/屏障在 z=-30~-26 出生、玩家 x±8、士兵阵型最深 z≈14。
+ *   中景道具一律用 keepOffArena() 按自己的占位半径推到安全区外；
+ *   远景大件（楼群/岩壁/雪脊/火山锥/树墙）手动退到"前缘不越过出生线"的 z；
+ *   前景（z ≥ 15.8）只放矮的，不然会插进士兵队列。
  *
  * 这些道具的作用不是"好看"，是给画面提供高度和遮挡：
  * 有高度的东西才有受光面和阴影面，眼睛才读得出这是斜视而不是俯视。
  * ---------------------------------------------------------- */
+/* 战斗安全区：僵尸、屏障、士兵、玩家可能出现（或必须能看见）的范围。
+ * 数值对齐 game.js CONFIG.world，那边改了这边要跟着改：
+ *   僵尸 x∈[0.6,7.6]，从 z=-30~-26 出生；屏障在左半边同样的深度；
+ *   玩家 x±8；120 个士兵的三角阵最多铺到 z≈14。
+ * 横向半径 8.6 = 8 留 0.6 余量。
+ */
+const ARENA = { halfX: 8.6, minZ: -30.5, maxZ: 15.4 };
+
+// 把一件道具挪出战斗区。radius 传它的最大占位半径（树冠、沙丘宽度都要算进去）：
+// 落在安全区里的才动，沿 x 往最近的一侧推出去；本来就在区外的不碰。
+function keepOffArena(obj, x, z, radius) {
+  const inX = Math.abs(x) < ARENA.halfX + radius;
+  const inZ = z + radius > ARENA.minZ && z - radius < ARENA.maxZ;
+  if (inX && inZ) {
+    x = Math.sign(x || 1) * (ARENA.halfX + radius + 0.3);
+  }
+  obj.position.x = x;
+  obj.position.z = z;
+  return obj;
+}
+
 function buildProps() {
   const group = new THREE.Group();
   const rng = mulberry32(20261101);
@@ -826,13 +1073,13 @@ function buildCityProps(g, rng) {
   const concrete = 0x3c434d;
   const rust = 0x6b4630;
 
-  // 远景：楼群剪影，挡住地平线
+  // 远景：楼群剪影，挡住地平线。楼深最大 10，退到 -36 保证前墙不越过出生线
   for (let i = 0; i < 9; i++) {
     const w = 5 + rng() * 7;
     const h = 9 + rng() * 14;
     const d = 5 + rng() * 5;
     const b = boxMesh(w, h, d, 0x161b23, { rough: 1 });
-    b.position.set(-38 + i * 9 + rng() * 2, h / 2, -30 - rng() * 3);
+    b.position.set(-38 + i * 9 + rng() * 2, h / 2, -36 - rng() * 4);
     g.add(b);
 
     // 零星几扇亮着的窗，冷白或暖黄，只放几个，多了像圣诞树
@@ -921,11 +1168,11 @@ function buildCityProps(g, rng) {
   car.rotation.y = 0.28;
   g.add(car);
 
-  // 前景碎石堆：矮，只压画面下缘
+  // 前景碎石堆：矮，只压画面下缘。z ≥ 15.8 避开士兵队尾（三角阵最深约 14）
   for (let i = 0; i < 10; i++) {
     const r = 0.25 + rng() * 0.5;
     const rock = rockMesh(rng, r, 0x4a4f57);
-    rock.position.set((rng() - 0.5) * 26, r * 0.5, 13 + rng() * 5);
+    rock.position.set((rng() - 0.5) * 26, r * 0.5, 15.8 + rng() * 4);
     g.add(rock);
   }
 }
@@ -935,21 +1182,21 @@ function buildJungleProps(g, rng) {
   const leafA = 0x1f3a24;
   const leafB = 0x2b4a2c;
 
-  // 后面一整片树墙，挡住地平线
+  // 后面一整片树墙，挡住地平线。树冠半径到 3.9，退到 -34 前缘才不压出生线
   for (let i = 0; i < 16; i++) {
     const h = 7 + rng() * 6;
     const t = treeMesh(rng, h, trunk, rng() > 0.5 ? leafA : leafB);
-    t.position.set(-40 + i * 5.2 + rng() * 2, 0, -28 - rng() * 5);
+    t.position.set(-40 + i * 5.2 + rng() * 2, 0, -34 - rng() * 4);
     t.rotation.y = rng() * Math.PI;
     g.add(t);
   }
 
-  // 两侧的树，靠近镜头，形成框景
+  // 两侧的树，靠近镜头，形成框景。树冠半径 h*0.3 最大 3.9，按半径推到通道外
   for (const side of [-1, 1]) {
     for (let i = 0; i < 6; i++) {
       const h = 8 + rng() * 5;
       const t = treeMesh(rng, h, trunk, rng() > 0.5 ? leafA : leafB);
-      t.position.set(side * (11 + rng() * 6), 0, -16 + i * 5.5 + rng() * 2);
+      keepOffArena(t, side * (11 + rng() * 6), -16 + i * 5.5 + rng() * 2, h * 0.3);
       t.rotation.y = rng() * Math.PI;
       g.add(t);
     }
@@ -964,7 +1211,8 @@ function buildJungleProps(g, rng) {
     );
     bush.scale.y = 0.55;
     const x = (rng() - 0.5) * 34;
-    bush.position.set(Math.abs(x) < 9.6 ? Math.sign(x || 1) * (10 + rng() * 4) : x, r * 0.4, -26 + rng() * 40);
+    bush.position.y = r * 0.4;
+    keepOffArena(bush, x, -26 + rng() * 40, r);
     g.add(bush);
   }
 
@@ -973,18 +1221,19 @@ function buildJungleProps(g, rng) {
     const r = 0.4 + rng() * 0.9;
     const rock = rockMesh(rng, r, 0x4a4f42);
     const x = (rng() - 0.5) * 32;
-    rock.position.set(Math.abs(x) < 9.6 ? Math.sign(x || 1) * (10 + rng() * 4) : x, r * 0.5, -24 + rng() * 36);
+    rock.position.y = r * 0.5;
+    keepOffArena(rock, x, -24 + rng() * 36, r);
     g.add(rock);
   }
 
-  // 前景：倒伏的树干，横在画面下缘
+  // 前景：倒伏的树干，横在画面下缘（避开士兵队尾）
   const log = new THREE.Mesh(
     new THREE.CylinderGeometry(0.45, 0.55, 9, 8),
     mat(0x2f2419, { flat: true, rough: 1 })
   );
   log.rotation.z = Math.PI / 2;
   log.rotation.y = 0.15;
-  log.position.set(-4, 0.5, 15.5);
+  log.position.set(-4, 0.5, 16.8);
   g.add(log);
 }
 
@@ -993,27 +1242,29 @@ function buildDesertProps(g, rng) {
   const rock = 0x7d6a4e;
   const dry = 0x6b5a40;
 
-  // 远处岩壁，把地平线挡掉
+  // 远处岩壁，把地平线挡掉。深度最大 8，退到 -35 前壁才不越过出生线
   for (let i = 0; i < 8; i++) {
     const w = 7 + rng() * 8;
     const h = 6 + rng() * 9;
     const b = boxMesh(w, h, 4 + rng() * 4, 0x8a7250, { rough: 1, flat: true });
-    b.position.set(-42 + i * 12 + rng() * 3, h / 2, -30 - rng() * 4);
+    b.position.set(-42 + i * 12 + rng() * 3, h / 2, -35 - rng() * 5);
     b.rotation.y = (rng() - 0.5) * 0.3;
     b.rotation.z = (rng() - 0.5) * 0.06;
     g.add(b);
   }
 
-  // 沙丘：压扁的球
+  // 沙丘：压扁的球。曾经放到 r=10，宽度 14 直接盖住中央通道——上限压到 5，
+  // 位置按实际半宽（r*1.4）推到通道外
   for (let i = 0; i < 10; i++) {
-    const r = 4 + rng() * 6;
+    const r = 2.5 + rng() * 2.5;
     const dune = new THREE.Mesh(
       new THREE.SphereGeometry(r, 12, 8),
       mat(sand, { rough: 1, flat: true })
     );
     dune.scale.set(1.4, 0.22, 1);
     const x = (rng() - 0.5) * 46;
-    dune.position.set(Math.abs(x) < 12 ? Math.sign(x || 1) * (13 + rng() * 6) : x, -0.2, -26 + rng() * 46);
+    dune.position.y = -0.2;
+    keepOffArena(dune, x, -26 + rng() * 46, r * 1.4 + 0.3);
     g.add(dune);
   }
 
@@ -1022,7 +1273,8 @@ function buildDesertProps(g, rng) {
     const r = 0.6 + rng() * 1.8;
     const rk = rockMesh(rng, r, rock);
     const x = (rng() - 0.5) * 34;
-    rk.position.set(Math.abs(x) < 9.8 ? Math.sign(x || 1) * (10.2 + rng() * 5) : x, r * 0.5, -22 + rng() * 36);
+    rk.position.y = r * 0.5;
+    keepOffArena(rk, x, -22 + rng() * 36, r);
     g.add(rk);
   }
 
@@ -1044,14 +1296,15 @@ function buildDesertProps(g, rng) {
     }
     const side = i % 2 ? 1 : -1;
     t.position.set(side * (10.5 + rng() * 5), 0, -14 + i * 6 + rng() * 2);
+    keepOffArena(t, t.position.x, t.position.z, 1.4);
     g.add(t);
   }
 
-  // 前景：几块半埋的石头
+  // 前景：几块半埋的石头（避开士兵队尾）
   for (let i = 0; i < 8; i++) {
     const r = 0.5 + rng() * 1.0;
     const rk = rockMesh(rng, r, rock);
-    rk.position.set((rng() - 0.5) * 28, r * 0.35, 13 + rng() * 6);
+    rk.position.set((rng() - 0.5) * 28, r * 0.35, 15.8 + rng() * 4);
     g.add(rk);
   }
 }
@@ -1060,16 +1313,17 @@ function buildMoonProps(g, rng) {
   const rockA = 0x6a6d72;
   const rockB = 0x4a4d52;
 
-  // 陨石坑：一圈低矮的环
+  // 陨石坑：一圈低矮的环。环半径最大 5.5，按半径推到通道外
   for (let i = 0; i < 6; i++) {
-    const r = 4 + rng() * 5;
+    const r = 3 + rng() * 2.5;
     const ring = new THREE.Mesh(
       new THREE.TorusGeometry(r, r * 0.09, 6, 24),
       mat(rockB, { flat: true, rough: 1 })
     );
     ring.rotation.x = -Math.PI / 2;
     const x = (rng() - 0.5) * 40;
-    ring.position.set(Math.abs(x) < 14 ? Math.sign(x || 1) * (16 + rng() * 6) : x, 0.25, -24 + rng() * 40);
+    ring.position.y = 0.25;
+    keepOffArena(ring, x, -24 + rng() * 40, r + 0.4);
     g.add(ring);
   }
 
@@ -1078,18 +1332,20 @@ function buildMoonProps(g, rng) {
     const r = 0.7 + rng() * 3.2;
     const rk = rockMesh(rng, r, rng() > 0.5 ? rockA : rockB);
     const x = (rng() - 0.5) * 46;
-    rk.position.set(Math.abs(x) < 10 ? Math.sign(x || 1) * (10.5 + rng() * 6) : x, r * 0.4, -28 + rng() * 50);
+    rk.position.y = r * 0.4;
+    keepOffArena(rk, x, -28 + rng() * 50, r);
     rk.rotation.y = rng() * Math.PI;
     g.add(rk);
   }
 
-  // 远处的地球：贴着地平线升起的大星球，一眼就知道这是月球。
-  // 球心压到地面高度（y≈0.5），一半沉在"地面尽头"之下，看起来就是从地平线探出大半个球。
+  // 远处的地球：贴着地平线的大星球，一眼就知道这是月球。
+  // 之前放在 z=-20 正好坐在僵尸出生区里，僵尸从球体里穿过去；
+  // 现在退到 z=-40（僵尸最深到 -30，永远碰不到），球心压低成"从地平线探出半个球"。
   const earth = new THREE.Mesh(
     new THREE.SphereGeometry(3, 24, 24),
     new THREE.MeshBasicMaterial({ color: 0x3f78b8, fog: false })
   );
-  earth.position.set(4, -1, -20);
+  earth.position.set(-4.5, 0.2, -40);
   g.add(earth);
 
   const glow = new THREE.Mesh(
@@ -1111,7 +1367,7 @@ function buildSnowProps(g, rng) {
   const ice = 0x9fc4d8;
   const rockC = 0x5a6068;
 
-  // 远处雪脊
+  // 远处雪脊。锥底半径最大 8.5，退到 -40 底缘才不压出生线
   for (let i = 0; i < 9; i++) {
     const w = 8 + rng() * 9;
     const h = 5 + rng() * 8;
@@ -1119,18 +1375,19 @@ function buildSnowProps(g, rng) {
       new THREE.ConeGeometry(w / 2, h, 5),
       mat(0xd3dde8, { flat: true, rough: 1 })
     );
-    peak.position.set(-42 + i * 11 + rng() * 3, h / 2 - 0.4, -30 - rng() * 4);
+    peak.position.set(-42 + i * 11 + rng() * 3, h / 2 - 0.4, -40 - rng() * 4);
     peak.rotation.y = rng() * Math.PI;
     g.add(peak);
   }
 
-  // 积雪堆
+  // 积雪堆。曾经 r=6 半宽 7.8 会压进通道，上限压到 4.5、按半宽推出去
   for (let i = 0; i < 12; i++) {
-    const r = 2 + rng() * 4;
+    const r = 2 + rng() * 2.5;
     const mound = new THREE.Mesh(new THREE.SphereGeometry(r, 10, 8), mat(snow, { rough: 0.85 }));
     mound.scale.set(1.3, 0.3, 1);
     const x = (rng() - 0.5) * 44;
-    mound.position.set(Math.abs(x) < 12 ? Math.sign(x || 1) * (13 + rng() * 6) : x, -0.1, -24 + rng() * 42);
+    mound.position.y = -0.1;
+    keepOffArena(mound, x, -24 + rng() * 42, r * 1.3 + 0.3);
     g.add(mound);
   }
 
@@ -1152,6 +1409,7 @@ function buildSnowProps(g, rng) {
     }
     const side = i % 2 ? 1 : -1;
     t.position.set(side * (10.8 + rng() * 5), 0, -16 + i * 5 + rng() * 2);
+    keepOffArena(t, t.position.x, t.position.z, 1.4);
     g.add(t);
   }
 
@@ -1163,15 +1421,16 @@ function buildSnowProps(g, rng) {
       mat(ice, { rough: 0.25, metal: 0.1, flat: true })
     );
     const x = (rng() - 0.5) * 30;
-    spike.position.set(Math.abs(x) < 9.6 ? Math.sign(x || 1) * (10.2 + rng() * 4) : x, h / 2, -14 + rng() * 26);
+    spike.position.y = h / 2;
+    keepOffArena(spike, x, -14 + rng() * 26, 0.5);
     g.add(spike);
   }
 
-  // 前景的岩石
+  // 前景的岩石（避开士兵队尾）
   for (let i = 0; i < 6; i++) {
     const r = 0.6 + rng() * 1.2;
     const rk = rockMesh(rng, r, rockC);
-    rk.position.set((rng() - 0.5) * 26, r * 0.4, 13 + rng() * 5);
+    rk.position.set((rng() - 0.5) * 26, r * 0.4, 15.8 + rng() * 4);
     g.add(rk);
   }
 }
@@ -1180,12 +1439,12 @@ function buildLavaProps(g, rng) {
   const char = 0x2a2422;
   const stone = 0x3a2e28;
 
-  // 远处火山锥
+  // 远处火山锥。底半径最大 13，退到 -44 底缘才不压僵尸出生区
   for (let i = 0; i < 3; i++) {
     const w = 16 + rng() * 10;
     const h = 12 + rng() * 8;
     const cone = new THREE.Mesh(new THREE.ConeGeometry(w / 2, h, 7), mat(0x241b18, { flat: true, rough: 1 }));
-    cone.position.set(-38 + i * 34 + rng() * 6, h / 2 - 1, -32 - rng() * 4);
+    cone.position.set(-38 + i * 34 + rng() * 6, h / 2 - 1, -44 - rng() * 4);
     cone.rotation.y = rng() * Math.PI;
     g.add(cone);
 
@@ -1206,12 +1465,14 @@ function buildLavaProps(g, rng) {
     const spire = rockMesh(rng, r, rng() > 0.5 ? char : stone);
     spire.scale.y = h / (r * 0.9);
     const x = (rng() - 0.5) * 42;
-    spire.position.set(Math.abs(x) < 10 ? Math.sign(x || 1) * (10.5 + rng() * 6) : x, 0, -28 + rng() * 46);
+    spire.position.y = 0;
+    keepOffArena(spire, x, -28 + rng() * 46, r);
     spire.rotation.y = rng() * Math.PI;
     g.add(spire);
   }
 
   // 地面上的岩浆裂隙：自发光的长条，纯粹为了给画面一点暖色
+  // polygonOffset 压住 z-fighting（和血迹同层贴地，不压会闪纹）
   for (let i = 0; i < 9; i++) {
     const len = 2 + rng() * 5;
     const crack = new THREE.Mesh(
@@ -1222,20 +1483,25 @@ function buildLavaProps(g, rng) {
         opacity: 0.75,
         fog: true,
         depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -2,
       })
     );
     crack.rotation.x = -Math.PI / 2;
     crack.rotation.z = (rng() - 0.5) * 1.6;
     const x = (rng() - 0.5) * 38;
-    crack.position.set(Math.abs(x) < 9.6 ? Math.sign(x || 1) * (10 + rng() * 5) : x, 0.03, -26 + rng() * 44);
+    crack.position.y = 0.03;
+    keepOffArena(crack, x, -26 + rng() * 44, 0.8);
+    crack.renderOrder = 1;
     g.add(crack);
   }
 
-  // 前景的焦炭块
+  // 前景的焦炭块（避开士兵队尾）
   for (let i = 0; i < 7; i++) {
     const r = 0.5 + rng() * 1.0;
     const rk = rockMesh(rng, r, char);
-    rk.position.set((rng() - 0.5) * 28, r * 0.4, 13 + rng() * 5);
+    rk.position.set((rng() - 0.5) * 28, r * 0.4, 15.8 + rng() * 4);
     g.add(rk);
   }
 }
@@ -1611,6 +1877,250 @@ function updateEffects(dt) {
       fx.mesh.material.opacity = 1 - t;
     }
   }
+}
+
+/* ----------------------------------------------------------
+ * 击杀飘字：大块头/精英死了飘 +分数
+ *
+ * 位置每帧重新投影到屏幕，所以相机跟随时字会跟着尸体走，不会飘在半空。
+ * 外层的 left/top 用 transform 写，元素本身留在 (0,0)，避免每帧触发布局。
+ * ---------------------------------------------------------- */
+const _projV = new THREE.Vector3();
+
+function spawnScoreFloat(x, z, score, strong) {
+  if (!fxFloats || !score) return;
+  while (floatFeed.length >= FLOAT_MAX) {
+    const old = floatFeed.shift();
+    old.el.remove();
+  }
+  const el = document.createElement('div');
+  el.className = strong ? 'fx-float fx-float--elite' : 'fx-float';
+  el.textContent = `+${score}`;
+  fxFloats.appendChild(el);
+  floatFeed.push({ el, x, z, life: 0 });
+}
+
+function updateFloats(dt) {
+  if (!camera || !floatFeed.length) return;
+  const rect = containerEl
+    ? containerEl.getBoundingClientRect()
+    : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+  if (!rect.width || !rect.height) return;
+
+  camera.updateMatrixWorld();
+
+  for (let i = floatFeed.length - 1; i >= 0; i--) {
+    const f = floatFeed[i];
+    f.life += dt;
+    const t = f.life / FLOAT_LIFE;
+
+    if (t >= 1) {
+      f.el.remove();
+      floatFeed.splice(i, 1);
+      continue;
+    }
+
+    _projV.set(f.x, 1.3 + t * 1.05, f.z);
+    _projV.project(camera);
+
+    const sx = rect.left + (_projV.x * 0.5 + 0.5) * rect.width;
+    const sy = rect.top + (-_projV.y * 0.5 + 0.5) * rect.height;
+    const scale = t < 0.16 ? 0.65 + (t / 0.16) * 0.5 : 1.15 - (t - 0.16) * 0.12;
+
+    f.el.style.transform =
+      `translate(-50%, -50%) translate(${sx.toFixed(1)}px, ${sy.toFixed(1)}px) scale(${scale.toFixed(3)})`;
+    f.el.style.opacity = t < 0.62 ? '1' : (1 - (t - 0.62) / 0.38).toFixed(3);
+  }
+}
+
+/* ----------------------------------------------------------
+ * 地上血迹：贴地一层，10 秒淡出，最多 14 片
+ *
+ * 贴图只生成一次，14 片共用；材质各自独立（要单独淡出）。
+ * polygonOffset + renderOrder 把血迹压在贴地网格上面，避免 z-fighting 闪纹。
+ * ---------------------------------------------------------- */
+function ensureBloodTexture() {
+  if (bloodTex) return bloodTex;
+
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+
+  const blob = (cx, cy, r, a) => {
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    g.addColorStop(0, `rgba(98,17,13,${a})`);
+    g.addColorStop(0.6, `rgba(74,12,10,${a * 0.85})`);
+    g.addColorStop(1, 'rgba(48,8,6,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+  };
+
+  blob(size / 2, size / 2, size * 0.4, 0.95);
+  // 四周溅出几滴，形状不规则才像真的
+  for (let i = 0; i < 8; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const d = size * (0.13 + Math.random() * 0.26);
+    blob(
+      size / 2 + Math.cos(a) * d,
+      size / 2 + Math.sin(a) * d,
+      size * (0.06 + Math.random() * 0.12),
+      0.6 + Math.random() * 0.25
+    );
+  }
+
+  bloodTex = new THREE.CanvasTexture(canvas);
+  bloodTex.colorSpace = THREE.SRGBColorSpace;
+  return bloodTex;
+}
+
+function spawnBlood(x, z, scale = 1) {
+  if (!scene) return;
+
+  const size = (1.1 + Math.random() * 0.7) * scale;
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(size, size),
+    new THREE.MeshBasicMaterial({
+      map: ensureBloodTexture(),
+      transparent: true,
+      opacity: 0.7,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -4,
+      polygonOffsetUnits: -4,
+    })
+  );
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.rotation.z = Math.random() * Math.PI * 2;
+  mesh.position.set(
+    x + (Math.random() - 0.5) * 0.6,
+    0.02,
+    z + (Math.random() - 0.5) * 0.6
+  );
+  mesh.renderOrder = 1;
+  scene.add(mesh);
+  bloodDecals.push({ mesh, life: 0 });
+
+  // 超量就顶掉最早的一片（贴图是共享的，别 dispose）
+  while (bloodDecals.length > BLOOD_MAX) {
+    const old = bloodDecals.shift();
+    scene.remove(old.mesh);
+    old.mesh.geometry.dispose();
+    old.mesh.material.dispose();
+  }
+}
+
+function updateBlood(dt) {
+  if (!bloodDecals.length) return;
+  const fadeFrom = BLOOD_LIFE - 3;
+
+  for (let i = bloodDecals.length - 1; i >= 0; i--) {
+    const b = bloodDecals[i];
+    b.life += dt;
+
+    if (b.life >= BLOOD_LIFE) {
+      scene.remove(b.mesh);
+      b.mesh.geometry.dispose();
+      b.mesh.material.dispose();
+      bloodDecals.splice(i, 1);
+      continue;
+    }
+
+    if (b.life > fadeFrom) {
+      b.mesh.material.opacity = 0.7 * (1 - (b.life - fadeFrom) / 3);
+    }
+  }
+}
+
+/* ----------------------------------------------------------
+ * 升级提示条：屏幕中下部一行小字，同一时刻只显示一条
+ * ---------------------------------------------------------- */
+function pushToast(text, kind) {
+  toastQueue.push({ text, kind: kind || '' });
+}
+
+function updateToast(dt) {
+  if (!fxToast) return;
+
+  if (toastLife > 0) {
+    toastLife -= dt;
+    if (toastLife <= 0) fxToast.classList.remove('show');
+    return;
+  }
+  if (!toastQueue.length) return;
+
+  const item = toastQueue.shift();
+  fxToast.className = 'fx-toast' + (item.kind ? ` fx-toast--${item.kind}` : '');
+  fxToast.textContent = item.text;
+  void fxToast.offsetWidth; // 强制重排，让动画能连续重触发
+  fxToast.classList.add('show');
+  toastLife = TOAST_LIFE;
+}
+
+/* ----------------------------------------------------------
+ * 曳光弹：拉长的弹头 + 一条往身后拖的发光带
+ *
+ * 子弹都朝 -z 飞，所以尾迹固定挂在 +z 侧，不用每帧算朝向。
+ * ---------------------------------------------------------- */
+let trailTex = null;
+
+function ensureTrailTexture() {
+  if (trailTex) return trailTex;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 32;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+
+  // 纵向：头端最亮（v=1），尾端透明
+  const along = ctx.createLinearGradient(0, 128, 0, 0);
+  along.addColorStop(0, 'rgba(255,255,255,0)');
+  along.addColorStop(0.5, 'rgba(255,236,176,0.5)');
+  along.addColorStop(1, 'rgba(255,255,255,1)');
+  ctx.fillStyle = along;
+  ctx.fillRect(0, 0, 32, 128);
+
+  // 横向收窄，光带才有芯
+  const across = ctx.createLinearGradient(0, 0, 32, 0);
+  across.addColorStop(0, 'rgba(0,0,0,0)');
+  across.addColorStop(0.5, 'rgba(0,0,0,1)');
+  across.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.globalCompositeOperation = 'destination-in';
+  ctx.fillStyle = across;
+  ctx.fillRect(0, 0, 32, 128);
+
+  trailTex = new THREE.CanvasTexture(canvas);
+  trailTex.colorSpace = THREE.SRGBColorSpace;
+  return trailTex;
+}
+
+function makeBulletMesh() {
+  const group = new THREE.Group();
+
+  const core = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.055, 0.3, 3, 8),
+    new THREE.MeshBasicMaterial({ color: 0xfff2c0 })
+  );
+  core.rotation.x = Math.PI / 2; // 胶囊默认沿 y，转成沿 z 飞
+  group.add(core);
+
+  const trail = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.22, 0.95),
+    new THREE.MeshBasicMaterial({
+      map: ensureTrailTexture(),
+      transparent: true,
+      opacity: 0.55,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    })
+  );
+  trail.rotation.x = -Math.PI / 2;
+  trail.position.set(0, -0.01, 0.5);
+  group.add(trail);
+
+  return group;
 }
 
 /* ----------------------------------------------------------

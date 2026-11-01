@@ -377,3 +377,91 @@ canvas {
   0% { opacity: 1; }
   100% { opacity: 0; }
 }
+
+/* ---------- 击杀飘字（大块头 / 精英） ---------- */
+
+.fx-floats {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 8;
+}
+
+/* 位置由 visuals.js 每帧用 transform 写，元素本身钉在 (0,0) */
+.fx-float {
+  position: fixed;
+  left: 0;
+  top: 0;
+  will-change: transform, opacity;
+  font-size: clamp(18px, 4.6vw, 30px);
+  font-weight: 900;
+  letter-spacing: 1px;
+  color: #ffb347;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.75), 0 0 14px rgba(255, 150, 60, 0.55);
+}
+
+.fx-float--elite {
+  font-size: clamp(22px, 5.6vw, 36px);
+  color: #ffe07a;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.8), 0 0 20px rgba(255, 210, 90, 0.75);
+}
+
+/* ---------- 升级提示条（火力增援 / 穿透器） ---------- */
+
+.fx-toast {
+  position: fixed;
+  left: 50%;
+  top: 62%;
+  transform: translate(-50%, -50%) scale(0.9);
+  padding: 7px 18px;
+  border-radius: 999px;
+  font-size: clamp(13px, 3.1vw, 18px);
+  font-weight: 700;
+  letter-spacing: 2px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 8;
+  opacity: 0;
+  color: #dff2ff;
+  background: rgba(10, 20, 32, 0.78);
+  border: 1px solid rgba(111, 194, 255, 0.55);
+  box-shadow: 0 0 18px rgba(111, 194, 255, 0.35);
+}
+
+.fx-toast--weapon {
+  color: #dff2ff;
+  border-color: rgba(111, 194, 255, 0.65);
+  box-shadow: 0 0 20px rgba(111, 194, 255, 0.45);
+}
+
+.fx-toast--pierce {
+  color: #efd9ff;
+  border-color: rgba(176, 107, 255, 0.65);
+  box-shadow: 0 0 20px rgba(176, 107, 255, 0.45);
+}
+
+.fx-toast.show {
+  animation: fx-toast-in 1.5s ease forwards;
+}
+
+@keyframes fx-toast-in {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.86); }
+  14% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  74% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -62%) scale(0.98); }
+}
+
+/* ---------- 晋升提示（兵种阶级）与夜幕提示 ---------- */
+
+.fx-toast--tier {
+  color: #fff1c9;
+  border-color: rgba(255, 203, 107, 0.75);
+  box-shadow: 0 0 22px rgba(255, 190, 80, 0.5);
+  font-weight: 800;
+}
+
+.fx-toast--night {
+  color: #d6e2ff;
+  border-color: rgba(140, 170, 255, 0.7);
+  box-shadow: 0 0 22px rgba(110, 140, 255, 0.45);
+}
