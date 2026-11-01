@@ -45,9 +45,10 @@ const SMOKE_COUNT = 5;           // 每团黑烟的球数
  * 但不会正面堵住主通道，也不会压到左下的士兵阵。
  * 两两间距均 ≥ 2.2 个单位。
  * ---------------------------------------------------------- */
+// 只放在右半边，左边留给屏障
 const DEFAULT_POSITIONS = [
   { x: 5.6, z: -13.2 },
-  { x: -5.4, z: -1.0 },
+  { x: 4.2, z: -4.0 },
 ];
 
 const MAX_LIVE_BARRELS = 3; // 场上同时最多几个桶
@@ -229,6 +230,7 @@ export function initBarrels({ scene, events, positions } = {}) {
  * ---------------------------------------------------------- */
 export function spawnBarrelAt(x, z) {
   if (!sceneRef || !Number.isFinite(x) || !Number.isFinite(z)) return null;
+  if (x < 0.4) return null; // 只允许右半边，左边留给屏障
 
   let alive = 0;
   for (const b of barrels) {
