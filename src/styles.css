@@ -472,3 +472,83 @@ canvas {
   border-color: rgba(140, 170, 255, 0.7);
   box-shadow: 0 0 22px rgba(110, 140, 255, 0.45);
 }
+
+/* ---------- 时代切换提示 ---------- */
+
+.fx-toast--era {
+  color: #e8dcff;
+  border-color: rgba(190, 150, 255, 0.7);
+  box-shadow: 0 0 22px rgba(160, 120, 255, 0.45);
+  letter-spacing: 4px;
+}
+
+/* ---------- 兵种档位徽标（左上角，血条下面） ---------- */
+
+.tier {
+  --tier-color: #8fb6e0;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-top: 1px;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.tier__name {
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--tier-color);
+  text-shadow: 0 0 10px color-mix(in srgb, var(--tier-color) 55%, transparent);
+}
+
+.tier__next {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
+.tier.is-max .tier__name {
+  color: #35e6d8;
+  text-shadow: 0 0 12px rgba(53, 230, 216, 0.6);
+}
+
+/* ---------- 开始页的模型加载进度 ---------- */
+
+.loading {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 2px;
+  transition: opacity 0.35s ease, height 0.35s ease;
+}
+
+.loading.is-done {
+  opacity: 0;
+  height: 0;
+  margin: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.loading__bar {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.loading__fill {
+  height: 100%;
+  width: 0%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #3d7bd6, #6fc2ff);
+  transition: width 0.2s ease;
+}
+
+.loading__text {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}

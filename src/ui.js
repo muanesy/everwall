@@ -6,6 +6,10 @@
  * ========================================================== */
 
 import { initAudio, playClick, playRevive, toggleMute, isMuted } from './audio.js';
+// 兵种档位的数据在 visuals-tiers.js（数值只有这一份，别复制）
+import { TIERS, getTier, tierProgress } from './visuals-tiers.js';
+// 加载进度由画面层提供（models 在后台下载）
+import { getModelLoadProgress } from './visuals.js';
 
 let els = null;
 let actions = null;
@@ -40,6 +44,9 @@ export function updateUI(state) {
   els.armyFill.style.width = `${pct}%`;
   els.armyFill.classList.toggle('is-low', state.soldiers <= 10);
 
+  updateTierBadge(state.soldiers);
+  updateLoadingBox();
+
   els.hud.classList.toggle('hidden', state.status !== 'playing');
   els.startScreen.classList.toggle('hidden', state.status !== 'menu');
   els.overScreen.classList.toggle('hidden', state.status !== 'over');
@@ -47,6 +54,62 @@ export function updateUI(state) {
   if (state.status === 'over') {
     els.finalScore.textContent = state.score;
     els.finalWave.textContent = state.wave;
+  }
+}
+
+/* 兵种档位徽标：当前兵种 + 距下一阶还差几个兵。
+ * 每帧都会调用，所以只在文字/颜色真的变了时才动 DOM。 */
+let lastTierKey = '';
+
+function updateTierBadge(count) {
+  if (!els.tierBox) return;
+  const tier = getTier(count);
+  const prog = tierProgress(count);
+  const nextName = prog.next ? (TIERS[prog.index + 1] || {}).name : '';
+  const nextText = prog.next ? `再攒 ${prog.need} 兵升${nextName}` : '满级';
+
+  const key = `${tier.name}|${nextText}`;
+  if (key === lastTierKey) return;
+  lastTierKey = key;
+
+  els.tierName.textContent = tier.name;
+  els.tierNext.textContent = nextText;
+  els.tierBox.style.setProperty('--tier-color', tier.accent || '#8fb6e0');
+  els.tierBox.classList.toggle('is-max', !prog.next);
+}
+
+/* 模型加载进度：画面层在后台下模型，这里把真实百分比显示出来。
+ * 拿不到进度接口就退化成"加载中"，不至于卡住开始按钮。 */
+let loadingDone = false;
+
+function updateLoadingBox() {
+  if (loadingDone || !els.loadingBox) return;
+
+  let info = null;
+  try {
+    info = typeof getModelLoadProgress === 'function' ? getModelLoadProgress() : null;
+  } catch (e) {
+    info = null;
+  }
+
+  if (!info) {
+    // 拿不到进度：超过 3 秒就当作加载完了，别让开始页一直挂着进度条
+    if (performance.now() > 3000) {
+      loadingDone = true;
+      els.loadingBox.classList.add('is-done');
+    }
+    return;
+  }
+
+  const pct = Math.round(Math.min(1, Math.max(0, info.progress)) * 100);
+  els.loadingFill.style.width = `${pct}%`;
+  els.loadingText.textContent = info.failed
+    ? '模型加载失败，已用简化角色'
+    : `正在加载角色模型… ${pct}%`;
+
+  if (info.done || info.failed || pct >= 100) {
+    loadingDone = true;
+    els.loadingBox.classList.add('is-done');
   }
 }
 
@@ -62,6 +125,10 @@ function buildDom() {
         <span class="army__value" data-soldiers>5</span>
       </div>
       <div class="army__bar"><div class="army__fill"></div></div>
+      <div class="tier" data-tier>
+        <span class="tier__name" data-tier-name>保安</span>
+        <span class="tier__next" data-tier-next>再攒 15 兵升正规军</span>
+      </div>
     </div>
     <div class="wave">第 <span data-wave>1</span> 波</div>
     <div class="score" data-score>0</div>
@@ -88,6 +155,10 @@ function buildDom() {
             </button>
           `).join('')}
         </div>
+      </div>
+      <div class="loading" data-loading>
+        <div class="loading__bar"><div class="loading__fill" data-loading-fill></div></div>
+        <p class="loading__text" data-loading-text>正在加载角色模型…</p>
       </div>
       <button class="btn" data-start>开始游戏</button>
       <p class="hint">键盘 ← → 或 A / D<br>手机上按住屏幕左右拖动</p>
@@ -122,6 +193,9 @@ function buildDom() {
     hud,
     soldiersText: hud.querySelector('[data-soldiers]'),
     armyFill: hud.querySelector('.army__fill'),
+    tierBox: hud.querySelector('[data-tier]'),
+    tierName: hud.querySelector('[data-tier-name]'),
+    tierNext: hud.querySelector('[data-tier-next]'),
     waveText: hud.querySelector('[data-wave]'),
     scoreText: hud.querySelector('[data-score]'),
     startScreen,
@@ -129,6 +203,9 @@ function buildDom() {
     finalScore: overScreen.querySelector('[data-final-score]'),
     finalWave: overScreen.querySelector('[data-final-wave]'),
     soundBtn,
+    loadingBox: startScreen.querySelector('[data-loading]'),
+    loadingFill: startScreen.querySelector('[data-loading-fill]'),
+    loadingText: startScreen.querySelector('[data-loading-text]'),
   };
 }
 

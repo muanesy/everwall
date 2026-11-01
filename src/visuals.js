@@ -26,6 +26,7 @@ import {
 } from './audio.js';
 // 三个乙层模块：兵种阶级外观表、昼夜轮转、炸药桶（新文件，按文件边界属乙）
 import { TIERS, getTier, getTierIndex } from './visuals-tiers.js';
+import { eraForWave, getEra, applyEraLook, tintMaterials } from './visuals-era.js';
 import { createDayNight, nightForWave } from './visuals-daynight.js';
 import { initBarrels, updateBarrels, resetBarrels, hitTestBarrel, spawnBarrelAt } from './visuals-barrels.js';
 
@@ -106,6 +107,10 @@ const MAPS = {
 const MAP_ID = new URLSearchParams(window.location.search).get('map') || 'city';
 const MAP = MAPS[MAP_ID] || MAPS.city;
 
+/* 时代切换节奏：默认每 5 波一个时代。
+ * URL 加 ?eraEvery=2 可以调快，方便调试和演示时看效果。 */
+const ERA_EVERY = Math.max(1, Number(new URLSearchParams(window.location.search).get('eraEvery')) || 5);
+
 /* 每张地图给僵尸套一层氛围色调（纯视觉，不改任何数值）
  * 同一批僵尸在城市是灰绿、在雪原偏冷白、在火山被岩浆照成暗红，
  * 换地图不用换模型也能一眼看出"这是另一片战场"。 */
@@ -177,6 +182,14 @@ let tierAnnounced = false;   // 开局那次不算"晋升"，不弹提示
 let soldierBaseScale = 1;    // 原型归一化后的基准缩放（乘档位倍率用）
 let soldierMats = null;      // [{ mat, baseColor, baseEmissive }]，用来还原再乘色
 let lastWave = 1;            // 上一帧的波次，用来识别"重开一局"
+
+// 时代皮肤：每 N 波换一个时代，换的是配色不改数值（详见 visuals-era.js）
+let currentEra = null;
+let eraSoldierTint = [1, 1, 1];
+let eraZombieTint = [1, 1, 1];
+let eraBulletTint = [1, 1, 1];
+let lastSoldierCount = 0;
+let zombieMats = [];        // 五种僵尸原型的材质（时代切换时统一乘色）
 
 /* ----------------------------------------------------------
  * 模型库：Quaternius Ultimate Animated Characters（CC0，免署名）
@@ -332,6 +345,11 @@ function loadModels() {
         prepareZombieType(rawZombie[look.src], look)
       );
       modelLib.loaded = true;
+      // 模型到位后把时代配色补上（模型是异步加载的，加载完之前没有材质可乘）
+      if (currentEra) {
+        collectZombieMats();
+        applyEra(currentEra);
+      }
       // 玩家也换成模型：面向僵尸潮（-z），移动交给 syncScene 只改 x/z
       const vis = spawnModel(modelLib.soldier, Math.PI);
       if (vis) {
@@ -689,6 +707,13 @@ export function initVisuals(container, events) {
     if (dayNight) dayNight.setNight(night);
     if (night && !wasNight) pushToast('夜幕降临 · 僵尸加速', 'night');
 
+    // 时代皮肤：每 5 波换一个时代，只换配色不改数值
+    const era = getEra(eraForWave(wave, ERA_EVERY));
+    if (era !== currentEra) {
+      applyEra(era);
+      pushToast(`时代 · ${era.name}`, 'era');
+    }
+
     // 金色波次横幅：放大进场 → 停留 → 淡出
     if (fxBanner && wave) {
       fxBanner.querySelector('.fx-banner__title').textContent = `第 ${wave} 波`;
@@ -734,6 +759,23 @@ export function hitBarrel(x, z, radius = 0.5) {
 /* 运行时补一个炸药桶，归甲调用；场上最多 3 个，位置太近会返回 null */
 export function spawnBarrel(x, z) {
   return spawnBarrelAt(x, z);
+}
+
+/* ----------------------------------------------------------
+ * 给玩法层用的接口
+ * ---------------------------------------------------------- */
+
+/* 切换时代（只换配色，不改任何数值）。
+ * 队长做"Boss 击败后换时代"时直接调这个：applyEraIndex(4) 就切到星际。 */
+export function applyEraIndex(index) {
+  const era = getEra(index);
+  applyEra(era);
+  return era;
+}
+
+/* 当前是第几个时代（0 起） */
+export function getCurrentEraIndex() {
+  return currentEra ? currentEra.id : 0;
 }
 
 /* ----------------------------------------------------------
@@ -849,7 +891,9 @@ function captureSoldierMats() {
 function applySoldierTier(tier) {
   // 色块回退：直接改材质颜色
   if (soldierMesh) {
-    soldierMesh.material.color.setHex(tier.color);
+    soldierMesh.material.color
+      .setHex(tier.color)
+      .multiply(new THREE.Color(eraSoldierTint[0], eraSoldierTint[1], eraSoldierTint[2]));
     if (soldierMesh.material.emissive) {
       soldierMesh.material.emissive.setHex(tier.color);
       soldierMesh.material.emissiveIntensity = tier.emissive || 0;
@@ -860,7 +904,12 @@ function applySoldierTier(tier) {
   // 必须先还原基准色再乘，否则每次升级颜色会越乘越偏。
   captureSoldierMats();
   if (soldierMats) {
-    const tint = new THREE.Color(tier.tint[0], tier.tint[1], tier.tint[2]);
+    // 乘色顺序：基准色 × 兵种档位 × 时代（两个乘色叠在一起）
+    const tint = new THREE.Color(
+      Math.min(1.2, tier.tint[0] * eraSoldierTint[0]),
+      Math.min(1.2, tier.tint[1] * eraSoldierTint[1]),
+      Math.min(1.2, tier.tint[2] * eraSoldierTint[2])
+    );
     for (const rec of soldierMats) {
       rec.mat.color.copy(rec.baseColor).multiply(tint);
       if (rec.baseEmissive && rec.mat.emissive) {
@@ -875,8 +924,50 @@ function applySoldierTier(tier) {
   if (soldierMesh) soldierMesh.scale.setScalar(1); // 方块靠实例矩阵缩放，网格本身保持 1
 }
 
+/* ----------------------------------------------------------
+ * 时代皮肤：换时代 = 换一套配色（不改数值）
+ * ---------------------------------------------------------- */
+
+// 收集五种僵尸原型的材质，供时代切换统一乘色
+function collectZombieMats() {
+  if (zombieMats.length) return zombieMats;
+  const seen = new Set();
+  for (const proto of modelLib.zombies) {
+    proto.traverse((o) => {
+      if (!o.isMesh && !o.isSkinnedMesh) return;
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      for (const m of mats) {
+        if (!m || !m.color || seen.has(m.uuid)) continue;
+        seen.add(m.uuid);
+        zombieMats.push(m);
+      }
+    });
+  }
+  // 锁定基准色：此刻的颜色 = 原始色 × 类型乘色 × 地图氛围色，
+  // 之后时代切换都从这个基准重新乘，不会越乘越偏
+  if (zombieMats.length) tintMaterials(zombieMats, [1, 1, 1]);
+  return zombieMats;
+}
+
+function applyEra(era) {
+  if (!era) return;
+  currentEra = era;
+  eraSoldierTint = era.soldierTint || [1, 1, 1];
+  eraZombieTint = era.zombieTint || [1, 1, 1];
+  eraBulletTint = era.bulletTint || [1, 1, 1];
+
+  // 士兵：走档位那条路（里面已经叠了时代乘色）
+  applySoldierTier(getTier(lastSoldierCount));
+
+  // 僵尸：基准色已锁定，这里只乘时代这一层
+  if (modelLib.zombies.length) {
+    applyEraLook(era, { zombieMats: collectZombieMats() });
+  }
+}
+
 function updateSoldiers(state) {
   const n = Math.min(state.soldiers, MAX_SOLDIER_VISUALS);
+  lastSoldierCount = state.soldiers;
 
   // 档位变化：改外观 + 弹一条提示（开局那次不弹）
   const ti = getTierIndex(state.soldiers);
@@ -2190,9 +2281,14 @@ function ensureTrailTexture() {
 function makeBulletMesh() {
   const group = new THREE.Group();
 
+  // 子弹颜色跟着时代走（中世纪火药暖黄、二战橙红、星际青紫……）
+  const bulletColor = new THREE.Color(0xfff2c0).multiply(
+    new THREE.Color(eraBulletTint[0], eraBulletTint[1], eraBulletTint[2])
+  );
+
   const core = new THREE.Mesh(
     new THREE.CapsuleGeometry(0.055, 0.3, 3, 8),
-    new THREE.MeshBasicMaterial({ color: 0xfff2c0 })
+    new THREE.MeshBasicMaterial({ color: bulletColor })
   );
   core.rotation.x = Math.PI / 2; // 胶囊默认沿 y，转成沿 z 飞
   group.add(core);

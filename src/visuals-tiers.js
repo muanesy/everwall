@@ -28,7 +28,7 @@ export const TIERS = [
     // 橄榄绿：一眼就是新兵/临时工，跟后面的制式色拉开
     color: 0x8d9257,
     // 乘色比 1 小、黄绿味重一些。模型本身有肤色和装备色，乘得温和点，别染成单色块
-    tint: [0.96, 1.0, 0.74],
+    tint: [0.98, 1.0, 0.88],
     scale: 1.0,
     emissive: 0,
     accent: '#c7cf82',
@@ -39,7 +39,7 @@ export const TIERS = [
     threshold: 20,
     // 深蓝灰：制式感。刻意比夜城底色(0x0b0f14)亮一档，暗场里还能读出轮廓
     color: 0x4d7196,
-    tint: [0.74, 0.84, 1.02],
+    tint: [0.86, 0.94, 1.06],
     scale: 1.06,
     emissive: 0,
     accent: '#8fb6e0',
@@ -50,7 +50,7 @@ export const TIERS = [
     threshold: 50,
     // 墨黑偏钢灰 + 青蓝点缀：纯黑在夜景里会糊成一团，所以回退色留一点灰
     color: 0x46545c,
-    tint: [0.66, 0.72, 0.78],
+    tint: [0.72, 0.82, 0.95],
     scale: 1.12,
     emissive: 0.04, // 精锐在暗场里有一点存在感就够了，别亮成霓虹灯
     accent: '#35e6d8',
