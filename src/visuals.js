@@ -197,6 +197,8 @@ let bossOnField = false; // 场上是否有 Boss
 
 let playerMesh = null;
 let playerShadow = null;
+let playerRing = null;     // 玩家脚下的指挥光环
+let lastPlayerX = 0;
 let soldierMesh = null;
 let playerVisual = null; // 玩家的真模型（加载完成后替代蓝方块）
 
@@ -720,6 +722,9 @@ export function initVisuals(container, events) {
   // 空气感：每张地图自己的粒子（雨丝/萤火虫/风沙/星尘/飘雪/火星）
   initAmbientFx();
 
+  // 洪水用的水面：默认藏在地下，甲调 setWaterLevel 才会漫上来
+  initWater();
+
   // 炸药桶：摆在两侧通道边（不压僵尸主路、不压士兵阵），模型全程序化生成。
   // 爆炸伤害归甲，这里只负责桶的样子、爆炸特效，以及给甲查命中用的 hitTestBarrel
   initBarrels({ scene, events });
@@ -736,6 +741,21 @@ export function initVisuals(container, events) {
   );
   playerMesh.position.set(0, 0.675, 9);
   scene.add(playerMesh);
+
+  // 玩家脚下的指挥环：一圈缓慢旋转的光环，标示"这是你操作的人"
+  playerRing = new THREE.Mesh(
+    new THREE.RingGeometry(0.55, 0.78, 32),
+    new THREE.MeshBasicMaterial({
+      color: 0x4ea1ff,
+      transparent: true,
+      opacity: 0.55,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    })
+  );
+  playerRing.rotation.x = -Math.PI / 2;
+  playerRing.position.set(0, 0.04, 9);
+  scene.add(playerRing);
 
   playerShadow = makeBlobShadow(0.7);
   playerShadow.position.set(0, 0.02, 9);
@@ -1033,6 +1053,73 @@ export function switchMapLook(mapId) {
  * 给玩法层用的接口
  * ---------------------------------------------------------- */
 
+/* 地震：屏幕持续晃动 + 地面落灰（机制触发时机归甲，调一下就有效果）
+ * 用法：triggerQuake(2.5); */
+let quakeTime = 0;
+let quakeDuration = 0;
+
+export function triggerQuake(duration = 2.5) {
+  quakeDuration = Math.max(0.4, duration);
+  quakeTime = quakeDuration;
+  shake = Math.max(shake, 0.35);
+}
+
+/* 洪水：水位从 -2.2 升到 0（level 0~1），半透明水面 + 起伏
+ * 用法：setWaterLevel(0.5); */
+let waterMesh = null;
+let waterLevel = 0;
+
+export function setWaterLevel(level) {
+  waterLevel = Math.max(0, Math.min(1, Number(level) || 0));
+}
+
+export function getWaterLevel() {
+  return waterLevel;
+}
+
+function initWater() {
+  waterMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(GROUND_W, GROUND_H),
+    new THREE.MeshStandardMaterial({
+      color: 0x3f9fd0,
+      emissive: 0x0d3446,
+      emissiveIntensity: 0.8,
+      transparent: true,
+      opacity: 0.55,
+      roughness: 0.1,
+      metalness: 0.35,
+      depthWrite: false,
+    })
+  );
+  waterMesh.rotation.x = -Math.PI / 2;
+  waterMesh.position.set(0, -2.2, GROUND_Z);
+  waterMesh.visible = false;
+  scene.add(waterMesh);
+}
+
+function updateWater(dt) {
+  if (!waterMesh) return;
+  // level 0 → 全在地下（看不出来）；level 0.78 → 刚漫过地面；level 1 → 没过脚踝
+  const target = -2.2 + waterLevel * 3.2;
+  waterMesh.position.y += (target - waterMesh.position.y) * Math.min(1, dt * 1.2);
+  waterMesh.visible = waterMesh.position.y > -0.04;
+  // 水面轻轻起伏
+  const t = performance.now() * 0.001;
+  waterMesh.position.y += Math.sin(t * 1.3) * 0.008;
+}
+
+function updateQuake(dt) {
+  if (quakeTime <= 0) return;
+  quakeTime = Math.max(0, quakeTime - dt);
+  // 持续的小幅晃动 + 偶尔落灰
+  shake = Math.max(shake, 0.12 + (quakeTime / Math.max(0.01, quakeDuration)) * 0.14);
+  if (Math.random() < dt * 14) {
+    spawnBurst((Math.random() - 0.5) * 22, 0.2, -12 + Math.random() * 20, 0x8a7a5e, 3, {
+      speed: 1.2, up: 1.6, spread: 0.8, life: 0.8,
+    });
+  }
+}
+
 // 本波已经过去多少秒（界面层用）
 let lastWaveStartTime = 0;
 let currentState = null;
@@ -1107,10 +1194,23 @@ export function syncScene(state, dt) {
   // 僵尸低吼的氛围音：交给音频层自己计时，这里只报数量和是否在局内
   updateAudio(dt, state.zombies ? state.zombies.length : 0, state.status === 'playing');
 
+  // 指挥光环：跟着玩家走，慢慢转
+  if (playerRing) {
+    playerRing.position.x = state.player.x;
+    playerRing.position.z = state.player.z;
+    playerRing.rotation.z += dt * 0.8;
+    playerRing.material.opacity = 0.42 + Math.sin(performance.now() * 0.003) * 0.14;
+  }
+
   // 队长
   if (playerVisual) {
     playerVisual.root.position.x = state.player.x;
     playerVisual.root.position.z = state.player.z;
+
+    // 移动时身体微微前倾，像在压着枪线走
+    const moveTilt = Math.max(-0.12, Math.min(0.12, (state.player.x - lastPlayerX) * 6));
+    playerVisual.root.rotation.z += (moveTilt - playerVisual.root.rotation.z) * Math.min(1, dt * 8);
+    lastPlayerX = state.player.x;
   } else {
     playerMesh.position.set(state.player.x, 0.675, state.player.z);
   }
@@ -1136,6 +1236,8 @@ export function syncScene(state, dt) {
   updateToast(dt);
   updateBarrels(dt);
   updateAmbientFx(dt);
+  updateWater(dt);
+  updateQuake(dt);
   updateDeathQueue(dt);
   updatePropAnimations(dt);
   updateAdaptiveQuality(dt);
