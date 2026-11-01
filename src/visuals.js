@@ -1086,6 +1086,37 @@ function doSwitchMapLook(mapId) {
  * 给玩法层用的接口
  * ---------------------------------------------------------- */
 
+/* 一整套「时代切换」演出：淡出 → 换时代（模型+配色）→ 换战场 → 淡入 → 提示
+ * 队长那边「击败 Boss 换时代」只要调这一行：
+ *   switchEra(5, 'lava');   // 切到终幕，战场换成熔岩
+ * 不想淡出就 switchEra(5, 'lava', { fade: false }); */
+export function switchEra(eraIndex, mapId, opts = {}) {
+  const era = getEra(eraIndex);
+  if (!era) return false;
+  const useFade = opts.fade !== false;
+
+  const doSwitch = () => {
+    applyEra(era);                 // 换模型 + 换配色
+    if (mapId && MAPS[mapId]) {
+      doSwitchMapLook(mapId);       // 换战场（地面/背景/雾/灯/粒子/环境音）
+    }
+    pushToast(`时代 · ${era.name}`, 'era');
+  };
+
+  if (!useFade) {
+    doSwitch();
+    return true;
+  }
+
+  const ms = opts.fadeMs || 460;
+  fadeOut(ms);
+  setTimeout(() => {
+    doSwitch();
+    fadeIn(ms);
+  }, ms + 60);
+  return true;
+}
+
 /* 地震：屏幕持续晃动 + 地面落灰（机制触发时机归甲，调一下就有效果）
  * 用法：triggerQuake(2.5); */
 let quakeTime = 0;
