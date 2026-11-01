@@ -1512,6 +1512,34 @@ function buildProps() {
   }[MAP_ID] || buildCityProps;
 
   builder(group, rng);
+
+  // 前景剪影：画面最下缘一条参差不齐的暗色带，纵深立刻出来了。
+  // 只放在左右两侧（|x| > 4），中间留空，不然会挡住玩家和士兵。
+  const silhouette = {
+    city:   { color: 0x0d1118, count: 7 },
+    jungle: { color: 0x0a1409, count: 8 },
+    desert: { color: 0x2a1d12, count: 7 },
+    moon:   { color: 0x1a1c22, count: 8 },
+    snow:   { color: 0x5c6672, count: 7 },
+    lava:   { color: 0x140806, count: 8 },
+  }[MAP_ID] || { color: 0x11151b, count: 7 };
+
+  const silMat = mat(silhouette.color, { flat: true, rough: 1 });
+  for (let i = 0; i < silhouette.count; i++) {
+    const side = i % 2 ? 1 : -1;
+    const h = 0.7 + rng() * 1.3;
+    const w = 0.8 + rng() * 1.8;
+    const block = new THREE.Mesh(new THREE.BoxGeometry(w, h, w * 0.8), silMat);
+    block.position.set(
+      side * (4.2 + rng() * 7.5),
+      h / 2 - 0.15,
+      16.5 + rng() * 3.5
+    );
+    block.rotation.y = rng() * Math.PI;
+    block.rotation.z = (rng() - 0.5) * 0.12;
+    group.add(block);
+  }
+
   scene.add(group);
 }
 
