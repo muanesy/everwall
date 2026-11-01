@@ -35,8 +35,8 @@ export function updateUI(state) {
   els.waveText.textContent = state.wave;
   els.scoreText.textContent = state.score;
 
-  // 血条按 50 个兵算满格，超出的部分不显示
-  const pct = Math.min(100, (state.soldiers / 50) * 100);
+  // 血条按 120 个兵算满格，和士兵显示上限一致
+  const pct = Math.min(100, (state.soldiers / 120) * 100);
   els.armyFill.style.width = `${pct}%`;
   els.armyFill.classList.toggle('is-low', state.soldiers <= 10);
 

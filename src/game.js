@@ -43,22 +43,27 @@ const CONFIG = {
     rowGap: 1.44,          // 横向间隔，铺满左半边
     staggerRange: 8,       // 同一批屏障在纵向错开的范围，避免排成一条直线
     negativeChance: 0.15,  // 每一排里出现负数屏障的概率
-    negativeMin: -30,
-    negativeMax: -10,
-    capMin: 10,            // 负数屏障打满后的上限
-    capMax: 30,
+    positiveBase: 1,       // 普通屏障的基础加兵数
+    positiveStepWaves: 3,  // 每几波升级一次
+    positiveMax: 5,        // 普通屏障最多 +5
+    negativeMin: 10,       // 负数屏障最少扣 10
+    negativeBase: 30,      // 初始扣血上限的基础值
+    negativeGrowth: 3,     // 每波上限增加
+    capMin: 10,            // 打满后的下限
+    capBase: 30,           // 打满上限的基础值
+    capGrowth: 4,          // 每波打满上限增加
     touchHalfWidth: 1.0,   // 屏障碰到士兵的判定半宽
   },
   zombie: {
     baseHp: 20,
     hpPerWave: 8,
     baseSpeed: 3.2,
-    speedPerWave: 0.3,
-    maxSpeed: 8,
+    speedPerWave: 0.25,
+    maxSpeed: 7.5,
     speedCap: 9,       // 快鬼加速后也不会超过这个速度
     spawnInterval: 0.35,
-    minSpawnInterval: 0.14,
-    intervalPerWave: 0.03,
+    minSpawnInterval: 0.16,
+    intervalPerWave: 0.02,
     maxAlive: 120,
     aggroStartZ: 1,        // 比原来多一点点距离就开始拐弯
     aggroRadius: 6,        // 主动拐弯的范围
@@ -70,12 +75,13 @@ const CONFIG = {
     separation: 0.6,     // 僵尸之间的最小间距，防止叠成一坨
 
     // 0-4 的编号和 visuals.js 约定一致，改编号要两边一起改
+    // baseWeight 是刚解锁时的权重，growth 是每波增减，minWeight / maxWeight 是上下限
     types: [
-      { id: 0, name: '普通',   hp: 1.0, speed: 1.00, touchLoss: 1, weight: 50, minWave: 1 },
-      { id: 1, name: '大块头', hp: 2.5, speed: 0.70, touchLoss: 2, weight: 15, minWave: 2 },
-      { id: 2, name: '快鬼',   hp: 0.5, speed: 1.50, touchLoss: 1, weight: 22, minWave: 1 },
-      { id: 3, name: '精英',   hp: 3.5, speed: 0.85, touchLoss: 3, weight: 6,  minWave: 3 },
-      { id: 4, name: '女僵尸', hp: 1.2, speed: 1.10, touchLoss: 1, weight: 12, minWave: 1 },
+      { id: 0, name: '普通',   hp: 1.0, speed: 1.00, touchLoss: 1, score: 1, baseWeight: 50, growth: -1,  minWeight: 30, minWave: 1 },
+      { id: 1, name: '大块头', hp: 2.5, speed: 0.70, touchLoss: 2, score: 3, baseWeight: 15, growth: 1.2, maxWeight: 28, minWave: 2 },
+      { id: 2, name: '快鬼',   hp: 0.5, speed: 1.50, touchLoss: 1, score: 1, baseWeight: 22, growth: 0,                    minWave: 1 },
+      { id: 3, name: '精英',   hp: 3.5, speed: 0.85, touchLoss: 3, score: 5, baseWeight: 6,  growth: 0.5, maxWeight: 12, minWave: 3 },
+      { id: 4, name: '女僵尸', hp: 1.2, speed: 1.10, touchLoss: 1, score: 2, baseWeight: 12, growth: 0,                    minWave: 1 },
     ],
   },
   wave: {
@@ -211,7 +217,8 @@ function revive() {
   if (state.status !== 'over') return;
 
   state.status = 'playing';
-  state.soldiers = 20;
+  // 复活兵力随波次增长，后期看广告复活不至于等于送死
+  state.soldiers = 20 + 3 * state.wave;
   state.bullets.length = 0;
   state.barriers.length = 0;
   state.zombies.length = 0;
@@ -325,9 +332,9 @@ function updateBullets(dt) {
             state.barriers.splice(j, 1);
           }
         } else {
-          // 普通 +1 屏障：一发就碎
-          applySoldiers(1);
-          emit('barrierApply', { x: bar.x, z: bar.z, value: 1 });
+          // 普通屏障：一发就碎，直接给当前数值（+1 到 +5，随波次升级）
+          applySoldiers(bar.value);
+          emit('barrierApply', { x: bar.x, z: bar.z, value: bar.value });
           state.barriers.splice(j, 1);
         }
 
@@ -349,7 +356,7 @@ function updateBullets(dt) {
 
         if (z.hp <= 0) {
           state.zombies.splice(j, 1);
-          state.score += 1;
+          state.score += CONFIG.zombie.types[z.type].score;
           emit('zombieDie', { x: z.x, z: z.z, type: z.type });
         }
         break;
@@ -394,6 +401,20 @@ function updateBarriers(dt) {
 function spawnBarrierRow() {
   const [minX, maxX] = CONFIG.world.leftZone;
   const step = CONFIG.barrier.rowGap;
+  const wave = state.wave;
+
+  // 普通屏障的 +N 随波次升级，最多 +5
+  const positiveValue = Math.min(
+    CONFIG.barrier.positiveMax,
+    CONFIG.barrier.positiveBase +
+      Math.floor((wave - 1) / CONFIG.barrier.positiveStepWaves)
+  );
+
+  // 负数屏障的扣血上限和打满上限都随波次变大
+  const negativeCap =
+    CONFIG.barrier.negativeBase + (wave - 1) * CONFIG.barrier.negativeGrowth;
+  const valueCap =
+    CONFIG.barrier.capBase + (wave - 1) * CONFIG.barrier.capGrowth;
 
   // 从左边界一直铺到中间，整排一起压下来
   for (let x = minX; x <= maxX + 0.01; x += step) {
@@ -404,11 +425,11 @@ function spawnBarrierRow() {
       x,
       z: CONFIG.world.spawnZ - Math.random() * CONFIG.barrier.staggerRange,
       value: negative
-        ? randInt(CONFIG.barrier.negativeMin, CONFIG.barrier.negativeMax)
-        : 1,
+        ? -randInt(CONFIG.barrier.negativeMin, negativeCap)
+        : positiveValue,
       maxValue: negative
-        ? randInt(CONFIG.barrier.capMin, CONFIG.barrier.capMax)
-        : 1,
+        ? randInt(CONFIG.barrier.capMin, valueCap)
+        : positiveValue,
       negative,
       speed: CONFIG.barrier.speed,
     });
@@ -510,16 +531,28 @@ function separateZombies() {
   }
 }
 
-function pickZombieType(wave) {
-  const unlocked = CONFIG.zombie.types.filter((t) => wave >= t.minWave);
-  const total = unlocked.reduce((sum, t) => sum + t.weight, 0);
+function typeWeight(type, wave) {
+  if (wave < type.minWave) return 0;
 
+  let w = type.baseWeight + (wave - type.minWave) * (type.growth || 0);
+  if (type.minWeight != null) w = Math.max(type.minWeight, w);
+  if (type.maxWeight != null) w = Math.min(type.maxWeight, w);
+  return Math.max(0, w);
+}
+
+function pickZombieType(wave) {
+  const pool = CONFIG.zombie.types
+    .map((t) => ({ type: t, weight: typeWeight(t, wave) }))
+    .filter((e) => e.weight > 0);
+
+  const total = pool.reduce((sum, e) => sum + e.weight, 0);
   let roll = Math.random() * total;
-  for (const t of unlocked) {
-    roll -= t.weight;
-    if (roll <= 0) return t;
+
+  for (const e of pool) {
+    roll -= e.weight;
+    if (roll <= 0) return e.type;
   }
-  return unlocked[unlocked.length - 1];
+  return pool[pool.length - 1].type;
 }
 
 function spawnZombie() {

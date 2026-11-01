@@ -113,7 +113,7 @@ const CAM = {
   halfWidth: 9.4, // 玩家所在平面（z=9）必须能看见的左右半宽
 };
 
-const MAX_SOLDIER_VISUALS = 60;
+const MAX_SOLDIER_VISUALS = 120;
 
 const GROUND_TILE = 40;  // 一格贴图铺多少世界单位。1k 贴图在这个尺度下约 1:1 像素
 const GROUND_W = 140;
@@ -505,11 +505,13 @@ export function syncScene(state, dt) {
 }
 
 function soldierSlot(i, state) {
-  const row = Math.floor(i / 6);
-  const col = i % 6;
+  // 三角形队列：第 r 排有 r+1 个人，1+2+...+15 = 120
+  const row = Math.floor((Math.sqrt(8 * i + 1) - 1) / 2);
+  const col = i - (row * (row + 1)) / 2;
+
   return {
-    x: state.player.x + (col - 2.5) * 0.5,
-    z: state.player.z + 0.7 + row * 0.55,
+    x: state.player.x + (col - row / 2) * 0.42,
+    z: state.player.z + 0.55 + row * 0.32,
   };
 }
 
