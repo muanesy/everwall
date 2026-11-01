@@ -63,7 +63,8 @@ export function initAudio() {
 
   ctx = new AC();
   master = ctx.createGain();
-  master.gain.value = 0.5;
+  // 上次如果是静音状态，这次直接保持静音（现场演示不想突然出声）
+  master.gain.value = muted ? 0.0001 : 0.5;
   master.connect(ctx.destination);
 
   noiseBuf = makeNoiseBuffer(2, 'white');
@@ -76,7 +77,6 @@ export function initAudio() {
     setAmbient(mapId);
   }
 }
-
 function makeNoiseBuffer(seconds, kind) {
   const len = Math.floor(ctx.sampleRate * seconds);
   const buf = ctx.createBuffer(1, len, ctx.sampleRate);
@@ -480,6 +480,12 @@ function playGrowl() {
 
 export function toggleMute() {
   muted = !muted;
+  try {
+    // 记住静音状态：现场演示调好一次就行，下次打开还是这个状态
+    localStorage.setItem('douyin-zombie-muted', muted ? '1' : '0');
+  } catch (e) {
+    // 隐私模式下 localStorage 可能不可用，忽略即可
+  }
   if (!ctx) return muted;
 
   if (muted) {
@@ -491,6 +497,18 @@ export function toggleMute() {
     const mapId = ambientId;
     ambientId = null;
     if (mapId) setAmbient(mapId);
+  }
+  return muted;
+}
+
+// 上次是不是静音的（页面一加载就读，不用等用户点）
+export function loadMuteState() {
+  try {
+    if (localStorage.getItem('douyin-zombie-muted') === '1') {
+      muted = true;
+    }
+  } catch (e) {
+    // 读不到就用默认（不静音）
   }
   return muted;
 }

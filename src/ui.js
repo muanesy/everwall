@@ -5,7 +5,7 @@
  * 这里不碰 3D，也不改游戏数值。
  * ========================================================== */
 
-import { initAudio, playClick, playRevive, toggleMute, isMuted } from './audio.js';
+import { initAudio, playClick, playRevive, toggleMute, isMuted, loadMuteState } from './audio.js';
 // 兵种档位的数据在 visuals-tiers.js（数值只有这一份，别复制）
 import { TIERS, getTier, tierProgress } from './visuals-tiers.js';
 // 加载进度由画面层提供（models 在后台下载）
@@ -59,6 +59,7 @@ function writeBest(mapId, score, wave) {
 export function initUI(state, actionsRef) {
   actions = actionsRef;
   addFavicon();
+  loadMuteState(); // 读上次的静音状态
   els = buildDom();
   bindEvents();
   updateUI(state);
@@ -239,7 +240,9 @@ function buildDom() {
   soundBtn.className = 'sound-toggle';
   soundBtn.type = 'button';
   soundBtn.setAttribute('aria-label', '开关声音');
-  soundBtn.textContent = '🔊';
+  const muted = isMuted();
+  soundBtn.textContent = muted ? '🔇' : '🔊';
+  if (muted) soundBtn.classList.add('is-muted');
   document.body.appendChild(soundBtn);
 
   // 开始页也显示这张图的历史最佳，给玩家一个目标
