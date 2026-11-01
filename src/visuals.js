@@ -49,8 +49,8 @@ const MAPS = {
     tint: 0x8d99ab,
     roughness: 0.42,
     bg: 0x0b0f14, fogNear: 30, fogFar: 82,
-    hemi: { sky: 0x9fb8d8, ground: 0x10141a, intensity: 1.0 },
-    key: { color: 0xfff1de, intensity: 2.4 },
+    hemi: { sky: 0x9fb8d8, ground: 0x10141a, intensity: 1.55 },
+    key: { color: 0xfff1de, intensity: 3.0 },
     fill: { color: 0x4a7ab8, intensity: 60, pos: [16, 12, -18] },
   },
   jungle: {
@@ -69,8 +69,8 @@ const MAPS = {
     tint: 0xd8c4a2,
     roughness: 0.9,
     bg: 0x8a7452, fogNear: 24, fogFar: 80,
-    hemi: { sky: 0xe8d4a8, ground: 0x4a3a26, intensity: 1.1 },
-    key: { color: 0xffe8c0, intensity: 2.4 },
+    hemi: { sky: 0xe8d4a8, ground: 0x4a3a26, intensity: 1.4 },
+    key: { color: 0xffe8c0, intensity: 2.6 },
     fill: { color: 0xff9a4d, intensity: 70, pos: [18, 10, -18] },
   },
   moon: {
@@ -79,8 +79,8 @@ const MAPS = {
     tint: 0xaeb6bd,
     roughness: 0.95,
     bg: 0x05060a, fogNear: 42, fogFar: 100,
-    hemi: { sky: 0x8a94a8, ground: 0x0a0c10, intensity: 0.45 },
-    key: { color: 0xffffff, intensity: 2.6 },
+    hemi: { sky: 0x8a94a8, ground: 0x0a0c10, intensity: 0.95 },
+    key: { color: 0xffffff, intensity: 3.0 },
     fill: { color: 0x223044, intensity: 24, pos: [-16, 11, -18] },
   },
   snow: {
@@ -99,8 +99,8 @@ const MAPS = {
     tint: 0xa89a90,
     roughness: 0.85,
     bg: 0x120b08, fogNear: 26, fogFar: 88,
-    hemi: { sky: 0xd8a878, ground: 0x140a06, intensity: 0.75 },
-    key: { color: 0xffb070, intensity: 2.0 },
+    hemi: { sky: 0xd8a878, ground: 0x140a06, intensity: 1.45 },
+    key: { color: 0xffb070, intensity: 2.9 },
     fill: { color: 0xff5a2a, intensity: 90, pos: [12, 9, -14] },
   },
 };
@@ -319,14 +319,19 @@ function prepareZombieType(rawProto, look) {
       Math.min(1.2, look.tint[2] * MAP_TINT[2])
     )
   );
-  if (look.emissive) {
-    // 精英在暗图上要能读出来，给一点点自发光提亮
-    proto.traverse((o) => {
-      if ((o.isMesh || o.isSkinnedMesh) && o.material?.emissive) {
-        o.material.emissive.setScalar(look.emissive);
-      }
-    });
-  }
+  // 暗场（夜城/熔岩/月球）里僵尸要能读出轮廓：给一点带环境色的自发光，
+  // 相当于"被环境光照到"，比纯白自发光更贴场景。
+  const ambTint = new THREE.Color(
+    Math.min(1, look.tint[0] * MAP_TINT[0]),
+    Math.min(1, look.tint[1] * MAP_TINT[1]),
+    Math.min(1, look.tint[2] * MAP_TINT[2])
+  );
+  const emissiveLevel = 0.055 + (look.emissive || 0);
+  proto.traverse((o) => {
+    if ((o.isMesh || o.isSkinnedMesh) && o.material?.emissive) {
+      o.material.emissive.copy(ambTint).multiplyScalar(emissiveLevel);
+    }
+  });
   proto.userData.walkSpeed = look.walkSpeed;
   proto.userData.attackSpeed = look.attackSpeed || 1.0;
   return proto;
@@ -1787,10 +1792,10 @@ function buildMoonProps(g, rng) {
   // 之前放在 z=-20 正好坐在僵尸出生区里，僵尸从球体里穿过去；
   // 现在退到 z=-40（僵尸最深到 -30，永远碰不到），球心压低成"从地平线探出半个球"。
   const earth = new THREE.Mesh(
-    new THREE.SphereGeometry(3, 24, 24),
+    new THREE.SphereGeometry(3.6, 24, 24),
     new THREE.MeshBasicMaterial({ color: 0x3f78b8, fog: false })
   );
-  earth.position.set(-4.5, 0.2, -40);
+  earth.position.set(-11.5, 0.6, -40);
   g.add(earth);
   propAnim.push({ kind: 'spin', obj: earth, phase: 0, base: 0 });
 
@@ -2137,7 +2142,7 @@ function makeZombieMesh(type) {
   );
   // 体型也跟着类型走，色块版和模型版观感一致
   mesh.scale.setScalar(look.scale);
-  if (look.emissive) mesh.material.emissive.setScalar(look.emissive);
+  mesh.material.emissive.setHex(tintHex(look.color ?? 0xffffff, MAP_TINT)).multiplyScalar(0.055 + (look.emissive || 0));
 
   // 脚下的影子跟着僵尸一起动
   const shadow = makeBlobShadow(0.45);
@@ -2587,7 +2592,7 @@ const AMBIENT_FX = {
   city:   { kind: 'rain',   count: 90,  color: [0.62, 0.72, 0.85], size: 0.055, speed: 16, area: [26, 26] },
   jungle: { kind: 'firefly', count: 34, color: [0.75, 1.0, 0.35], size: 0.13, speed: 0.5, area: [22, 20] },
   desert: { kind: 'sand',   count: 80,  color: [0.85, 0.75, 0.52], size: 0.05, speed: 7, area: [30, 18] },
-  moon:   { kind: 'star',   count: 90,  color: [0.85, 0.9, 1.0], size: 0.07, speed: 0.1, area: [40, 30] },
+  moon:   { kind: 'star',   count: 70,  color: [0.72, 0.86, 1.0], size: 0.16, speed: 0.25, area: [26, 24] },
   snow:   { kind: 'snow',   count: 110, color: [0.92, 0.96, 1.0], size: 0.075, speed: 2.6, area: [26, 24] },
   lava:   { kind: 'ember',  count: 95,  color: [1.0, 0.6, 0.22], size: 0.13, speed: 3.8, area: [22, 18] },
 };
@@ -2656,7 +2661,8 @@ function randomAmbientPoint(cfg, init) {
     case 'sand':
       return { x, y: 0.4 + Math.random() * 2.5, z };
     case 'star':
-      return { x, y: 14 + Math.random() * 12, z };
+      // 低空漂浮的冷光尘埃：这个世界里没有真正的天空，撒太高看不见
+      return { x, y: 1.5 + Math.random() * 5.5, z };
     default:
       return { x, y: 2, z };
   }
@@ -2722,9 +2728,12 @@ function updateAmbientFx(dt) {
         }
         break;
       case 'star':
-        col[o] = cfg.color[0] * (0.5 + 0.5 * Math.sin(t * 1.5 + s.phase));
-        col[o + 1] = cfg.color[1] * (0.5 + 0.5 * Math.sin(t * 1.5 + s.phase));
-        col[o + 2] = cfg.color[2] * (0.5 + 0.5 * Math.sin(t * 1.5 + s.phase));
+        pos[o] += Math.sin(t * 0.35 + s.phase) * cfg.speed * dt;
+        pos[o + 1] += Math.cos(t * 0.5 + s.phase * 1.3) * cfg.speed * 0.5 * dt;
+        const glow2 = 0.45 + 0.55 * Math.max(0, Math.sin(t * 1.1 + s.phase));
+        col[o] = cfg.color[0] * glow2;
+        col[o + 1] = cfg.color[1] * glow2;
+        col[o + 2] = cfg.color[2] * glow2;
         break;
       default:
         break;
