@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>广告里的游戏 · 原型</title>
+  <link rel="stylesheet" href="./src/styles.css" />
+
+  <!--
+    依赖从网上加载。第七天（或演示前一天）记得把它改成本地文件，
+    防止现场断网白屏。改法写在 docs/接口约定.md 里。
+  -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="game-container"></div>
+
+  <!--
+    这个文件只负责“把东西装起来”，一般不需要改。
+    界面由 src/ui.js 生成，样式在 src/styles.css。
+  -->
+  <script type="module" src="./src/game.js"></script>
+</body>
+</html>

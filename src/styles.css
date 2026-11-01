@@ -1,0 +1,203 @@
+/* ==========================================================
+ * 界面样式（乙负责）
+ * 这里只控制 DOM 层：血条、分数、开始页、结束页。
+ * 3D 场景里的颜色不在这里改，在 visuals.js 里。
+ * ========================================================== */
+
+:root {
+  --bg: #0b0f14;
+  --fg: #e8f0f8;
+  --muted: #8fa3b8;
+  --accent: #4ea1ff;
+  --card: rgba(16, 22, 30, 0.92);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: none;
+}
+
+#game-container {
+  position: fixed;
+  inset: 0;
+}
+
+canvas {
+  display: block;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* ---------- 顶部 HUD ---------- */
+
+.hud {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: calc(14px + env(safe-area-inset-top)) 18px 14px;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.hp {
+  flex: 1;
+  max-width: 220px;
+}
+
+.hp__label {
+  margin-bottom: 4px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.hp__bar {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.hp__fill {
+  height: 100%;
+  width: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #3ddc84, #4ea1ff);
+  transition: width 0.12s linear;
+}
+
+.wave {
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.score {
+  font-size: 20px;
+  font-weight: 700;
+  text-shadow: 0 0 18px rgba(78, 161, 255, 0.6);
+}
+
+/* ---------- 遮罩层 ---------- */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(6, 9, 13, 0.72);
+  backdrop-filter: blur(6px);
+}
+
+.card {
+  width: 100%;
+  max-width: 340px;
+  padding: 30px 26px;
+  border-radius: 20px;
+  background: var(--card);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: center;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+}
+
+.eyebrow {
+  margin: 0 0 10px;
+  font-size: 12px;
+  letter-spacing: 0.3em;
+  color: var(--accent);
+}
+
+.card h1 {
+  margin: 0 0 10px;
+  font-size: 30px;
+  letter-spacing: 0.04em;
+}
+
+.card h2 {
+  margin: 0 0 10px;
+  font-size: 24px;
+}
+
+.sub {
+  margin: 0 0 22px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+.score-line {
+  margin: 0 0 22px;
+  color: var(--muted);
+}
+
+.score-line strong {
+  font-size: 18px;
+  color: #fff;
+}
+
+/* ---------- 按钮 ---------- */
+
+.btn {
+  display: block;
+  width: 100%;
+  padding: 14px 20px;
+  border: 0;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #4ea1ff, #2f7cf6);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: transform 0.08s ease, filter 0.15s ease;
+}
+
+.btn:active {
+  transform: scale(0.97);
+}
+
+.btn:hover {
+  filter: brightness(1.08);
+}
+
+.btn--ad {
+  background: linear-gradient(135deg, #ffb347, #ff7a45);
+  color: #23140a;
+}
+
+.btn--ghost {
+  margin-top: 10px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.hint {
+  margin: 20px 0 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: rgba(143, 163, 184, 0.7);
+}
