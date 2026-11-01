@@ -977,6 +977,7 @@ export function syncScene(state, dt) {
   updateBarrels(dt);
   updateAmbientFx(dt);
   updateDeathQueue(dt);
+  updatePropAnimations(dt);
   updateAdaptiveQuality(dt);
   if (dayNight) dayNight.update(dt);
   soldierRecoil = soldierRecoil > 0 ? Math.max(0, soldierRecoil - dt * 0.55) : 0;
@@ -1458,6 +1459,40 @@ function keepOffArena(obj, x, z, radius) {
   return obj;
 }
 
+/* ----------------------------------------------------------
+ * 背景物微动：让画面别呆板
+ *   城市窗户一闪一灭、月球地球自转、雨林树冠轻摇、熔岩裂隙呼吸
+ * 都是纯视觉的小动作，不影响任何玩法。
+ * ---------------------------------------------------------- */
+
+const propAnim = [];   // { kind, obj, phase, base }
+
+function updatePropAnimations(dt) {
+  const t = performance.now() * 0.001;
+  for (const a of propAnim) {
+    switch (a.kind) {
+      case 'flicker': {
+        // 窗户：大部分时间亮，偶尔灭一下再亮回来
+        const f = Math.sin(t * 0.7 + a.phase) * Math.sin(t * 2.3 + a.phase * 1.7);
+        a.obj.material.opacity = a.base + (f > 0.86 ? -a.base * 0.8 : 0);
+        break;
+      }
+      case 'spin':
+        a.obj.rotation.y += dt * 0.05;
+        break;
+      case 'sway':
+        a.obj.rotation.z = Math.sin(t * 0.8 + a.phase) * 0.018;
+        break;
+      case 'breathe':
+        // 岩浆：亮度一涨一落
+        a.obj.material.opacity = a.base + Math.sin(t * 1.3 + a.phase) * 0.22;
+        break;
+      default:
+        break;
+    }
+  }
+}
+
 function buildProps() {
   const group = new THREE.Group();
   const rng = mulberry32(20261101);
@@ -1506,6 +1541,8 @@ function buildCityProps(g, rng) {
         b.position.z + d / 2 + 0.02
       );
       g.add(win);
+      // 窗户会闪：登记一下，每帧改一点透明度
+      propAnim.push({ kind: 'flicker', obj: win, phase: rng() * 10, base: 0.55 });
     }
   }
 
@@ -1605,6 +1642,8 @@ function buildJungleProps(g, rng) {
       keepOffArena(t, side * (11 + rng() * 6), -16 + i * 5.5 + rng() * 2, h * 0.3);
       t.rotation.y = rng() * Math.PI;
       g.add(t);
+      // 近处的树轻轻摇，风的感觉
+      propAnim.push({ kind: 'sway', obj: t, phase: rng() * 10, base: 0 });
     }
   }
 
@@ -1753,6 +1792,7 @@ function buildMoonProps(g, rng) {
   );
   earth.position.set(-4.5, 0.2, -40);
   g.add(earth);
+  propAnim.push({ kind: 'spin', obj: earth, phase: 0, base: 0 });
 
   const glow = new THREE.Mesh(
     new THREE.SphereGeometry(3.9, 20, 20),
@@ -1898,6 +1938,8 @@ function buildLavaProps(g, rng) {
     crack.rotation.z = (rng() - 0.5) * 1.6;
     const x = (rng() - 0.5) * 38;
     crack.position.y = 0.03;
+    // 岩浆会呼吸：亮度一涨一落
+    propAnim.push({ kind: 'breathe', obj: crack, phase: rng() * 10, base: 0.75 });
     keepOffArena(crack, x, -26 + rng() * 44, 0.8);
     crack.renderOrder = 1;
     g.add(crack);
