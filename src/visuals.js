@@ -725,6 +725,9 @@ export function initVisuals(container, events) {
  * barrelExploded 事件给甲结算范围伤害），返回命中的桶对象或 null。
  * 用法：子弹每帧推进后调一次 hitBarrel(b.x, b.z)，非 null 就让子弹消失。 */
 export function hitBarrel(x, z, radius = 0.5) {
+  // 甲传的 radius 是"额外容差"，模块内部会收敛到合理范围。
+  // 桶是三只横排的，用胶囊判定（点到横排线段的距离），视觉和判定完全对齐，
+  // 不会出现"明明瞄准了却打不到"。
   return hitTestBarrel(x, z, radius);
 }
 

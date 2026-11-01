@@ -30,6 +30,14 @@ import * as THREE from 'three';
 const BARREL_RADIUS = 0.55;      // 桶身半径（命中判定的基础）
 const BARREL_HEIGHT = 1.1;       // 桶高
 
+/* 一组桶是三只横排捆在一起的，整体半宽 = 0.62 + 0.55 ≈ 1.17
+ * 子弹是垂直往上飞的（点屏幕只控制左右移动），玩家要打到桶必须站到桶正上方，
+ * 所以把命中范围做宽一点，玩家稍微挪一步就能打中，不至于出现"瞄准了却打不到"。 */
+const BARREL_OFFSETS = [-0.62, 0, 0.62];
+export const BARREL_HIT_RADIUS = 1.15;
+/* 整组桶在横向上的半长：从中心到最外侧桶的外缘 */
+const BARREL_SPAN = BARREL_OFFSETS[BARREL_OFFSETS.length - 1] + BARREL_RADIUS;
+
 const EXPLOSION_RADIUS = 3.2;    // 爆炸范围（数值需与甲确认）
 const EXPLOSION_DAMAGE = 3;      // 爆炸伤害（数值需与甲确认）
 
@@ -46,8 +54,11 @@ const SMOKE_COUNT = 5;           // 每团黑烟的球数
  * 两两间距均 ≥ 2.2 个单位。
  * ---------------------------------------------------------- */
 const DEFAULT_POSITIONS = [
-  { x: 5.6, z: -13.2 },
-  { x: -5.4, z: -1.0 },
+  // 放在左半边：僵尸只从右半边 x0.6~7.6 来，不会从桶身上穿过去（穿模）；
+  // 左半边是玩家打屏障加兵时本来就要去的位置，顺手就能把桶打爆。
+  // 子弹是垂直往上飞的，所以桶必须在玩家走得到的范围内才打得中。
+  { x: -4.6, z: -8.5 },
+  { x: -3.4, z: 0.8 },
 ];
 
 const MAX_LIVE_BARRELS = 3; // 场上同时最多几个桶
@@ -142,7 +153,7 @@ function buildBarrel(x, z, index) {
   const a = ensureAssets();
   const group = new THREE.Group();
   group.position.set(x, 0, z);
-  group.rotation.y = index * 0.7;   // 每个桶朝向错开一点，别像复制粘贴
+  group.rotation.y = index * 0.7;   // 每组桶朝向错开一点，别像复制粘贴
 
   // 桶身：深绿 / 锈红交替；材质独立，爆炸前单独发光闪烁
   const bodyMat = new THREE.MeshStandardMaterial({
@@ -152,29 +163,39 @@ function buildBarrel(x, z, index) {
     emissive: 0x000000,
   });
 
-  const body = new THREE.Mesh(a.body, bodyMat);
-  body.position.y = BARREL_HEIGHT / 2;
-  body.castShadow = true;
-  body.receiveShadow = true;
-  group.add(body);
+  // 三只桶并排捆成一组：单个桶只有 0.55 宽，很难打中，
+  // 横排之后整组的可命中范围宽了一倍多（子弹是垂直往上飞的，
+  // 玩家只要站到这组桶正上方就能打到）
+  for (const ox of BARREL_OFFSETS) {
+    const sub = new THREE.Group();
+    sub.position.x = ox;
 
-  // 黄色警示条
-  const band = new THREE.Mesh(a.band, a.bandMat);
-  band.position.y = BARREL_HEIGHT * 0.66;
-  group.add(band);
+    const body = new THREE.Mesh(a.body, bodyMat);
+    body.position.y = BARREL_HEIGHT / 2;
+    body.castShadow = true;
+    body.receiveShadow = true;
+    sub.add(body);
 
-  // 顶盖边圈 + 盖子 + 提手
-  const rim = new THREE.Mesh(a.rim, a.rimMat);
-  rim.position.y = BARREL_HEIGHT + 0.01;
-  group.add(rim);
+    // 黄色警示条
+    const band = new THREE.Mesh(a.band, a.bandMat);
+    band.position.y = BARREL_HEIGHT * 0.66;
+    sub.add(band);
 
-  const lid = new THREE.Mesh(a.lid, a.lidMat);
-  lid.position.y = BARREL_HEIGHT + 0.07;
-  group.add(lid);
+    // 顶盖边圈 + 盖子 + 提手
+    const rim = new THREE.Mesh(a.rim, a.rimMat);
+    rim.position.y = BARREL_HEIGHT + 0.01;
+    sub.add(rim);
 
-  const handle = new THREE.Mesh(a.handle, a.rimMat);
-  handle.position.y = BARREL_HEIGHT + 0.12;
-  group.add(handle);
+    const lid = new THREE.Mesh(a.lid, a.lidMat);
+    lid.position.y = BARREL_HEIGHT + 0.07;
+    sub.add(lid);
+
+    const handle = new THREE.Mesh(a.handle, a.rimMat);
+    handle.position.y = BARREL_HEIGHT + 0.12;
+    sub.add(handle);
+
+    group.add(sub);
+  }
 
   sceneRef.add(group);
 
@@ -332,19 +353,23 @@ export function explodeBarrelAt(x, z, id = 0, radius = EXPLOSION_RADIUS, damage 
  * 返回命中的桶对象，没命中返回 null。
  * 命中后进入 0.12 秒引信闪烁，到点自动爆炸；一个桶只炸一次。
  * ---------------------------------------------------------- */
-export function hitTestBarrel(x, z, radius = 0.45) {
+export function hitTestBarrel(x, z, tol = 0.45) {
   if (!isFinite(x) || !isFinite(z)) return null;
 
-  const reach = BARREL_RADIUS + (isFinite(radius) ? radius : 0.45);
-  const reach2 = reach * reach;
+  // 容差：甲传进来的是"额外宽容量"，这里收敛一下别让判定大得离谱
+  const extra = Math.min(isFinite(tol) ? tol : 0.25, 0.3);
+  const reach = BARREL_RADIUS + extra;   // 到桶身表面的距离
 
   for (let i = 0; i < barrels.length; i++) {
     const b = barrels[i];
     if (!b.alive || b.fuseActive) continue;
 
-    const dx = x - b.x;
+    // 桶是三只横排，整体是一段横线：用"点到线段"的胶囊判定，
+    // 球形判定的话横排两端就打不到（子弹垂直上飞，正好从桶上面过）
+    const dx = Math.abs(x - b.x);
+    const over = Math.max(0, dx - BARREL_SPAN);
     const dz = z - b.z;
-    if (dx * dx + dz * dz > reach2) continue;
+    if (over * over + dz * dz > reach * reach) continue;
 
     // 点燃引信
     b.fuseActive = true;
