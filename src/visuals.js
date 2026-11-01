@@ -1400,8 +1400,15 @@ function syncZombies(state, dt) {
           ? { isModel: true, vis }
           : { isModel: false, mesh: makeZombieMesh(z.type) };
 
-        // Boss 登场：咆哮 + 红光警告 + 强震屏 + 镜头推近
+        // 精英和 Boss 头顶挂血条（甲给僵尸加 maxHp 字段就有内容显示）
         const look = ZOMBIE_LOOKS[z.type];
+        if (look && (look.isBoss || look.score >= 5 || z.maxHp)) {
+          const w = look.isBoss ? 2.0 : 1.2;
+          entry.hpBar = makeHpBar(w);
+          entry.hpHeight =
+            MODEL_TARGET.zombieHeight * look.scale * (look.isBoss ? BOSS_HEIGHT_MUL : 1);
+        }
+
         if (look && look.isBoss) {
           if (vis && vis.roarAction) {
             vis.roarAction.reset();
@@ -1430,6 +1437,13 @@ function syncZombies(state, dt) {
     const sliding = z.z > 7.6;
     const dir = Math.sign(state.player.x - z.x) || 0;
     const targetTilt = sliding ? dir * 0.22 : 0;
+
+    if (entry.hpBar) {
+      // 血条跟着僵尸走，始终面向相机
+      const ratio = z.maxHp ? Math.max(0, Math.min(1, z.hp / z.maxHp)) : 1;
+      entry.hpBar.fill.scale.x = entry.hpBar.width * ratio;
+      entry.hpBar.group.position.set(z.x, (entry.hpHeight || 1.8) + 0.35, z.z);
+    }
 
     if (entry.isModel) {
       const root = entry.vis.root;
@@ -1473,6 +1487,11 @@ function syncZombies(state, dt) {
     if (!alive.has(id)) {
       // 僵尸从 state 里消失 = 被打死了。模型版先播死亡动画再消失，
       // 血雾和魂火由 zombieDie 事件负责。
+      if (entry.hpBar) {
+        // 血条跟着尸体一起消失
+        disposeHpBar(entry.hpBar);
+        entry.hpBar = null;
+      }
       if (entry.isModel && entry.vis.deathAction) {
         playDeathAnim(entry.vis);
       } else {
@@ -2329,6 +2348,56 @@ function makeZombieMesh(type) {
   mesh.add(shadow);
 
   return mesh;
+}
+
+/* ----------------------------------------------------------
+ * 血条：给精英和 Boss 用
+ * 自动检测僵尸对象上的 maxHp（甲加了字段就有血条，没加就按满血显示）
+ * ---------------------------------------------------------- */
+
+let hpBarTex = null;
+
+function getHpBarTexture() {
+  if (hpBarTex) return hpBarTex;
+  const c = document.createElement('canvas');
+  c.width = 64;
+  c.height = 8;
+  const g = c.getContext('2d');
+  g.fillStyle = '#ffffff';
+  g.fillRect(0, 0, 64, 8);
+  hpBarTex = new THREE.CanvasTexture(c);
+  hpBarTex.needsUpdate = true;
+  return hpBarTex;
+}
+
+function makeHpBar(width) {
+  const tex = getHpBarTexture();
+  const group = new THREE.Group();
+
+  const bg = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: tex, color: 0x0d0d0d, transparent: true, opacity: 0.8, depthTest: false,
+  }));
+  bg.scale.set(width, 0.14, 1);
+
+  const fill = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: tex, color: 0xff5a44, transparent: true, depthTest: false,
+  }));
+  fill.center.set(0, 0.5);          // 从左端往右长
+  fill.position.x = -width / 2;
+  fill.scale.set(width, 0.1, 1);
+
+  group.add(bg);
+  group.add(fill);
+  scene.add(group);
+  group.renderOrder = 20;
+  return { group, fill, width };
+}
+
+function disposeHpBar(bar) {
+  if (!bar) return;
+  scene.remove(bar.group);
+  bar.bg.material.dispose();
+  bar.fill.material.dispose();
 }
 
 function makeBlobShadow(radius) {
