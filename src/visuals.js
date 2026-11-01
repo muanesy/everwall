@@ -625,7 +625,8 @@ let muzzleLight = null;
 let fxBanner = null;
 let fxHurt = null;
 let fxFloats = null;   // 击杀飘字的容器（绝对定位，位置每帧由相机投影算）
-let fxToast = null;    // 屏障升级之类的小提示条
+let fxToast = null;
+let fxFade = null;        // 换图用的全屏淡入淡出遮罩
 const FX_P_MAX = 500;
 const fxPool = Array.from({ length: FX_P_MAX }, () => ({ life: 0, maxLife: 1, vx: 0, vy: 0, vz: 0, g: 0 }));
 let fxGeo = null;
@@ -802,12 +803,14 @@ export function initVisuals(container, events) {
     <div class="fx-banner"><div class="fx-banner__title"></div><div class="fx-banner__sub"></div></div>
     <div class="fx-hurt"></div>
     <div class="fx-floats"></div>
-    <div class="fx-toast"></div>`;
+    <div class="fx-toast"></div>
+    <div class="fx-fade"></div>`;
   document.body.appendChild(fxLayer);
   fxBanner = fxLayer.querySelector('.fx-banner');
   fxHurt = fxLayer.querySelector('.fx-hurt');
   fxFloats = fxLayer.querySelector('.fx-floats');
   fxToast = fxLayer.querySelector('.fx-toast');
+  fxFade = fxLayer.querySelector('.fx-fade');
 
   window.addEventListener('resize', resize);
   resize();
@@ -960,6 +963,21 @@ export function spawnBarrel(x, z) {
   return spawnBarrelAt(x, z);
 }
 
+/* 换图过渡：淡出 → 换内容 → 淡入
+ * 直接硬切会很突兀，队长那边"击败 Boss 换时代"必须走这个。 */
+function fadeOut(ms = 420) {
+  if (!fxFade) return Promise.resolve();
+  fxFade.style.transition = `opacity ${ms}ms ease`;
+  fxFade.style.opacity = '1';
+  return new Promise((res) => setTimeout(res, ms));
+}
+
+function fadeIn(ms = 420) {
+  if (!fxFade) return;
+  fxFade.style.transition = `opacity ${ms}ms ease`;
+  fxFade.style.opacity = '0';
+}
+
 /* ----------------------------------------------------------
  * 换地图（给队长的"时代 Boss 换图"用）
  *
@@ -971,9 +989,24 @@ export function spawnBarrel(x, z) {
  *   switchMapLook('lava');   // 战场换成熔岩图
  *   applyEraIndex(5);        // 同时把时代切到终幕（可选）
  * ---------------------------------------------------------- */
-export function switchMapLook(mapId) {
+export function switchMapLook(mapId, opts = {}) {
   const m = MAPS[mapId];
   if (!m || !scene) return false;
+
+  // 带过渡的换图：先淡出，再换，最后淡入
+  if (opts.fade) {
+    fadeOut(opts.fadeMs || 420);
+    setTimeout(() => {
+      doSwitchMapLook(mapId);
+      fadeIn(opts.fadeMs || 420);
+    }, (opts.fadeMs || 420) + 40);
+    return true;
+  }
+  return doSwitchMapLook(mapId);
+}
+
+function doSwitchMapLook(mapId) {
+  const m = MAPS[mapId];
 
   // 背景色与雾
   scene.background = new THREE.Color(m.bg);

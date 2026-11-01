@@ -588,3 +588,14 @@ canvas {
   letter-spacing: 0.12em;
   color: var(--muted);
 }
+
+/* ---------- 换图过渡遮罩（淡出 → 换图 → 淡入） ---------- */
+
+.fx-fade {
+  position: fixed;
+  inset: 0;
+  background: #05070a;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 9;
+}
