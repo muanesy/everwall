@@ -301,6 +301,7 @@ function prepareZombieType(rawProto, look) {
   // 这里必须把真动画引用补回来，否则这一类型的僵尸不会走路
   proto.userData.clip = rawProto.userData.clip;
   proto.userData.attackClip = rawProto.userData.attackClip;
+  proto.userData.deathClip = rawProto.userData.deathClip;
   proto.traverse((o) => {
     if ((o.isMesh || o.isSkinnedMesh) && o.material) {
       o.material = Array.isArray(o.material)
@@ -347,6 +348,9 @@ function loadModels() {
     // 攻击动画（UA 系列有 Punch 出拳），没有就留空 → 该类型不播攻击动作
     proto.userData.attackClip =
       clips.find((c) => /punch|attack|bite|slash/i.test(c.name)) || null;
+    // 死亡动画：僵尸倒下，比直接消失好看很多
+    proto.userData.deathClip =
+      clips.find((c) => /death|defeat|dying/i.test(c.name)) || null;
     return proto;
   };
 
@@ -509,6 +513,7 @@ function spawnModel(proto, faceDir) {
     let mixer = null;
     let walkAction = null;
     let attackAction = null;
+    let deathAction = null;
     const clip = proto.userData.clip;
     if (clip) {
       mixer = new THREE.AnimationMixer(root);
@@ -522,9 +527,16 @@ function spawnModel(proto, faceDir) {
         attackAction = mixer.clipAction(proto.userData.attackClip);
         attackAction.timeScale = proto.userData.attackSpeed || 1.0;
       }
+      // 死亡动作待命：死的时候播一遍再消失
+      if (proto.userData.deathClip) {
+        deathAction = mixer.clipAction(proto.userData.deathClip);
+        deathAction.setLoop(THREE.LoopOnce, 1);
+        deathAction.clampWhenFinished = true;
+        deathAction.paused = true;
+      }
       animMixers.add(mixer);
     }
-    return { root, mixer, walkAction, attackAction, attacking: false };
+    return { root, mixer, walkAction, attackAction, deathAction, attacking: false };
   } catch (err) {
     console.warn('[visuals] 模型克隆失败：', err);
     return null;
@@ -964,6 +976,7 @@ export function syncScene(state, dt) {
   updateToast(dt);
   updateBarrels(dt);
   updateAmbientFx(dt);
+  updateDeathQueue(dt);
   updateAdaptiveQuality(dt);
   if (dayNight) dayNight.update(dt);
   soldierRecoil = soldierRecoil > 0 ? Math.max(0, soldierRecoil - dt * 0.55) : 0;
@@ -1315,18 +1328,61 @@ function syncZombies(state, dt) {
 
   for (const [id, entry] of zombieMeshes) {
     if (!alive.has(id)) {
-      if (entry.isModel) despawnModel(entry.vis);
-      else {
-        scene.remove(entry.mesh);
-        disposeMesh(entry.mesh);
+      // 僵尸从 state 里消失 = 被打死了。模型版先播死亡动画再消失，
+      // 血雾和魂火由 zombieDie 事件负责。
+      if (entry.isModel && entry.vis.deathAction) {
+        playDeathAnim(entry.vis);
+      } else {
+        if (entry.isModel) despawnModel(entry.vis);
+        else {
+          scene.remove(entry.mesh);
+          disposeMesh(entry.mesh);
+        }
       }
       zombieMeshes.delete(id);
     }
   }
 }
 
-function syncBullets(state) {
-  const alive = new Set();
+/* ----------------------------------------------------------
+ * 死亡演出：僵尸倒下再消失
+ * ---------------------------------------------------------- */
+
+const deathQueue = [];   // { vis, t, life }
+
+function playDeathAnim(vis) {
+  const act = vis.deathAction;
+  if (!act) {
+    despawnModel(vis);
+    return;
+  }
+  // 停掉走/打的动作，切到死亡动画播一遍
+  if (vis.walkAction) vis.walkAction.stop();
+  if (vis.attackAction) vis.attackAction.stop();
+  act.reset();
+  act.paused = false;
+  act.play();
+  deathQueue.push({ vis, t: 0, life: Math.min(1.1, (act.getClip().duration || 1) * 0.9) });
+}
+
+function updateDeathQueue(dt) {
+  for (let i = deathQueue.length - 1; i >= 0; i--) {
+    const d = deathQueue[i];
+    d.t += dt;
+    // 最后 0.3 秒往下沉一点，模拟陷进地里
+    if (d.t > d.life - 0.3) {
+      const k = Math.max(0, (d.life - d.t) / 0.3);
+      d.vis.root.position.y -= (1 - k) * 0.5 * dt * 8;
+      d.vis.root.scale.multiplyScalar(1 - 0.5 * dt * (1 - k));
+    }
+    if (d.t >= d.life) {
+      despawnModel(d.vis);
+      deathQueue.splice(i, 1);
+    }
+  }
+}
+
+function syncBullets(state) {  const alive = new Set();
 
   for (const b of state.bullets) {
     alive.add(b.id);
