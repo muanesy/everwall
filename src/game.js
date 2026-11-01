@@ -34,15 +34,18 @@ const CONFIG = {
     minFireInterval: 0.18, // 射击间隔的下限，防止子弹太多
     bulletSpeed: 28,
     bulletDamage: 10,
-    volleySpread: 0.9,     // 多发子弹的横向总宽度，越小越集中
-    maxVolley: 5,
+    maxVolley: 5,          // 总火力上限，越大总射速越高
+  },
+  weapon: {
+    lineGap: 1.1,        // 多条弹道之间的横向间距
+    maxLines: 5,         // 最多几条弹道
+    spreadMaxRatio: 0.15, // 扩散器：到屏幕顶端时单侧最大偏移 / 纵向距离
   },
   barrier: {
     speed: 6.5,            // 压下来的速度
     spawnInterval: 2.4,
     rowGap: 1.44,          // 横向间隔，铺满左半边
     staggerRange: 8,       // 同一批屏障在纵向错开的范围，避免排成一条直线
-    negativeChance: 0.15,  // 每一排里出现负数屏障的概率
     positiveBase: 1,       // 普通屏障的基础加兵数
     positiveStepWaves: 3,  // 每几波升级一次
     positiveMax: 5,        // 普通屏障最多 +5
@@ -52,7 +55,17 @@ const CONFIG = {
     capMin: 10,            // 打满后的下限
     capBase: 30,           // 打满上限的基础值
     capGrowth: 4,          // 每波打满上限增加
-    touchHalfWidth: 1.0,   // 屏障碰到士兵的判定半宽
+    negativeChanceBase: 0.15,   // 负数屏障的基础概率
+    negativeChancePerWave: 0.02, // 每波增加
+    negativeChanceMax: 0.35,    // 概率上限
+    negativeLengthEveryWaves: 4, // 每几波变长一次
+    negativeLengthMax: 3,        // 最长占几个格子
+    weaponChance: 0.02,          // 武器强化屏障的出现概率
+    spreaderChance: 0.02,        // 扩散器的出现概率
+    weaponHitsBase: 30,          // 武器强化需要的基础命中数
+    weaponHitsPerWave: 6,        // 每波增加
+    spreaderHitsBase: 20,        // 扩散器需要的基础命中数
+    spreaderHitsPerWave: 4,      // 每波增加
   },
   zombie: {
     baseHp: 20,
@@ -103,6 +116,12 @@ const state = {
   player: {
     x: 0,
     z: CONFIG.world.playerZ,
+  },
+
+  // 武器状态：默认一条弹道，没有扩散
+  weapon: {
+    lines: 1,
+    spread: false,
   },
 
   bullets: [],  // { id, x, z, vz, damage }
@@ -197,6 +216,8 @@ function resetState() {
   state.score = 0;
   state.soldiers = 5;
   state.player.x = 0;
+  state.weapon.lines = 1;
+  state.weapon.spread = false;
 
   state.bullets.length = 0;
   state.barriers.length = 0;
@@ -270,27 +291,35 @@ function updateFiring(dt) {
   state.fireTimer -= dt;
   if (state.fireTimer > 0) return;
 
-  // 人越多，射速越快
-  state.fireTimer = Math.max(
-    CONFIG.player.minFireInterval,
-    CONFIG.player.baseFireInterval / Math.max(1, state.soldiers)
-  );
+  const lines = state.weapon.lines;
 
-  // 多发子弹，但发射点靠得很近，看起来是一束而不是散开
-  const count = Math.min(
+  // 总射速由士兵数决定，拆到几条弹道上，总子弹数不变
+  const baseCount = Math.min(
     CONFIG.player.maxVolley,
     1 + Math.floor(state.soldiers / 10)
   );
-  const spread = CONFIG.player.volleySpread;
+  const baseInterval = Math.max(
+    CONFIG.player.minFireInterval,
+    CONFIG.player.baseFireInterval / Math.max(1, state.soldiers)
+  );
+  const totalRate = baseCount / baseInterval; // 每秒多少发
 
-  for (let i = 0; i < count; i++) {
-    const t = count === 1 ? 0.5 : i / (count - 1);
-    const x = state.player.x + (t - 0.5) * spread;
+  state.fireTimer = lines / totalRate;
+
+  const gap = CONFIG.weapon.lineGap;
+  const maxVx = state.weapon.spread
+    ? CONFIG.weapon.spreadMaxRatio * CONFIG.player.bulletSpeed
+    : 0;
+
+  for (let i = 0; i < lines; i++) {
+    const offset = (i - (lines - 1) / 2) * gap;
+    const vx = maxVx ? (Math.random() * 2 - 1) * maxVx : 0;
 
     state.bullets.push({
       id: state.nextId++,
-      x,
+      x: state.player.x + offset,
       z: state.player.z - 0.25,
+      vx,
       vz: -CONFIG.player.bulletSpeed,
       damage: CONFIG.player.bulletDamage,
     });
@@ -305,9 +334,10 @@ function updateFiring(dt) {
 function updateBullets(dt) {
   for (let i = state.bullets.length - 1; i >= 0; i--) {
     const b = state.bullets[i];
+    b.x += (b.vx || 0) * dt;
     b.z += b.vz * dt;
 
-    if (b.z < CONFIG.world.spawnZ - 1) {
+    if (b.z < CONFIG.world.spawnZ - 1 || Math.abs(b.x) > 14) {
       state.bullets.splice(i, 1);
       continue;
     }
@@ -320,8 +350,11 @@ function updateBullets(dt) {
 
       if (bar.z < CONFIG.world.screenTopZ) continue;
 
-      if (Math.abs(b.x - bar.x) < 0.8 && Math.abs(b.z - bar.z) < 0.7) {
-        if (bar.negative) {
+      if (
+        Math.abs(b.x - bar.x) < bar.halfWidth + 0.12 &&
+        Math.abs(b.z - bar.z) < 0.7
+      ) {
+        if (bar.kind === 'negative') {
           // 负数屏障：每打一发 +1，打满上限就生效
           bar.value += 1;
           emit('barrierHit', { x: bar.x, z: bar.z, value: bar.value });
@@ -329,6 +362,30 @@ function updateBullets(dt) {
           if (bar.value >= bar.maxValue) {
             applySoldiers(bar.value);
             emit('barrierApply', { x: bar.x, z: bar.z, value: bar.value });
+            state.barriers.splice(j, 1);
+          }
+        } else if (bar.kind === 'weapon' || bar.kind === 'spreader') {
+          // 武器强化 / 扩散器：攒够命中才生效，没攒够就白打
+          bar.hits += 1;
+          emit('barrierHit', {
+            x: bar.x,
+            z: bar.z,
+            kind: bar.kind,
+            hits: bar.hits,
+            required: bar.required,
+          });
+
+          if (bar.hits >= bar.required) {
+            if (bar.kind === 'weapon') {
+              state.weapon.lines = Math.min(
+                CONFIG.weapon.maxLines,
+                state.weapon.lines + 1
+              );
+              emit('weaponUpgrade', { lines: state.weapon.lines });
+            } else {
+              state.weapon.spread = true;
+              emit('spreaderUnlock', {});
+            }
             state.barriers.splice(j, 1);
           }
         } else {
@@ -383,10 +440,13 @@ function updateBarriers(dt) {
     // 碰到士兵：数值立刻生效，正的加兵，负的扣兵
     if (
       bar.z >= CONFIG.world.touchZ &&
-      Math.abs(bar.x - state.player.x) < CONFIG.barrier.touchHalfWidth
+      Math.abs(bar.x - state.player.x) < bar.halfWidth + 0.3
     ) {
-      applySoldiers(bar.value);
-      emit('barrierApply', { x: bar.x, z: bar.z, value: bar.value });
+      // 武器强化和扩散器错过就不生效，只有正负数屏障会结算
+      if (bar.kind === 'normal' || bar.kind === 'negative') {
+        applySoldiers(bar.value);
+        emit('barrierApply', { x: bar.x, z: bar.z, value: bar.value });
+      }
       state.barriers.splice(i, 1);
       continue;
     }
@@ -416,24 +476,101 @@ function spawnBarrierRow() {
   const valueCap =
     CONFIG.barrier.capBase + (wave - 1) * CONFIG.barrier.capGrowth;
 
-  // 从左边界一直铺到中间，整排一起压下来
-  for (let x = minX; x <= maxX + 0.01; x += step) {
-    const negative = Math.random() < CONFIG.barrier.negativeChance;
+  // 负数屏障越到后期越多、越长
+  const negativeChance = Math.min(
+    CONFIG.barrier.negativeChanceMax,
+    CONFIG.barrier.negativeChanceBase +
+      (wave - 1) * CONFIG.barrier.negativeChancePerWave
+  );
+  const negativeLength = Math.min(
+    CONFIG.barrier.negativeLengthMax,
+    1 + Math.floor((wave - 1) / CONFIG.barrier.negativeLengthEveryWaves)
+  );
 
-    state.barriers.push({
-      id: state.nextId++,
-      x,
-      z: CONFIG.world.spawnZ - Math.random() * CONFIG.barrier.staggerRange,
-      value: negative
-        ? -randInt(CONFIG.barrier.negativeMin, negativeCap)
-        : positiveValue,
-      maxValue: negative
-        ? randInt(CONFIG.barrier.capMin, valueCap)
-        : positiveValue,
-      negative,
-      speed: CONFIG.barrier.speed,
-    });
+  const xs = [];
+  for (let x = minX; x <= maxX + 0.01; x += step) xs.push(x);
+
+  // 已经满级就不刷对应的特殊屏障，避免浪费玩家的火力
+  const weaponChance =
+    state.weapon.lines < CONFIG.weapon.maxLines
+      ? CONFIG.barrier.weaponChance
+      : 0;
+  const spreaderChance = state.weapon.spread
+    ? 0
+    : CONFIG.barrier.spreaderChance;
+  const specialChance = weaponChance + spreaderChance;
+
+  let i = 0;
+  while (i < xs.length) {
+    const x = xs[i];
+    const roll = Math.random();
+    const z =
+      CONFIG.world.spawnZ - Math.random() * CONFIG.barrier.staggerRange;
+
+    if (roll < weaponChance) {
+      state.barriers.push(makeSpecialBarrier('weapon', x, z, wave));
+      i += 1;
+    } else if (roll < specialChance) {
+      state.barriers.push(makeSpecialBarrier('spreader', x, z, wave));
+      i += 1;
+    } else if (roll < specialChance + negativeChance) {
+      const len = Math.min(negativeLength, xs.length - i);
+      const centerX = x + (step * (len - 1)) / 2;
+
+      state.barriers.push({
+        id: state.nextId++,
+        kind: 'negative',
+        x: centerX,
+        z,
+        value: -randInt(CONFIG.barrier.negativeMin, negativeCap),
+        maxValue: randInt(CONFIG.barrier.capMin, valueCap),
+        hits: 0,
+        required: 0,
+        length: len,
+        halfWidth: (step * len) / 2 - 0.08,
+        speed: CONFIG.barrier.speed,
+      });
+      i += len;
+    } else {
+      state.barriers.push({
+        id: state.nextId++,
+        kind: 'normal',
+        x,
+        z,
+        value: positiveValue,
+        maxValue: positiveValue,
+        hits: 0,
+        required: 0,
+        length: 1,
+        halfWidth: step / 2 - 0.08,
+        speed: CONFIG.barrier.speed,
+      });
+      i += 1;
+    }
   }
+}
+
+function makeSpecialBarrier(kind, x, z, wave) {
+  const required =
+    kind === 'weapon'
+      ? CONFIG.barrier.weaponHitsBase +
+        (wave - 1) * CONFIG.barrier.weaponHitsPerWave
+      : CONFIG.barrier.spreaderHitsBase +
+        (wave - 1) * CONFIG.barrier.spreaderHitsPerWave;
+
+  return {
+    id: state.nextId++,
+    kind,
+    x,
+    z,
+    value: 0,
+    maxValue: 0,
+    hits: 0,
+    required,
+    length: 1,
+    halfWidth: CONFIG.barrier.rowGap / 2 - 0.08,
+    speed: CONFIG.barrier.speed,
+  };
 }
 
 /* ----------------------------------------------------------

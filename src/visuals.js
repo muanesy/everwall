@@ -1292,24 +1292,40 @@ function treeMesh(rng, h, trunkColor, leafColor) {
 /* ----------------------------------------------------------
  * 模型
  * ---------------------------------------------------------- */
+function barrierKindColor(bar) {
+  if (bar.kind === 'negative') return { main: 0xff5a5a, emissive: 0x5c0d0d };
+  if (bar.kind === 'weapon') return { main: 0x39d0ff, emissive: 0x0b3f52 };
+  if (bar.kind === 'spreader') return { main: 0xb06bff, emissive: 0x3a0d5c };
+  return { main: 0x2fbf71, emissive: 0x0d5c33 };
+}
+
+function barrierLabelText(bar) {
+  if (bar.kind === 'weapon' || bar.kind === 'spreader') {
+    return `${bar.hits}/${bar.required}`;
+  }
+  return bar.value > 0 ? `+${bar.value}` : String(bar.value);
+}
+
 function makeBarrierMesh(bar) {
   const group = new THREE.Group();
+  const color = barrierKindColor(bar);
 
   const barMat = new THREE.MeshStandardMaterial({
-    color: 0x2fbf71,
-    emissive: 0x0d5c33,
+    color: color.main,
+    emissive: color.emissive,
     roughness: 0.5,
     metalness: 0.1,
   });
 
   const barMesh = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.28, 0.5), barMat);
   barMesh.position.y = 0.14;
+  barMesh.scale.x = bar.length || 1;
   group.add(barMesh);
 
   // 浮在上面的数值标签，Sprite 永远朝向相机
   const label = new THREE.Sprite(
     new THREE.SpriteMaterial({
-      map: getValueTexture(bar.value),
+      map: getLabelTexture(barrierLabelText(bar), color.main),
       transparent: true,
       depthWrite: false,
     })
@@ -1318,20 +1334,27 @@ function makeBarrierMesh(bar) {
   label.position.y = 0.95;
   group.add(label);
 
-  group.userData = { barMat, label, labelValue: bar.value };
+  group.userData = {
+    barMat,
+    barMesh,
+    label,
+    labelKey: `${barrierLabelText(bar)}|${color.main}`,
+  };
   return group;
 }
 
 function updateBarrierAppearance(mesh, bar) {
-  const { barMat, label } = mesh.userData;
-  const isNegative = bar.value < 0;
+  const { barMat, barMesh, label } = mesh.userData;
+  const color = barrierKindColor(bar);
 
-  barMat.color.setHex(isNegative ? 0xff5a5a : 0x2fbf71);
-  barMat.emissive.setHex(isNegative ? 0x5c0d0d : 0x0d5c33);
+  barMat.color.setHex(color.main);
+  barMat.emissive.setHex(color.emissive);
+  barMesh.scale.x = bar.length || 1;
 
-  if (mesh.userData.labelValue !== bar.value) {
-    mesh.userData.labelValue = bar.value;
-    label.material.map = getValueTexture(bar.value);
+  const key = `${barrierLabelText(bar)}|${color.main}`;
+  if (mesh.userData.labelKey !== key) {
+    mesh.userData.labelKey = key;
+    label.material.map = getLabelTexture(barrierLabelText(bar), color.main);
     label.material.needsUpdate = true;
   }
 }
@@ -1374,11 +1397,11 @@ function makeBlobShadow(radius) {
   return mesh;
 }
 
-const valueTextures = new Map();
+const labelTextures = new Map();
 
-function getValueTexture(value) {
-  const key = String(value);
-  const cached = valueTextures.get(key);
+function getLabelTexture(text, color) {
+  const key = `${text}|${color}`;
+  const cached = labelTextures.get(key);
   if (cached) return cached;
 
   const canvas = document.createElement('canvas');
@@ -1387,15 +1410,15 @@ function getValueTexture(value) {
 
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, 128, 64);
-  ctx.font = 'bold 46px "Microsoft YaHei", sans-serif';
+  ctx.font = 'bold 36px "Microsoft YaHei", sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = value < 0 ? '#ff8a8a' : '#6dffb0';
-  ctx.fillText(value > 0 ? `+${value}` : String(value), 64, 34);
+  ctx.fillStyle = `#${color.toString(16).padStart(6, '0')}`;
+  ctx.fillText(text, 64, 34);
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
-  valueTextures.set(key, tex);
+  labelTextures.set(key, tex);
   return tex;
 }
 
