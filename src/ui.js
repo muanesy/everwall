@@ -21,6 +21,7 @@ const MAP_LIST = [
   { id: 'moon', name: '月球' },
   { id: 'snow', name: '雪地' },
   { id: 'lava', name: '熔岩' },
+  { id: 'base', name: '军事基地' },
 ];
 
 const currentMap = new URLSearchParams(window.location.search).get('map') || 'city';
