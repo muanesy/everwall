@@ -552,3 +552,17 @@ canvas {
   letter-spacing: 0.06em;
   color: var(--muted);
 }
+
+/* ---------- 历史最佳成绩 ---------- */
+
+.best-line {
+  margin: 2px 0 6px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.best-line strong {
+  color: #ffd66d;
+  font-weight: 700;
+}

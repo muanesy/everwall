@@ -24,6 +24,37 @@ const MAP_LIST = [
 ];
 
 const currentMap = new URLSearchParams(window.location.search).get('map') || 'city';
+const MAP_NAMES = Object.fromEntries(MAP_LIST.map((m) => [m.id, m.name]));
+
+/* 历史最好成绩：按地图分开记，存在本地。
+ * 演示时能看到"这张图我打过多好"，也让结束页不只是三个数字。 */
+const BEST_KEY = 'douyin-zombie-best-v1';
+
+function readBests() {
+  try {
+    const raw = localStorage.getItem(BEST_KEY);
+    const obj = raw ? JSON.parse(raw) : {};
+    return obj && typeof obj === 'object' ? obj : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function writeBest(mapId, score, wave) {
+  try {
+    const all = readBests();
+    const cur = all[mapId] || { score: 0, wave: 0 };
+    const next = {
+      score: Math.max(cur.score || 0, score || 0),
+      wave: Math.max(cur.wave || 0, wave || 0),
+    };
+    all[mapId] = next;
+    localStorage.setItem(BEST_KEY, JSON.stringify(all));
+    return next;
+  } catch (e) {
+    return { score: score || 0, wave: wave || 0 };
+  }
+}
 
 export function initUI(state, actionsRef) {
   actions = actionsRef;
@@ -65,6 +96,12 @@ export function updateUI(state) {
   if (state.status === 'over') {
     els.finalScore.textContent = state.score;
     els.finalWave.textContent = state.wave;
+    els.finalMap.textContent = MAP_NAMES[currentMap] || '废墟街道';
+
+    // 刷新历史最佳（本局成绩只涨不跌）
+    const best = writeBest(currentMap, state.score, state.wave);
+    els.bestScore.textContent = best.score;
+    els.bestWave.textContent = best.wave;
   }
 }
 
@@ -171,6 +208,7 @@ function buildDom() {
         <div class="loading__bar"><div class="loading__fill" data-loading-fill></div></div>
         <p class="loading__text" data-loading-text>正在加载角色模型…</p>
       </div>
+      <p class="best-line" data-start-best></p>
       <button class="btn" data-start>开始游戏</button>
       <p class="hint">键盘 ← → 或 A / D<br>手机上按住屏幕左右拖动</p>
     </div>
@@ -186,6 +224,10 @@ function buildDom() {
       <p class="score-line">
         得分 <strong data-final-score>0</strong> · 第 <strong data-final-wave>1</strong> 波
       </p>
+      <p class="best-line">
+        <span data-final-map>废墟街道</span> ·
+        最佳 <strong data-best-score>0</strong> 分 / 第 <strong data-best-wave>1</strong> 波
+      </p>
       <button class="btn btn--ad" data-revive>看广告复活 +20 兵</button>
       <button class="btn btn--ghost" data-restart>重新开始</button>
     </div>
@@ -200,6 +242,16 @@ function buildDom() {
   soundBtn.textContent = '🔊';
   document.body.appendChild(soundBtn);
 
+  // 开始页也显示这张图的历史最佳，给玩家一个目标
+  // 注意：buildDom 执行时 els 还没赋值，这里只能用局部变量
+  const startBest = startScreen.querySelector('[data-start-best]');
+  if (startBest) {
+    const best = readBests()[currentMap];
+    startBest.textContent = best && best.score
+      ? `本图最佳 ${best.score} 分 · 第 ${best.wave} 波`
+      : '这张图还没有记录，来打个第一';
+  }
+
   return {
     hud,
     soldiersText: hud.querySelector('[data-soldiers]'),
@@ -213,10 +265,14 @@ function buildDom() {
     overScreen,
     finalScore: overScreen.querySelector('[data-final-score]'),
     finalWave: overScreen.querySelector('[data-final-wave]'),
+    finalMap: overScreen.querySelector('[data-final-map]'),
+    bestScore: overScreen.querySelector('[data-best-score]'),
+    bestWave: overScreen.querySelector('[data-best-wave]'),
     soundBtn,
     loadingBox: startScreen.querySelector('[data-loading]'),
     loadingFill: startScreen.querySelector('[data-loading-fill]'),
     loadingText: startScreen.querySelector('[data-loading-text]'),
+    startBest,
   };
 }
 
