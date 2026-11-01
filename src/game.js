@@ -55,10 +55,10 @@ const CONFIG = {
     baseSpeed: 3.2,
     speedPerWave: 0.3,
     maxSpeed: 8,
+    speedCap: 9,       // 快鬼加速后也不会超过这个速度
     spawnInterval: 0.35,
     minSpawnInterval: 0.14,
     intervalPerWave: 0.03,
-    touchLoss: 1,      // 碰到士兵扣 1
     maxAlive: 120,
     aggroStartZ: 1,        // 比原来多一点点距离就开始拐弯
     aggroRadius: 6,        // 主动拐弯的范围
@@ -68,6 +68,15 @@ const CONFIG = {
     touchPerSoldier: 0.04, // 每多一个兵，接触范围加多少
     touchMaxBonus: 0.6,    // 接触范围最多额外加多少
     separation: 0.6,     // 僵尸之间的最小间距，防止叠成一坨
+
+    // 0-4 的编号和 visuals.js 约定一致，改编号要两边一起改
+    types: [
+      { id: 0, name: '普通',   hp: 1.0, speed: 1.00, touchLoss: 1, weight: 50, minWave: 1 },
+      { id: 1, name: '大块头', hp: 2.5, speed: 0.70, touchLoss: 2, weight: 15, minWave: 2 },
+      { id: 2, name: '快鬼',   hp: 0.5, speed: 1.50, touchLoss: 1, weight: 22, minWave: 1 },
+      { id: 3, name: '精英',   hp: 3.5, speed: 0.85, touchLoss: 3, weight: 6,  minWave: 3 },
+      { id: 4, name: '女僵尸', hp: 1.2, speed: 1.10, touchLoss: 1, weight: 12, minWave: 1 },
+    ],
   },
   wave: {
     duration: 15,
@@ -98,6 +107,7 @@ const state = {
   barrierTimer: 0,
   zombieTimer: 0,
   nextId: 1,
+  spawnCounts: [0, 0, 0, 0, 0], // 调试用：统计每种僵尸刷了多少只
 };
 
 // 调试用：浏览器控制台输入 __state 可以看实时数据
@@ -190,6 +200,7 @@ function resetState() {
   state.barrierTimer = 0.6;
   state.zombieTimer = 0.8;
   state.nextId = 1;
+  state.spawnCounts.fill(0);
 }
 
 function startGame() {
@@ -464,7 +475,7 @@ function updateZombies(dt) {
       Math.abs(z.x - state.player.x) < formationHalfWidth()
     ) {
       state.zombies.splice(i, 1);
-      damageArmy(CONFIG.zombie.touchLoss, 'touch');
+      damageArmy(z.touchLoss, 'touch');
       continue;
     }
 
@@ -499,21 +510,39 @@ function separateZombies() {
   }
 }
 
+function pickZombieType(wave) {
+  const unlocked = CONFIG.zombie.types.filter((t) => wave >= t.minWave);
+  const total = unlocked.reduce((sum, t) => sum + t.weight, 0);
+
+  let roll = Math.random() * total;
+  for (const t of unlocked) {
+    roll -= t.weight;
+    if (roll <= 0) return t;
+  }
+  return unlocked[unlocked.length - 1];
+}
+
 function spawnZombie() {
   const [minX, maxX] = CONFIG.world.rightZone;
+  const type = pickZombieType(state.wave);
+
+  const baseHp =
+    CONFIG.zombie.baseHp + (state.wave - 1) * CONFIG.zombie.hpPerWave;
+  const baseSpeed =
+    CONFIG.zombie.baseSpeed + (state.wave - 1) * CONFIG.zombie.speedPerWave;
 
   state.zombies.push({
     id: state.nextId++,
     x: minX + Math.random() * (maxX - minX),
     z: CONFIG.world.spawnZ - Math.random() * 4,
-    hp: CONFIG.zombie.baseHp + (state.wave - 1) * CONFIG.zombie.hpPerWave,
-    speed: Math.min(
-      CONFIG.zombie.maxSpeed,
-      CONFIG.zombie.baseSpeed + (state.wave - 1) * CONFIG.zombie.speedPerWave
-    ),
-    type: Math.floor(Math.random() * 3),
+    hp: baseHp * type.hp,
+    speed: Math.min(CONFIG.zombie.speedCap, baseSpeed * type.speed),
+    touchLoss: type.touchLoss,
+    type: type.id,
     aggro: false,
   });
+
+  if (state.spawnCounts) state.spawnCounts[type.id] += 1;
 }
 
 function damageArmy(amount, cause) {
