@@ -29,19 +29,24 @@ const CONFIG = {
     rightZone: [0.6, 7.6],   // 僵尸出现的横向范围
   },
   player: {
-    speed: 14,
+    speed: 18,
     baseFireInterval: 0.5, // 1 个士兵时的射击间隔
     minFireInterval: 0.18, // 射击间隔的下限，防止子弹太多
     bulletSpeed: 28,
     bulletDamage: 10,
+    volleySpread: 0.9,     // 多发子弹的横向总宽度，越小越集中
+    maxVolley: 5,
   },
   barrier: {
-    hp: 10,            // 等于一发子弹的伤害，碰到一次就碎
-    speed: 6.5,        // 压下来的速度
-    spawnInterval: 2.2,
-    columnSize: 3,     // 每次刷一列，几个屏障共用同一个 x
-    columnGap: 3.2,    // 列内间隔
-    soldierPerHit: 1,
+    speed: 6.5,            // 压下来的速度
+    spawnInterval: 2.4,
+    rowGap: 1.44,          // 横向间隔，铺满左半边
+    negativeChance: 0.15,  // 每一排里出现负数屏障的概率
+    negativeMin: -30,
+    negativeMax: -10,
+    capMin: 10,            // 负数屏障打满后的上限
+    capMax: 30,
+    touchHalfWidth: 1.0,   // 屏障碰到士兵的判定半宽
   },
   zombie: {
     baseHp: 20,
@@ -56,8 +61,8 @@ const CONFIG = {
     passLoss: 5,       // 越过士兵扣 5
     maxAlive: 120,
     touchHalfWidth: 0.8, // 士兵队列的碰撞半宽
-    aggroStartZ: 5,      // 走到很靠近士兵的位置才开始动
-    aggroRadius: 4,      // 离士兵 4 以内才追
+    aggroStartZ: -30,    // 从出生点就开始追人
+    aggroRadius: 50,     // 全场都能感知到士兵，横向再远也能吸过来
     turnSpeed: 3.5,      // 侧向追击速度
     separation: 0.6,     // 僵尸之间的最小间距，防止叠成一坨
   },
@@ -105,6 +110,7 @@ const input = {
 };
 
 const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
+const randInt = (min, max) => min + Math.floor(Math.random() * (max - min + 1));
 const emit = (name, detail = {}) =>
   events.dispatchEvent(new CustomEvent(name, { detail }));
 
@@ -238,14 +244,25 @@ function updateFiring(dt) {
     CONFIG.player.baseFireInterval / Math.max(1, state.soldiers)
   );
 
-  // 集中火力：一次只打一条线，不散开
-  state.bullets.push({
-    id: state.nextId++,
-    x: state.player.x,
-    z: state.player.z - 0.25,
-    vz: -CONFIG.player.bulletSpeed,
-    damage: CONFIG.player.bulletDamage,
-  });
+  // 多发子弹，但发射点靠得很近，看起来是一束而不是散开
+  const count = Math.min(
+    CONFIG.player.maxVolley,
+    1 + Math.floor(state.soldiers / 10)
+  );
+  const spread = CONFIG.player.volleySpread;
+
+  for (let i = 0; i < count; i++) {
+    const t = count === 1 ? 0.5 : i / (count - 1);
+    const x = state.player.x + (t - 0.5) * spread;
+
+    state.bullets.push({
+      id: state.nextId++,
+      x,
+      z: state.player.z - 0.25,
+      vz: -CONFIG.player.bulletSpeed,
+      damage: CONFIG.player.bulletDamage,
+    });
+  }
 
   emit('shoot', { x: state.player.x, z: state.player.z });
 }
@@ -271,14 +288,22 @@ function updateBullets(dt) {
 
       if (bar.z < CONFIG.world.screenTopZ) continue;
 
-      if (Math.abs(b.x - bar.x) < 0.95 && Math.abs(b.z - bar.z) < 0.7) {
-        bar.hp -= b.damage;
-        state.soldiers += CONFIG.barrier.soldierPerHit;
-        emit('barrierHit', { x: bar.x, z: bar.z });
+      if (Math.abs(b.x - bar.x) < 0.8 && Math.abs(b.z - bar.z) < 0.7) {
+        if (bar.negative) {
+          // 负数屏障：每打一发 +1，打满上限就生效
+          bar.value += 1;
+          emit('barrierHit', { x: bar.x, z: bar.z, value: bar.value });
 
-        if (bar.hp <= 0) {
+          if (bar.value >= bar.maxValue) {
+            applySoldiers(bar.value);
+            emit('barrierApply', { x: bar.x, z: bar.z, value: bar.value });
+            state.barriers.splice(j, 1);
+          }
+        } else {
+          // 普通 +1 屏障：一发就碎
+          applySoldiers(1);
+          emit('barrierApply', { x: bar.x, z: bar.z, value: 1 });
           state.barriers.splice(j, 1);
-          emit('barrierBreak', { x: bar.x, z: bar.z });
         }
 
         state.bullets.splice(i, 1);
@@ -315,7 +340,7 @@ function updateBarriers(dt) {
   state.barrierTimer -= dt;
 
   if (state.barrierTimer <= 0) {
-    spawnBarrierColumn();
+    spawnBarrierRow();
     state.barrierTimer = CONFIG.barrier.spawnInterval;
   }
 
@@ -323,22 +348,43 @@ function updateBarriers(dt) {
     const bar = state.barriers[i];
     bar.z += bar.speed * dt;
 
+    // 碰到士兵：数值立刻生效，正的加兵，负的扣兵
+    if (
+      bar.z >= CONFIG.world.touchZ &&
+      Math.abs(bar.x - state.player.x) < CONFIG.barrier.touchHalfWidth
+    ) {
+      applySoldiers(bar.value);
+      emit('barrierApply', { x: bar.x, z: bar.z, value: bar.value });
+      state.barriers.splice(i, 1);
+      continue;
+    }
+
+    // 从旁边越过去：不生效
     if (bar.z >= CONFIG.world.killZ) {
       state.barriers.splice(i, 1);
     }
   }
 }
 
-function spawnBarrierColumn() {
+function spawnBarrierRow() {
   const [minX, maxX] = CONFIG.world.leftZone;
-  const x = (minX + maxX) / 2; // 固定在左区正中，全场始终只有一列
+  const step = CONFIG.barrier.rowGap;
 
-  for (let i = 0; i < CONFIG.barrier.columnSize; i++) {
+  // 从左边界一直铺到中间，整排一起压下来
+  for (let x = minX; x <= maxX + 0.01; x += step) {
+    const negative = Math.random() < CONFIG.barrier.negativeChance;
+
     state.barriers.push({
       id: state.nextId++,
       x,
-      z: CONFIG.world.spawnZ - i * CONFIG.barrier.columnGap,
-      hp: CONFIG.barrier.hp,
+      z: CONFIG.world.spawnZ - Math.random() * 0.8,
+      value: negative
+        ? randInt(CONFIG.barrier.negativeMin, CONFIG.barrier.negativeMax)
+        : 1,
+      maxValue: negative
+        ? randInt(CONFIG.barrier.capMin, CONFIG.barrier.capMax)
+        : 1,
+      negative,
       speed: CONFIG.barrier.speed,
     });
   }
@@ -453,6 +499,22 @@ function damageArmy(amount, cause) {
 
   state.soldiers -= amount;
   emit('armyHurt', { soldiers: state.soldiers, amount, cause });
+
+  if (state.soldiers <= 0) {
+    state.soldiers = 0;
+    state.status = 'over';
+  }
+}
+
+// 屏障数值生效：正数加兵，负数扣兵
+function applySoldiers(delta) {
+  if (state.status !== 'playing') return;
+
+  state.soldiers += delta;
+
+  if (delta < 0) {
+    emit('armyHurt', { soldiers: state.soldiers, amount: -delta, cause: 'barrier' });
+  }
 
   if (state.soldiers <= 0) {
     state.soldiers = 0;

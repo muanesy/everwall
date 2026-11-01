@@ -22,7 +22,6 @@ let containerEl = null;
 let playerMesh = null;
 let playerShadow = null;
 let soldierMesh = null;
-let plusOneTexture = null;
 
 let camBaseX = 0;
 let shake = 0;
@@ -98,8 +97,6 @@ export function initVisuals(container, events) {
   soldierMesh.count = 0;
   scene.add(soldierMesh);
 
-  plusOneTexture = makePlusOneTexture();
-
   window.addEventListener('resize', resize);
   resize();
 
@@ -174,11 +171,12 @@ function syncBarriers(state) {
 
     let mesh = barrierMeshes.get(bar.id);
     if (!mesh) {
-      mesh = makeBarrierMesh();
+      mesh = makeBarrierMesh(bar);
       scene.add(mesh);
       barrierMeshes.set(bar.id, mesh);
     }
     mesh.position.set(bar.x, 0, bar.z);
+    updateBarrierAppearance(mesh, bar);
   }
 
   for (const [id, mesh] of barrierMeshes) {
@@ -263,34 +261,48 @@ function updateCamera(state, dt) {
 /* ----------------------------------------------------------
  * 模型
  * ---------------------------------------------------------- */
-function makeBarrierMesh() {
+function makeBarrierMesh(bar) {
   const group = new THREE.Group();
 
-  const bar = new THREE.Mesh(
-    new THREE.BoxGeometry(1.6, 0.28, 0.5),
-    new THREE.MeshStandardMaterial({
-      color: 0x2fbf71,
-      emissive: 0x0d5c33,
-      roughness: 0.5,
-      metalness: 0.1,
-    })
-  );
-  bar.position.y = 0.14;
-  group.add(bar);
+  const barMat = new THREE.MeshStandardMaterial({
+    color: 0x2fbf71,
+    emissive: 0x0d5c33,
+    roughness: 0.5,
+    metalness: 0.1,
+  });
 
-  // 浮在上面的 +1 标签，Sprite 永远朝向相机
+  const barMesh = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.28, 0.5), barMat);
+  barMesh.position.y = 0.14;
+  group.add(barMesh);
+
+  // 浮在上面的数值标签，Sprite 永远朝向相机
   const label = new THREE.Sprite(
     new THREE.SpriteMaterial({
-      map: plusOneTexture,
+      map: getValueTexture(bar.value),
       transparent: true,
       depthWrite: false,
     })
   );
-  label.scale.set(1.15, 0.6, 1);
+  label.scale.set(1.3, 0.65, 1);
   label.position.y = 0.95;
   group.add(label);
 
+  group.userData = { barMat, label, labelValue: bar.value };
   return group;
+}
+
+function updateBarrierAppearance(mesh, bar) {
+  const { barMat, label } = mesh.userData;
+  const isNegative = bar.value < 0;
+
+  barMat.color.setHex(isNegative ? 0xff5a5a : 0x2fbf71);
+  barMat.emissive.setHex(isNegative ? 0x5c0d0d : 0x0d5c33);
+
+  if (mesh.userData.labelValue !== bar.value) {
+    mesh.userData.labelValue = bar.value;
+    label.material.map = getValueTexture(bar.value);
+    label.material.needsUpdate = true;
+  }
 }
 
 function makeZombieMesh(type) {
@@ -319,21 +331,28 @@ function makeBlobShadow(radius) {
   return mesh;
 }
 
-function makePlusOneTexture() {
+const valueTextures = new Map();
+
+function getValueTexture(value) {
+  const key = String(value);
+  const cached = valueTextures.get(key);
+  if (cached) return cached;
+
   const canvas = document.createElement('canvas');
   canvas.width = 128;
   canvas.height = 64;
 
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, 128, 64);
-  ctx.font = 'bold 52px "Microsoft YaHei", sans-serif';
+  ctx.font = 'bold 46px "Microsoft YaHei", sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = '#6dffb0';
-  ctx.fillText('+1', 64, 34);
+  ctx.fillStyle = value < 0 ? '#ff8a8a' : '#6dffb0';
+  ctx.fillText(value > 0 ? `+${value}` : String(value), 64, 34);
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
+  valueTextures.set(key, tex);
   return tex;
 }
 
