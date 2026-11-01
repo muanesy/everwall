@@ -27,7 +27,7 @@ import {
 // 三个乙层模块：兵种阶级外观表、昼夜轮转、炸药桶（新文件，按文件边界属乙）
 import { TIERS, getTier, getTierIndex } from './visuals-tiers.js';
 import { createDayNight, nightForWave } from './visuals-daynight.js';
-import { initBarrels, updateBarrels, resetBarrels, hitTestBarrel } from './visuals-barrels.js';
+import { initBarrels, updateBarrels, resetBarrels, hitTestBarrel, spawnBarrelAt } from './visuals-barrels.js';
 
 /* ----------------------------------------------------------
  * 地图配置表
@@ -726,6 +726,11 @@ export function initVisuals(container, events) {
  * 用法：子弹每帧推进后调一次 hitBarrel(b.x, b.z)，非 null 就让子弹消失。 */
 export function hitBarrel(x, z, radius = 0.5) {
   return hitTestBarrel(x, z, radius);
+}
+
+/* 运行时补一个炸药桶，归甲调用；场上最多 3 个，位置太近会返回 null */
+export function spawnBarrel(x, z) {
+  return spawnBarrelAt(x, z);
 }
 
 /* ----------------------------------------------------------

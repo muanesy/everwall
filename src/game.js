@@ -11,7 +11,7 @@
  * 这里不做任何画面渲染。想让特效出现，就 emit 一个事件。
  * ========================================================== */
 
-import { initVisuals, syncScene, hitBarrel } from './visuals.js';
+import { initVisuals, syncScene, hitBarrel, spawnBarrel } from './visuals.js';
 import { initUI, updateUI } from './ui.js';
 
 /* ----------------------------------------------------------
@@ -55,6 +55,7 @@ const CONFIG = {
   barrel: {
     damageBase: 20,      // 炸药桶爆炸伤害的基础值
     damagePerWave: 4,    // 每波增加的伤害
+    spawnInterval: 12,   // 每隔多少秒尝试补一个桶
   },
   barrier: {
     speed: 6.5,            // 压下来的速度
@@ -153,6 +154,7 @@ const state = {
 
   barrierTimer: 0,
   zombieTimer: 0,
+  barrelTimer: 0,
   nextId: 1,
   spawnCounts: [0, 0, 0, 0, 0], // 调试用：统计每种僵尸刷了多少只
 };
@@ -290,6 +292,7 @@ function resetState() {
 
   state.barrierTimer = 0.6;
   state.zombieTimer = 1.0;
+  state.barrelTimer = CONFIG.barrel.spawnInterval;
   state.nextId = 1;
   state.spawnCounts.fill(0);
 }
@@ -326,6 +329,7 @@ function update(dt) {
   updateFormation();
   updatePlayer(dt);
   updateFiring(dt);
+  updateBarrelSpawn(dt);
   updateBullets(dt);
   updateBarriers(dt);
   updateZombies(dt);
@@ -434,6 +438,19 @@ function updateFiring(dt) {
 /* ----------------------------------------------------------
  * 子弹：打屏障加人，打僵尸得分
  * ---------------------------------------------------------- */
+// 动态补桶：场上最多 3 个，满了或位置太近时模块会拒绝
+function updateBarrelSpawn(dt) {
+  state.barrelTimer -= dt;
+  if (state.barrelTimer > 0) return;
+
+  state.barrelTimer = CONFIG.barrel.spawnInterval;
+
+  const [minX, maxX] = CONFIG.world.rightZone;
+  const x = minX + Math.random() * (maxX - minX);
+  const z = -14 + Math.random() * 15;
+  spawnBarrel(x, z);
+}
+
 function updateBullets(dt) {
   for (let i = state.bullets.length - 1; i >= 0; i--) {
     const b = state.bullets[i];

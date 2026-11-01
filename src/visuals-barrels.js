@@ -47,11 +47,10 @@ const SMOKE_COUNT = 5;           // 每团黑烟的球数
  * ---------------------------------------------------------- */
 const DEFAULT_POSITIONS = [
   { x: 5.6, z: -13.2 },
-  { x: -6.4, z: -9.6 },
-  { x: 4.9, z: -5.2 },
   { x: -5.4, z: -1.0 },
-  { x: 6.8, z: 0.6 },
 ];
+
+const MAX_LIVE_BARRELS = 3; // 场上同时最多几个桶
 
 /* ----------------------------------------------------------
  * 模块内部状态
@@ -225,6 +224,36 @@ export function initBarrels({ scene, events, positions } = {}) {
 }
 
 /* ----------------------------------------------------------
+ * 运行时补桶（给甲做动态生成）
+ * 场上最多 3 个，位置太近会拒绝，返回新桶或 null
+ * ---------------------------------------------------------- */
+export function spawnBarrelAt(x, z) {
+  if (!sceneRef || !Number.isFinite(x) || !Number.isFinite(z)) return null;
+
+  let alive = 0;
+  for (const b of barrels) {
+    if (!b.alive) continue;
+    alive += 1;
+
+    const dx = b.x - x;
+    const dz = b.z - z;
+    if (dx * dx + dz * dz < 2.2 * 2.2) return null;
+  }
+
+  if (alive >= MAX_LIVE_BARRELS) return null;
+
+  const b = buildBarrel(x, z, barrels.length);
+  barrels.push(b);
+  return b;
+}
+
+export function countAliveBarrels() {
+  let n = 0;
+  for (const b of barrels) if (b.alive) n += 1;
+  return n;
+}
+
+/* ----------------------------------------------------------
  * 事件接入：甲派 barrelHit / barrelExplode 时播特效
  * ---------------------------------------------------------- */
 let boundTarget = null;
@@ -342,16 +371,18 @@ export function getBarrelList() {
  * 重开一局：桶复原、特效清空（位置不变）
  * ---------------------------------------------------------- */
 export function resetBarrels() {
-  for (let i = 0; i < barrels.length; i++) {
-    const b = barrels[i];
-    b.alive = true;
-    b.fuseActive = false;
-    b.fuse = 0;
-    b.mesh.visible = true;
-    b.mesh.scale.set(1, 1, 1);
-    b.bodyMat.emissive.setRGB(0, 0, 0);
+  // 动态补的桶不能留到下一局，全部拆掉，只重建初始那两个
+  for (const b of barrels) {
+    if (b.mesh && b.mesh.parent) b.mesh.parent.remove(b.mesh);
+    if (b.bodyMat) b.bodyMat.dispose();
   }
+  barrels.length = 0;
   clearFx();
+
+  if (!sceneRef) return;
+  DEFAULT_POSITIONS.forEach((p, i) => {
+    barrels.push(buildBarrel(p.x, p.z, i));
+  });
 }
 
 /* ==========================================================
