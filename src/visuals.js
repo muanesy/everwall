@@ -328,6 +328,17 @@ const barrierMeshes = new Map();
 const bulletMeshes = new Map();
 const effects = [];
 
+// 战斗特效升级件（对象在 initVisuals 里创建）：
+// muzzleLight 枪口点光源、粒子池（血雾/魂火共用一套 Points）、HTML 覆盖层（波次横幅/扣兵红屏）
+let muzzleLight = null;
+let fxBanner = null;
+let fxHurt = null;
+const FX_P_MAX = 500;
+const fxPool = Array.from({ length: FX_P_MAX }, () => ({ life: 0, maxLife: 1, vx: 0, vy: 0, vz: 0, g: 0 }));
+let fxGeo = null;
+let fxPos = null;
+let fxCol = null;
+
 const dummy = new THREE.Object3D();
 
 /* ----------------------------------------------------------
@@ -418,6 +429,40 @@ export function initVisuals(container, events) {
   soldierMesh.count = 0;
   scene.add(soldierMesh);
 
+  // 枪口火光点光源：shoot 时点亮、每帧快速衰减
+  muzzleLight = new THREE.PointLight(0xffc36d, 0, 9);
+  muzzleLight.position.set(0, 0.9, 8);
+  scene.add(muzzleLight);
+
+  // 粒子池：血雾/魂火共用一套 Points，逐帧只改坐标不分配几何体
+  fxGeo = new THREE.BufferGeometry();
+  fxPos = new Float32Array(FX_P_MAX * 3);
+  fxCol = new Float32Array(FX_P_MAX * 3);
+  fxGeo.setAttribute('position', new THREE.BufferAttribute(fxPos, 3));
+  fxGeo.setAttribute('color', new THREE.BufferAttribute(fxCol, 3));
+  const fxPoints = new THREE.Points(
+    fxGeo,
+    new THREE.PointsMaterial({
+      size: 0.16,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+    })
+  );
+  fxPoints.frustumCulled = false;
+  for (let i = 0; i < FX_P_MAX; i++) fxPos[i * 3 + 1] = -999; // 藏到地下
+  scene.add(fxPoints);
+
+  // HTML 覆盖层：波次横幅 + 扣兵红屏（样式在 styles.css）
+  const fxLayer = document.createElement('div');
+  fxLayer.innerHTML = `
+    <div class="fx-banner"><div class="fx-banner__title"></div><div class="fx-banner__sub"></div></div>
+    <div class="fx-hurt"></div>`;
+  document.body.appendChild(fxLayer);
+  fxBanner = fxLayer.querySelector('.fx-banner');
+  fxHurt = fxLayer.querySelector('.fx-hurt');
+
   window.addEventListener('resize', resize);
   resize();
 
@@ -430,6 +475,10 @@ export function initVisuals(container, events) {
   // 事件 → 特效 + 音效
   events.addEventListener('shoot', (e) => {
     spawnMuzzleFlash(e.detail.x, e.detail.z);
+    if (muzzleLight) {
+      muzzleLight.position.set(e.detail.x, 0.9, e.detail.z - 0.9);
+      muzzleLight.intensity = 22;
+    }
     playShoot();
   });
 
@@ -449,18 +498,36 @@ export function initVisuals(container, events) {
   });
 
   events.addEventListener('zombieDie', (e) => {
-    spawnRing(e.detail.x, e.detail.z, 0xff6a4a, 0.3);
+    // 血雾 + 几粒绿色魂火 + 原有红环，死亡更有"交代"
+    spawnBurst(e.detail.x, 1.0, e.detail.z, 0x8a2f22, 16, { speed: 2.6, up: 2.4, spread: 0.5, life: 0.6 });
+    spawnBurst(e.detail.x, 0.8, e.detail.z, 0x86c06c, 6, { speed: 1.4, up: 2.0, spread: 0.4, life: 0.7 });
+    spawnRing(e.detail.x, e.detail.z, 0xff6a4a, 0.42);
     playZombieDie();
   });
 
   events.addEventListener('armyHurt', (e) => {
     const amount = e.detail?.amount ?? 1;
     shake = 0.3 + amount * 0.12;
+    // 屏幕四周红色边缘光闪一下
+    if (fxHurt) {
+      fxHurt.classList.remove('show');
+      void fxHurt.offsetWidth; // 强制重排，让动画能连续重触发
+      fxHurt.classList.add('show');
+    }
     playArmyHurt(amount);
   });
 
-  events.addEventListener('waveStart', () => {
+  events.addEventListener('waveStart', (e) => {
     shake = 0.2;
+    // 金色波次横幅：放大进场 → 停留 → 淡出
+    const wave = e.detail?.wave;
+    if (fxBanner && wave) {
+      fxBanner.querySelector('.fx-banner__title').textContent = `第 ${wave} 波`;
+      fxBanner.querySelector('.fx-banner__sub').textContent = '— 僵尸潮来袭 —';
+      fxBanner.classList.remove('show');
+      void fxBanner.offsetWidth;
+      fxBanner.classList.add('show');
+    }
     playWaveStart();
   });
 }
@@ -496,6 +563,8 @@ export function syncScene(state, dt) {
   syncBullets(state);
 
   updateEffects(dt);
+  updateParticleFx(dt);
+  if (muzzleLight) muzzleLight.intensity = Math.max(0, muzzleLight.intensity - dt * 240);
   updateCamera(state, dt);
 
   // 骨骼动画：所有活着的 mixer 每帧推进（隐藏的士兵 timeScale=0 不耗动画计算）
@@ -1374,6 +1443,65 @@ function spawnRing(x, z, color, maxLife) {
   mesh.position.set(x, 0.06, z);
   scene.add(mesh);
   effects.push({ mesh, life: 0, maxLife, type: 'ring' });
+}
+
+// 从粒子池里借位置发射一簇粒子（血雾/魂火/尘土共用）
+const fxC = new THREE.Color();
+function spawnBurst(x, y, z, color, count, opts = {}) {
+  if (!fxGeo) return;
+  const speed = opts.speed ?? 2.4;
+  const up = opts.up ?? 2;
+  const life = opts.life ?? 0.55;
+  let n = 0;
+  for (let i = 0; i < FX_P_MAX && n < count; i++) {
+    const p = fxPool[i];
+    if (p.life > 0) continue;
+    p.maxLife = p.life = life * (0.6 + Math.random() * 0.7);
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.random() * speed;
+    p.vx = Math.cos(a) * r;
+    p.vz = Math.sin(a) * r;
+    p.vy = Math.random() * up;
+    p.g = opts.gravity ?? -7;
+    const s = opts.spread ?? 0.3;
+    fxPos[i * 3] = x + (Math.random() - 0.5) * s;
+    fxPos[i * 3 + 1] = y + Math.random() * s;
+    fxPos[i * 3 + 2] = z + (Math.random() - 0.5) * s;
+    fxC.set(color).multiplyScalar(0.7 + Math.random() * 0.5);
+    fxCol[i * 3] = Math.min(1, fxC.r);
+    fxCol[i * 3 + 1] = Math.min(1, fxC.g);
+    fxCol[i * 3 + 2] = Math.min(1, fxC.b);
+    n++;
+  }
+}
+
+function updateParticleFx(dt) {
+  if (!fxGeo) return;
+  let dirty = false;
+  for (let i = 0; i < FX_P_MAX; i++) {
+    const p = fxPool[i];
+    if (p.life <= 0) continue;
+    dirty = true;
+    p.life -= dt;
+    if (p.life <= 0) {
+      fxPos[i * 3 + 1] = -999; // 回收：藏到地下
+      continue;
+    }
+    p.vy += p.g * dt;
+    fxPos[i * 3] += p.vx * dt;
+    fxPos[i * 3 + 1] += p.vy * dt;
+    fxPos[i * 3 + 2] += p.vz * dt;
+    if (fxPos[i * 3 + 1] < 0.03) {
+      fxPos[i * 3 + 1] = 0.03;
+      p.vy = 0;
+      p.vx *= 0.85;
+      p.vz *= 0.85;
+    }
+  }
+  if (dirty) {
+    fxGeo.attributes.position.needsUpdate = true;
+    fxGeo.attributes.color.needsUpdate = true;
+  }
 }
 
 function updateEffects(dt) {
