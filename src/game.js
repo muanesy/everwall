@@ -25,7 +25,6 @@ const CONFIG = {
     screenTopZ: -21.5, // 越过这条线才算进入屏幕，+1 屏障才能被打中
     touchZ: 8.2,       // 僵尸碰到士兵的判定线
     killZ: 8.4,        // 僵尸越过这条线就算突过去，扣更多兵
-    bulletDeathZ: -10, // 子弹飞到这里就消失，避免在屏幕顶端把僵尸清光
     leftZone: [-7.6, -0.6],  // +1 屏障出现的横向范围
     rightZone: [0.6, 7.6],   // 僵尸出现的横向范围
   },
@@ -57,9 +56,9 @@ const CONFIG = {
     passLoss: 5,       // 越过士兵扣 5
     maxAlive: 120,
     touchHalfWidth: 0.8, // 士兵队列的碰撞半宽
-    aggroStartZ: -30,    // 从出生点就开始追人
-    aggroRadius: 50,     // 全场都能感知到士兵
-    turnSpeed: 2.8,      // 侧向追击速度，越小越容易被甩掉
+    aggroStartZ: 5,      // 走到很靠近士兵的位置才开始动
+    aggroRadius: 4,      // 离士兵 4 以内才追
+    turnSpeed: 3.5,      // 侧向追击速度
     separation: 0.6,     // 僵尸之间的最小间距，防止叠成一坨
   },
   wave: {
@@ -239,22 +238,14 @@ function updateFiring(dt) {
     CONFIG.player.baseFireInterval / Math.max(1, state.soldiers)
   );
 
-  // 人越多，一次打出的弹道越宽，能覆盖更多僵尸
-  const count = Math.min(4, 1 + Math.floor(state.soldiers / 10));
-  const spread = Math.min(2.6, 0.8 + state.soldiers * 0.1);
-
-  for (let i = 0; i < count; i++) {
-    const t = count === 1 ? 0.5 : i / (count - 1);
-    const x = clamp(state.player.x + (t - 0.5) * spread, -8.5, 8.5);
-
-    state.bullets.push({
-      id: state.nextId++,
-      x,
-      z: state.player.z - 0.25,
-      vz: -CONFIG.player.bulletSpeed,
-      damage: CONFIG.player.bulletDamage,
-    });
-  }
+  // 集中火力：一次只打一条线，不散开
+  state.bullets.push({
+    id: state.nextId++,
+    x: state.player.x,
+    z: state.player.z - 0.25,
+    vz: -CONFIG.player.bulletSpeed,
+    damage: CONFIG.player.bulletDamage,
+  });
 
   emit('shoot', { x: state.player.x, z: state.player.z });
 }
@@ -267,7 +258,7 @@ function updateBullets(dt) {
     const b = state.bullets[i];
     b.z += b.vz * dt;
 
-    if (b.z < CONFIG.world.bulletDeathZ) {
+    if (b.z < CONFIG.world.spawnZ - 1) {
       state.bullets.splice(i, 1);
       continue;
     }
