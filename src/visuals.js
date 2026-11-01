@@ -1330,8 +1330,8 @@ function makeBarrierMesh(bar) {
       depthWrite: false,
     })
   );
-  label.scale.set(1.3, 0.65, 1);
-  label.position.y = 0.95;
+  label.scale.set(1.8, 0.9, 1);
+  label.position.y = 1.0;
   group.add(label);
 
   group.userData = {
@@ -1405,16 +1405,16 @@ function getLabelTexture(text, color) {
   if (cached) return cached;
 
   const canvas = document.createElement('canvas');
-  canvas.width = 128;
-  canvas.height = 64;
+  canvas.width = 192;
+  canvas.height = 96;
 
   const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, 128, 64);
-  ctx.font = 'bold 36px "Microsoft YaHei", sans-serif';
+  ctx.clearRect(0, 0, 192, 96);
+  ctx.font = 'bold 54px "Microsoft YaHei", sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = `#${color.toString(16).padStart(6, '0')}`;
-  ctx.fillText(text, 64, 34);
+  ctx.fillText(text, 96, 50);
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;

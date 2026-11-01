@@ -225,7 +225,7 @@ function resetState() {
 
   state.fireTimer = 0;
   state.barrierTimer = 0.6;
-  state.zombieTimer = 0.8;
+  state.zombieTimer = 1.0;
   state.nextId = 1;
   state.spawnCounts.fill(0);
 }
@@ -586,7 +586,8 @@ function updateZombies(dt) {
 
   if (state.zombieTimer <= 0) {
     if (state.zombies.length < CONFIG.zombie.maxAlive) {
-      const count = 1 + Math.floor(Math.random() * 2);
+      // 第一波只刷一只，之后才是 1 到 2 只
+      const count = state.wave === 1 ? 1 : 1 + Math.floor(Math.random() * 2);
       for (let i = 0; i < count; i++) spawnZombie();
     }
     state.zombieTimer = spawnInterval;
