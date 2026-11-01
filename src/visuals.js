@@ -18,6 +18,7 @@ import {
   updateAudio,
   playShoot,
   playZombieDie,
+  playZombieAttack,
   playBarrierHit,
   playBarrierApply,
   playArmyHurt,
@@ -115,6 +116,10 @@ const CAM = {
 
 const MAX_SOLDIER_VISUALS = 120;
 
+// 僵尸开始挥拳的 z 线。game.js 里 touchZ=8.2（碰到扣兵）、killZ=8.4（停住滑行），
+// 这里取 7.4：贴到防线跟前就进入攻击动作，配合滑行前倾读起来是"扑上去挠"
+const ZOMBIE_ATK_Z = 7.4;
+
 const GROUND_TILE = 40;  // 一格贴图铺多少世界单位。1k 贴图在这个尺度下约 1:1 像素
 const GROUND_W = 140;
 const GROUND_H = 56;     // 从 z=+22 铺到 z=-34，再远靠背景墙和雾收掉
@@ -154,11 +159,11 @@ const modelLib = {
 // tint 是乘色：白 = 原色。材质各自独立克隆，乘色不会互相串。
 // walkSpeed 只影响走路动画节奏——比颜色更能传达"笨重"和"快"。
 const ZOMBIE_LOOKS = [
-  { src: 'male',   scale: 1.0,  tint: [0.80, 0.90, 0.84], walkSpeed: 1.0 },               // 0 普通 灰绿
-  { src: 'male',   scale: 1.25, tint: [0.88, 0.62, 0.58], walkSpeed: 0.85 },              // 1 大块头 暗红灰
-  { src: 'male',   scale: 0.85, tint: [0.92, 1.00, 0.55], walkSpeed: 1.3 },               // 2 快鬼 黄绿
-  { src: 'female', scale: 1.1,  tint: [1.05, 1.06, 1.12], walkSpeed: 1.0, emissive: 0.08 }, // 3 精英 灰白提亮
-  { src: 'female', scale: 1.0,  tint: [0.70, 0.78, 0.74], walkSpeed: 1.0 },               // 4 女僵尸 原色压暗
+  { src: 'male',   scale: 1.0,  tint: [0.80, 0.90, 0.84], walkSpeed: 1.0, attackSpeed: 1.0 },               // 0 普通 灰绿
+  { src: 'male',   scale: 1.25, tint: [0.88, 0.62, 0.58], walkSpeed: 0.85, attackSpeed: 0.75 },             // 1 大块头 暗红灰（出拳慢而重）
+  { src: 'male',   scale: 0.85, tint: [0.92, 1.00, 0.55], walkSpeed: 1.3, attackSpeed: 1.6 },               // 2 快鬼 黄绿（挠拳飞快）
+  { src: 'female', scale: 1.1,  tint: [1.05, 1.06, 1.12], walkSpeed: 1.0, attackSpeed: 1.15, emissive: 0.08 }, // 3 精英 灰白提亮
+  { src: 'female', scale: 1.0,  tint: [0.70, 0.78, 0.74], walkSpeed: 1.0, attackSpeed: 1.2 },               // 4 女僵尸 原色压暗
 ];
 const animMixers = new Set(); // 所有活着的骨骼动画，每帧 update
 
@@ -211,6 +216,7 @@ function prepareZombieType(rawProto, look) {
   // Object3D.clone 会把 userData 做 JSON 拷贝，AnimationClip 引用会被换成普通对象，
   // 这里必须把真动画引用补回来，否则这一类型的僵尸不会走路
   proto.userData.clip = rawProto.userData.clip;
+  proto.userData.attackClip = rawProto.userData.attackClip;
   proto.traverse((o) => {
     if ((o.isMesh || o.isSkinnedMesh) && o.material) {
       o.material = Array.isArray(o.material)
@@ -232,6 +238,7 @@ function prepareZombieType(rawProto, look) {
     });
   }
   proto.userData.walkSpeed = look.walkSpeed;
+  proto.userData.attackSpeed = look.attackSpeed || 1.0;
   return proto;
 }
 
@@ -248,6 +255,9 @@ function loadModels() {
       clips.find((c) => /walk|run|idle/i.test(c.name)) ||
       clips[0] ||
       null;
+    // 攻击动画（UA 系列有 Punch 出拳），没有就留空 → 该类型不播攻击动作
+    proto.userData.attackClip =
+      clips.find((c) => /punch|attack|bite|slash/i.test(c.name)) || null;
     return proto;
   };
 
@@ -294,17 +304,24 @@ function spawnModel(proto, faceDir) {
     const shadow = makeBlobShadow(0.45);
     root.add(shadow);
     let mixer = null;
+    let walkAction = null;
+    let attackAction = null;
     const clip = proto.userData.clip;
     if (clip) {
       mixer = new THREE.AnimationMixer(root);
-      const action = mixer.clipAction(clip);
-      action.play();
+      walkAction = mixer.clipAction(clip);
+      walkAction.play();
       // 走路节奏按类型调：大块头慢（笨重）、快鬼快（窜）——比颜色更能传达体型差异
-      if (proto.userData.walkSpeed) action.timeScale = proto.userData.walkSpeed;
-      action.time = Math.random() * clip.duration; // 打散步伐
+      if (proto.userData.walkSpeed) walkAction.timeScale = proto.userData.walkSpeed;
+      walkAction.time = Math.random() * clip.duration; // 打散步伐
+      // 攻击动作待命：走到防线附近时由 syncZombies 切换（走 ↔ 打）
+      if (proto.userData.attackClip) {
+        attackAction = mixer.clipAction(proto.userData.attackClip);
+        attackAction.timeScale = proto.userData.attackSpeed || 1.0;
+      }
       animMixers.add(mixer);
     }
-    return { root, mixer };
+    return { root, mixer, walkAction, attackAction, attacking: false };
   } catch (err) {
     console.warn('[visuals] 模型克隆失败：', err);
     return null;
@@ -721,6 +738,25 @@ function syncZombies(state, dt) {
       root.position.x = z.x;
       root.position.z = z.z;
       root.rotation.z += (targetTilt - root.rotation.z) * Math.min(1, dt * 14);
+
+      // 走 ↔ 攻击切换：贴近防线（touchZ=8.2 之前一小段）就开始挥拳挠阵，
+      // 每种类型拳速不同（大块头慢而重、快鬼连挠）；切进攻击的瞬间吼一声
+      const vis = entry.vis;
+      if (vis.attackAction) {
+        const wantAttack = z.z >= ZOMBIE_ATK_Z;
+        if (wantAttack && !vis.attacking) {
+          vis.attacking = true;
+          vis.attackAction.reset();
+          vis.attackAction.crossFadeFrom(vis.walkAction, 0.12, false);
+          vis.attackAction.play();
+          playZombieAttack(z.type);
+        } else if (!wantAttack && vis.attacking) {
+          vis.attacking = false;
+          vis.walkAction.reset();
+          vis.walkAction.crossFadeFrom(vis.attackAction, 0.18, false);
+          vis.walkAction.play();
+        }
+      }
 
       if (sliding) {
         entry.dustTimer = (entry.dustTimer || 0) - dt;

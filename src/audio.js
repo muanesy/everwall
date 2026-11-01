@@ -26,6 +26,7 @@ const THROTTLE = {
   barrierHit: 0.05,
   barrierApply: 0.06,
   armyHurt: 0.25,
+  zombieAttack: 0.7, // 同类攻击吼至少隔 0.7 秒，防糊
 };
 
 // 环境音当前状态
@@ -161,6 +162,55 @@ export function playZombieDie() {
 
   noise(t, 0.2, { type: 'lowpass', freq: 900, sweepTo: 160, gain: 0.2 });
   tone(t, { type: 'triangle', from: 180, to: 60, dur: 0.18, gain: 0.16 });
+}
+
+// 僵尸开始攻击的吼声，按类型换嗓子（type 约定见 docs/僵尸类型.md）：
+//   1 大块头 = 低沉怒吼（狮子喉），2 快鬼 = 尖利急叫，3 精英 = 沙哑咆哮，
+//   其余（普通/女僵尸）= 标准嘶吼。每种音色差异明显，闭着眼也能听出是谁在扑。
+export function playZombieAttack(type = 0) {
+  if (!ready('zombieAttack' + type, THROTTLE.zombieAttack)) return;
+  const t = ctx.currentTime;
+
+  const snarl = (base, { dur = 0.5, peak = 0.14, freq = 320, q = 3 } = {}) => {
+    const osc = ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(base, t);
+    osc.frequency.linearRampToValueAtTime(base * 1.3, t + dur * 0.3);
+    osc.frequency.linearRampToValueAtTime(base * 0.65, t + dur);
+
+    const f = ctx.createBiquadFilter();
+    f.type = 'bandpass';
+    f.frequency.setValueAtTime(freq, t);
+    f.Q.value = q;
+
+    const g = ctx.createGain();
+    env(g, t, peak, 0.03, dur);
+
+    const breath = ctx.createBufferSource();
+    breath.buffer = noiseBuf;
+    const bg = ctx.createGain();
+    env(bg, t, peak * 0.4, 0.03, dur * 0.8);
+
+    osc.connect(f).connect(g).connect(master);
+    breath.connect(bg).connect(master);
+    osc.start(t);
+    osc.stop(t + dur + 0.05);
+  };
+
+  if (type === 1) {
+    // 大块头：很低很沉，收得慢，像胸腔里滚出来的
+    snarl(46, { dur: 0.7, peak: 0.2, freq: 160, q: 2.5 });
+    tone(t, { type: 'sine', from: 60, to: 32, dur: 0.5, gain: 0.22 });
+  } else if (type === 2) {
+    // 快鬼：尖利上扬再骤降，像尖叫
+    snarl(340, { dur: 0.32, peak: 0.1, freq: 1100, q: 5 });
+  } else if (type === 3) {
+    // 精英：沙哑，滤波更窄更毛糙
+    snarl(120, { dur: 0.55, peak: 0.15, freq: 420, q: 7 });
+  } else {
+    // 普通 / 女僵尸：标准嘶吼，女僵尸音色稍尖一点
+    snarl(type === 4 ? 105 : 88, { dur: 0.5, peak: 0.13, freq: 340, q: 3.5 });
+  }
 }
 
 // 打中负数屏障：金属声，提示"这个不该打"
