@@ -577,3 +577,14 @@ canvas {
   font-weight: 900;
   letter-spacing: 6px;
 }
+
+/* ---------- 波次倒计时 ---------- */
+
+.wave__next {
+  display: block;
+  margin-top: 1px;
+  font-style: normal;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}

@@ -8,6 +8,7 @@
 import { initAudio, playClick, playRevive, toggleMute, isMuted, loadMuteState } from './audio.js';
 // 兵种档位的数据在 visuals-tiers.js（数值只有这一份，别复制）
 import { TIERS, getTier, tierProgress } from './visuals-tiers.js';
+import { getWaveElapsed } from './visuals.js';
 // 加载进度由画面层提供（models 在后台下载）
 import { getModelLoadProgress } from './visuals.js';
 
@@ -26,6 +27,9 @@ const MAP_LIST = [
 
 const currentMap = new URLSearchParams(window.location.search).get('map') || 'city';
 const MAP_NAMES = Object.fromEntries(MAP_LIST.map((m) => [m.id, m.name]));
+
+/* 一波多少秒：和 game.js 的 CONFIG.wave.duration 保持一致（甲改了这个值要同步这里） */
+const WAVE_SECONDS = 15;
 
 /* 历史最好成绩：按地图分开记，存在本地。
  * 演示时能看到"这张图我打过多好"，也让结束页不只是三个数字。 */
@@ -90,6 +94,7 @@ export function updateUI(state) {
 
   updateTierBadge(state.soldiers);
   updateLoadingBox();
+  updateWaveCountdown(state);
 
   els.hud.classList.toggle('hidden', state.status !== 'playing');
   els.startScreen.classList.toggle('hidden', state.status !== 'menu');
@@ -105,6 +110,18 @@ export function updateUI(state) {
     els.bestScore.textContent = best.score;
     els.bestWave.textContent = best.wave;
   }
+}
+
+/* 下一波倒计时：一波 15 秒（甲的 CONFIG.wave.duration，改了这里要同步）
+ * 只做提示，不影响任何玩法。 */
+function updateWaveCountdown(state) {
+  if (!els.waveNext) return;
+  if (state.status !== 'playing') {
+    els.waveNext.textContent = '';
+    return;
+  }
+  const left = Math.max(0, Math.ceil(WAVE_SECONDS - getWaveElapsed()));
+  els.waveNext.textContent = left + 's';
 }
 
 /* 兵种档位徽标：当前兵种 + 距下一阶还差几个兵。
@@ -180,7 +197,10 @@ function buildDom() {
         <span class="tier__next" data-tier-next>再攒 15 兵升正规军</span>
       </div>
     </div>
-    <div class="wave">第 <span data-wave>1</span> 波</div>
+    <div class="wave">
+      第 <span data-wave>1</span> 波
+      <em class="wave__next" data-wave-next>15s</em>
+    </div>
     <div class="score" data-score>0</div>
   `;
   document.body.appendChild(hud);
@@ -264,6 +284,7 @@ function buildDom() {
     tierName: hud.querySelector('[data-tier-name]'),
     tierNext: hud.querySelector('[data-tier-next]'),
     waveText: hud.querySelector('[data-wave]'),
+    waveNext: hud.querySelector('[data-wave-next]'),
     scoreText: hud.querySelector('[data-score]'),
     startScreen,
     overScreen,

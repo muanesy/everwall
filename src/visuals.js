@@ -857,6 +857,8 @@ export function initVisuals(container, events) {
   events.addEventListener('waveStart', (e) => {
     shake = 0.2;
     const wave = e.detail?.wave;
+    // 记下本波起点，界面层用它算"还有几秒下一波"
+    if (wave) lastWaveStartTime = currentState ? currentState.time : 0;
 
     // 昼夜轮转：每 3 波换一次。夜晚画面变暗、雾变近（僵尸加速是甲的事）
     const wasNight = dayNight ? dayNight.isNight : false;
@@ -1019,6 +1021,15 @@ export function switchMapLook(mapId) {
  * 给玩法层用的接口
  * ---------------------------------------------------------- */
 
+// 本波已经过去多少秒（界面层用）
+let lastWaveStartTime = 0;
+let currentState = null;
+
+export function getWaveElapsed() {
+  if (!currentState) return 0;
+  return Math.max(0, currentState.time - lastWaveStartTime);
+}
+
 /* 切换时代（只换配色，不改任何数值）。
  * 队长做"Boss 击败后换时代"时直接调这个：applyEraIndex(4) 就切到星际。 */
 export function applyEraIndex(index) {
@@ -1078,6 +1089,8 @@ export function syncScene(state, dt) {
     tierAnnounced = false;
   }
   lastWave = state.wave;
+
+  currentState = state;
 
   // 僵尸低吼的氛围音：交给音频层自己计时，这里只报数量和是否在局内
   updateAudio(dt, state.zombies ? state.zombies.length : 0, state.status === 'playing');
