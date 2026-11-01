@@ -122,8 +122,9 @@ const ZOMBIE_ATK_Z = 7.4;
 
 const GROUND_TILE = 40;  // 一格贴图铺多少世界单位。1k 贴图在这个尺度下约 1:1 像素
 const GROUND_W = 140;
-const GROUND_H = 56;     // 从 z=+22 铺到 z=-34，再远靠背景墙和雾收掉
-const GROUND_Z = -6;
+const GROUND_H = 76;     // 从 z=+24 铺到 z=-52：地面要比战斗区远一截，
+                         // 后面的火山/雪脊/楼群这些大件才有地方站，不会悬空
+const GROUND_Z = -14;
 
 let renderer = null;
 let scene = null;
@@ -891,14 +892,36 @@ function updateCamera(state, dt) {
  * 背景物
  *
  * 全部程序化生成：低面数的方块 / 岩石 / 树，一套几十个，不增加下载体积。
- * 摆放避开玩法区：
- *   侧边  |x| ≥ 9.5    —— 左区屏障、右区僵尸都在 |x| < 8，摆在外面不挡
- *   后方  z ≤ -28      —— 僵尸和屏障从 z = -26 出生，摆得更远
- *   前景  z ≥ 13       —— 只有矮的东西，不然会挡住士兵队列
+ * 摆放规则（防止穿模）：
+ *   战斗安全区见 ARENA——僵尸/屏障在 z=-30~-26 出生、玩家 x±8、士兵阵型最深 z≈14。
+ *   中景道具一律用 keepOffArena() 按自己的占位半径推到安全区外；
+ *   远景大件（楼群/岩壁/雪脊/火山锥/树墙）手动退到"前缘不越过出生线"的 z；
+ *   前景（z ≥ 15.8）只放矮的，不然会插进士兵队列。
  *
  * 这些道具的作用不是"好看"，是给画面提供高度和遮挡：
  * 有高度的东西才有受光面和阴影面，眼睛才读得出这是斜视而不是俯视。
  * ---------------------------------------------------------- */
+/* 战斗安全区：僵尸、屏障、士兵、玩家可能出现（或必须能看见）的范围。
+ * 数值对齐 game.js CONFIG.world，那边改了这边要跟着改：
+ *   僵尸 x∈[0.6,7.6]，从 z=-30~-26 出生；屏障在左半边同样的深度；
+ *   玩家 x±8；120 个士兵的三角阵最多铺到 z≈14。
+ * 横向半径 8.6 = 8 留 0.6 余量。
+ */
+const ARENA = { halfX: 8.6, minZ: -30.5, maxZ: 15.4 };
+
+// 把一件道具挪出战斗区。radius 传它的最大占位半径（树冠、沙丘宽度都要算进去）：
+// 落在安全区里的才动，沿 x 往最近的一侧推出去；本来就在区外的不碰。
+function keepOffArena(obj, x, z, radius) {
+  const inX = Math.abs(x) < ARENA.halfX + radius;
+  const inZ = z + radius > ARENA.minZ && z - radius < ARENA.maxZ;
+  if (inX && inZ) {
+    x = Math.sign(x || 1) * (ARENA.halfX + radius + 0.3);
+  }
+  obj.position.x = x;
+  obj.position.z = z;
+  return obj;
+}
+
 function buildProps() {
   const group = new THREE.Group();
   const rng = mulberry32(20261101);
@@ -920,13 +943,13 @@ function buildCityProps(g, rng) {
   const concrete = 0x3c434d;
   const rust = 0x6b4630;
 
-  // 远景：楼群剪影，挡住地平线
+  // 远景：楼群剪影，挡住地平线。楼深最大 10，退到 -36 保证前墙不越过出生线
   for (let i = 0; i < 9; i++) {
     const w = 5 + rng() * 7;
     const h = 9 + rng() * 14;
     const d = 5 + rng() * 5;
     const b = boxMesh(w, h, d, 0x161b23, { rough: 1 });
-    b.position.set(-38 + i * 9 + rng() * 2, h / 2, -30 - rng() * 3);
+    b.position.set(-38 + i * 9 + rng() * 2, h / 2, -36 - rng() * 4);
     g.add(b);
 
     // 零星几扇亮着的窗，冷白或暖黄，只放几个，多了像圣诞树
@@ -1015,11 +1038,11 @@ function buildCityProps(g, rng) {
   car.rotation.y = 0.28;
   g.add(car);
 
-  // 前景碎石堆：矮，只压画面下缘
+  // 前景碎石堆：矮，只压画面下缘。z ≥ 15.8 避开士兵队尾（三角阵最深约 14）
   for (let i = 0; i < 10; i++) {
     const r = 0.25 + rng() * 0.5;
     const rock = rockMesh(rng, r, 0x4a4f57);
-    rock.position.set((rng() - 0.5) * 26, r * 0.5, 13 + rng() * 5);
+    rock.position.set((rng() - 0.5) * 26, r * 0.5, 15.8 + rng() * 4);
     g.add(rock);
   }
 }
@@ -1029,21 +1052,21 @@ function buildJungleProps(g, rng) {
   const leafA = 0x1f3a24;
   const leafB = 0x2b4a2c;
 
-  // 后面一整片树墙，挡住地平线
+  // 后面一整片树墙，挡住地平线。树冠半径到 3.9，退到 -34 前缘才不压出生线
   for (let i = 0; i < 16; i++) {
     const h = 7 + rng() * 6;
     const t = treeMesh(rng, h, trunk, rng() > 0.5 ? leafA : leafB);
-    t.position.set(-40 + i * 5.2 + rng() * 2, 0, -28 - rng() * 5);
+    t.position.set(-40 + i * 5.2 + rng() * 2, 0, -34 - rng() * 4);
     t.rotation.y = rng() * Math.PI;
     g.add(t);
   }
 
-  // 两侧的树，靠近镜头，形成框景
+  // 两侧的树，靠近镜头，形成框景。树冠半径 h*0.3 最大 3.9，按半径推到通道外
   for (const side of [-1, 1]) {
     for (let i = 0; i < 6; i++) {
       const h = 8 + rng() * 5;
       const t = treeMesh(rng, h, trunk, rng() > 0.5 ? leafA : leafB);
-      t.position.set(side * (11 + rng() * 6), 0, -16 + i * 5.5 + rng() * 2);
+      keepOffArena(t, side * (11 + rng() * 6), -16 + i * 5.5 + rng() * 2, h * 0.3);
       t.rotation.y = rng() * Math.PI;
       g.add(t);
     }
@@ -1058,7 +1081,8 @@ function buildJungleProps(g, rng) {
     );
     bush.scale.y = 0.55;
     const x = (rng() - 0.5) * 34;
-    bush.position.set(Math.abs(x) < 9.6 ? Math.sign(x || 1) * (10 + rng() * 4) : x, r * 0.4, -26 + rng() * 40);
+    bush.position.y = r * 0.4;
+    keepOffArena(bush, x, -26 + rng() * 40, r);
     g.add(bush);
   }
 
@@ -1067,18 +1091,19 @@ function buildJungleProps(g, rng) {
     const r = 0.4 + rng() * 0.9;
     const rock = rockMesh(rng, r, 0x4a4f42);
     const x = (rng() - 0.5) * 32;
-    rock.position.set(Math.abs(x) < 9.6 ? Math.sign(x || 1) * (10 + rng() * 4) : x, r * 0.5, -24 + rng() * 36);
+    rock.position.y = r * 0.5;
+    keepOffArena(rock, x, -24 + rng() * 36, r);
     g.add(rock);
   }
 
-  // 前景：倒伏的树干，横在画面下缘
+  // 前景：倒伏的树干，横在画面下缘（避开士兵队尾）
   const log = new THREE.Mesh(
     new THREE.CylinderGeometry(0.45, 0.55, 9, 8),
     mat(0x2f2419, { flat: true, rough: 1 })
   );
   log.rotation.z = Math.PI / 2;
   log.rotation.y = 0.15;
-  log.position.set(-4, 0.5, 15.5);
+  log.position.set(-4, 0.5, 16.8);
   g.add(log);
 }
 
@@ -1087,27 +1112,29 @@ function buildDesertProps(g, rng) {
   const rock = 0x7d6a4e;
   const dry = 0x6b5a40;
 
-  // 远处岩壁，把地平线挡掉
+  // 远处岩壁，把地平线挡掉。深度最大 8，退到 -35 前壁才不越过出生线
   for (let i = 0; i < 8; i++) {
     const w = 7 + rng() * 8;
     const h = 6 + rng() * 9;
     const b = boxMesh(w, h, 4 + rng() * 4, 0x8a7250, { rough: 1, flat: true });
-    b.position.set(-42 + i * 12 + rng() * 3, h / 2, -30 - rng() * 4);
+    b.position.set(-42 + i * 12 + rng() * 3, h / 2, -35 - rng() * 5);
     b.rotation.y = (rng() - 0.5) * 0.3;
     b.rotation.z = (rng() - 0.5) * 0.06;
     g.add(b);
   }
 
-  // 沙丘：压扁的球
+  // 沙丘：压扁的球。曾经放到 r=10，宽度 14 直接盖住中央通道——上限压到 5，
+  // 位置按实际半宽（r*1.4）推到通道外
   for (let i = 0; i < 10; i++) {
-    const r = 4 + rng() * 6;
+    const r = 2.5 + rng() * 2.5;
     const dune = new THREE.Mesh(
       new THREE.SphereGeometry(r, 12, 8),
       mat(sand, { rough: 1, flat: true })
     );
     dune.scale.set(1.4, 0.22, 1);
     const x = (rng() - 0.5) * 46;
-    dune.position.set(Math.abs(x) < 12 ? Math.sign(x || 1) * (13 + rng() * 6) : x, -0.2, -26 + rng() * 46);
+    dune.position.y = -0.2;
+    keepOffArena(dune, x, -26 + rng() * 46, r * 1.4 + 0.3);
     g.add(dune);
   }
 
@@ -1116,7 +1143,8 @@ function buildDesertProps(g, rng) {
     const r = 0.6 + rng() * 1.8;
     const rk = rockMesh(rng, r, rock);
     const x = (rng() - 0.5) * 34;
-    rk.position.set(Math.abs(x) < 9.8 ? Math.sign(x || 1) * (10.2 + rng() * 5) : x, r * 0.5, -22 + rng() * 36);
+    rk.position.y = r * 0.5;
+    keepOffArena(rk, x, -22 + rng() * 36, r);
     g.add(rk);
   }
 
@@ -1138,14 +1166,15 @@ function buildDesertProps(g, rng) {
     }
     const side = i % 2 ? 1 : -1;
     t.position.set(side * (10.5 + rng() * 5), 0, -14 + i * 6 + rng() * 2);
+    keepOffArena(t, t.position.x, t.position.z, 1.4);
     g.add(t);
   }
 
-  // 前景：几块半埋的石头
+  // 前景：几块半埋的石头（避开士兵队尾）
   for (let i = 0; i < 8; i++) {
     const r = 0.5 + rng() * 1.0;
     const rk = rockMesh(rng, r, rock);
-    rk.position.set((rng() - 0.5) * 28, r * 0.35, 13 + rng() * 6);
+    rk.position.set((rng() - 0.5) * 28, r * 0.35, 15.8 + rng() * 4);
     g.add(rk);
   }
 }
@@ -1154,16 +1183,17 @@ function buildMoonProps(g, rng) {
   const rockA = 0x6a6d72;
   const rockB = 0x4a4d52;
 
-  // 陨石坑：一圈低矮的环
+  // 陨石坑：一圈低矮的环。环半径最大 5.5，按半径推到通道外
   for (let i = 0; i < 6; i++) {
-    const r = 4 + rng() * 5;
+    const r = 3 + rng() * 2.5;
     const ring = new THREE.Mesh(
       new THREE.TorusGeometry(r, r * 0.09, 6, 24),
       mat(rockB, { flat: true, rough: 1 })
     );
     ring.rotation.x = -Math.PI / 2;
     const x = (rng() - 0.5) * 40;
-    ring.position.set(Math.abs(x) < 14 ? Math.sign(x || 1) * (16 + rng() * 6) : x, 0.25, -24 + rng() * 40);
+    ring.position.y = 0.25;
+    keepOffArena(ring, x, -24 + rng() * 40, r + 0.4);
     g.add(ring);
   }
 
@@ -1172,18 +1202,20 @@ function buildMoonProps(g, rng) {
     const r = 0.7 + rng() * 3.2;
     const rk = rockMesh(rng, r, rng() > 0.5 ? rockA : rockB);
     const x = (rng() - 0.5) * 46;
-    rk.position.set(Math.abs(x) < 10 ? Math.sign(x || 1) * (10.5 + rng() * 6) : x, r * 0.4, -28 + rng() * 50);
+    rk.position.y = r * 0.4;
+    keepOffArena(rk, x, -28 + rng() * 50, r);
     rk.rotation.y = rng() * Math.PI;
     g.add(rk);
   }
 
-  // 远处的地球：贴着地平线升起的大星球，一眼就知道这是月球。
-  // 球心压到地面高度（y≈0.5），一半沉在"地面尽头"之下，看起来就是从地平线探出大半个球。
+  // 远处的地球：贴着地平线的大星球，一眼就知道这是月球。
+  // 之前放在 z=-20 正好坐在僵尸出生区里，僵尸从球体里穿过去；
+  // 现在退到 z=-40（僵尸最深到 -30，永远碰不到），球心压低成"从地平线探出半个球"。
   const earth = new THREE.Mesh(
     new THREE.SphereGeometry(3, 24, 24),
     new THREE.MeshBasicMaterial({ color: 0x3f78b8, fog: false })
   );
-  earth.position.set(4, -1, -20);
+  earth.position.set(-4.5, 0.2, -40);
   g.add(earth);
 
   const glow = new THREE.Mesh(
@@ -1205,7 +1237,7 @@ function buildSnowProps(g, rng) {
   const ice = 0x9fc4d8;
   const rockC = 0x5a6068;
 
-  // 远处雪脊
+  // 远处雪脊。锥底半径最大 8.5，退到 -40 底缘才不压出生线
   for (let i = 0; i < 9; i++) {
     const w = 8 + rng() * 9;
     const h = 5 + rng() * 8;
@@ -1213,18 +1245,19 @@ function buildSnowProps(g, rng) {
       new THREE.ConeGeometry(w / 2, h, 5),
       mat(0xd3dde8, { flat: true, rough: 1 })
     );
-    peak.position.set(-42 + i * 11 + rng() * 3, h / 2 - 0.4, -30 - rng() * 4);
+    peak.position.set(-42 + i * 11 + rng() * 3, h / 2 - 0.4, -40 - rng() * 4);
     peak.rotation.y = rng() * Math.PI;
     g.add(peak);
   }
 
-  // 积雪堆
+  // 积雪堆。曾经 r=6 半宽 7.8 会压进通道，上限压到 4.5、按半宽推出去
   for (let i = 0; i < 12; i++) {
-    const r = 2 + rng() * 4;
+    const r = 2 + rng() * 2.5;
     const mound = new THREE.Mesh(new THREE.SphereGeometry(r, 10, 8), mat(snow, { rough: 0.85 }));
     mound.scale.set(1.3, 0.3, 1);
     const x = (rng() - 0.5) * 44;
-    mound.position.set(Math.abs(x) < 12 ? Math.sign(x || 1) * (13 + rng() * 6) : x, -0.1, -24 + rng() * 42);
+    mound.position.y = -0.1;
+    keepOffArena(mound, x, -24 + rng() * 42, r * 1.3 + 0.3);
     g.add(mound);
   }
 
@@ -1246,6 +1279,7 @@ function buildSnowProps(g, rng) {
     }
     const side = i % 2 ? 1 : -1;
     t.position.set(side * (10.8 + rng() * 5), 0, -16 + i * 5 + rng() * 2);
+    keepOffArena(t, t.position.x, t.position.z, 1.4);
     g.add(t);
   }
 
@@ -1257,15 +1291,16 @@ function buildSnowProps(g, rng) {
       mat(ice, { rough: 0.25, metal: 0.1, flat: true })
     );
     const x = (rng() - 0.5) * 30;
-    spike.position.set(Math.abs(x) < 9.6 ? Math.sign(x || 1) * (10.2 + rng() * 4) : x, h / 2, -14 + rng() * 26);
+    spike.position.y = h / 2;
+    keepOffArena(spike, x, -14 + rng() * 26, 0.5);
     g.add(spike);
   }
 
-  // 前景的岩石
+  // 前景的岩石（避开士兵队尾）
   for (let i = 0; i < 6; i++) {
     const r = 0.6 + rng() * 1.2;
     const rk = rockMesh(rng, r, rockC);
-    rk.position.set((rng() - 0.5) * 26, r * 0.4, 13 + rng() * 5);
+    rk.position.set((rng() - 0.5) * 26, r * 0.4, 15.8 + rng() * 4);
     g.add(rk);
   }
 }
@@ -1274,12 +1309,12 @@ function buildLavaProps(g, rng) {
   const char = 0x2a2422;
   const stone = 0x3a2e28;
 
-  // 远处火山锥
+  // 远处火山锥。底半径最大 13，退到 -44 底缘才不压僵尸出生区
   for (let i = 0; i < 3; i++) {
     const w = 16 + rng() * 10;
     const h = 12 + rng() * 8;
     const cone = new THREE.Mesh(new THREE.ConeGeometry(w / 2, h, 7), mat(0x241b18, { flat: true, rough: 1 }));
-    cone.position.set(-38 + i * 34 + rng() * 6, h / 2 - 1, -32 - rng() * 4);
+    cone.position.set(-38 + i * 34 + rng() * 6, h / 2 - 1, -44 - rng() * 4);
     cone.rotation.y = rng() * Math.PI;
     g.add(cone);
 
@@ -1300,12 +1335,14 @@ function buildLavaProps(g, rng) {
     const spire = rockMesh(rng, r, rng() > 0.5 ? char : stone);
     spire.scale.y = h / (r * 0.9);
     const x = (rng() - 0.5) * 42;
-    spire.position.set(Math.abs(x) < 10 ? Math.sign(x || 1) * (10.5 + rng() * 6) : x, 0, -28 + rng() * 46);
+    spire.position.y = 0;
+    keepOffArena(spire, x, -28 + rng() * 46, r);
     spire.rotation.y = rng() * Math.PI;
     g.add(spire);
   }
 
   // 地面上的岩浆裂隙：自发光的长条，纯粹为了给画面一点暖色
+  // polygonOffset 压住 z-fighting（和血迹同层贴地，不压会闪纹）
   for (let i = 0; i < 9; i++) {
     const len = 2 + rng() * 5;
     const crack = new THREE.Mesh(
@@ -1316,20 +1353,25 @@ function buildLavaProps(g, rng) {
         opacity: 0.75,
         fog: true,
         depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -2,
       })
     );
     crack.rotation.x = -Math.PI / 2;
     crack.rotation.z = (rng() - 0.5) * 1.6;
     const x = (rng() - 0.5) * 38;
-    crack.position.set(Math.abs(x) < 9.6 ? Math.sign(x || 1) * (10 + rng() * 5) : x, 0.03, -26 + rng() * 44);
+    crack.position.y = 0.03;
+    keepOffArena(crack, x, -26 + rng() * 44, 0.8);
+    crack.renderOrder = 1;
     g.add(crack);
   }
 
-  // 前景的焦炭块
+  // 前景的焦炭块（避开士兵队尾）
   for (let i = 0; i < 7; i++) {
     const r = 0.5 + rng() * 1.0;
     const rk = rockMesh(rng, r, char);
-    rk.position.set((rng() - 0.5) * 28, r * 0.4, 13 + rng() * 5);
+    rk.position.set((rng() - 0.5) * 28, r * 0.4, 15.8 + rng() * 4);
     g.add(rk);
   }
 }
