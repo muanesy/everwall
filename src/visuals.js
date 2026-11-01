@@ -218,6 +218,10 @@ const ZOMBIE_LOOKS = [
   { src: 'male',   scale: 0.85, tint: [0.92, 1.00, 0.55], walkSpeed: 1.3, attackSpeed: 1.6, score: 1 },    // 2 快鬼 黄绿（挠拳飞快）
   { src: 'female', scale: 1.1,  tint: [1.05, 1.06, 1.12], walkSpeed: 1.0, attackSpeed: 1.15, score: 5, emissive: 0.08 }, // 3 精英 灰白提亮
   { src: 'female', scale: 1.0,  tint: [0.70, 0.78, 0.74], walkSpeed: 1.0, attackSpeed: 1.2, score: 2 },    // 4 女僵尸 原色压暗
+  // 5-7 是"地图专属僵尸"：同一套 Quaternius 角色包，不同年代的衣服一眼能认出来
+  { src: 'knight', scale: 1.05, tint: [0.86, 0.80, 0.72], walkSpeed: 0.9, attackSpeed: 0.9, score: 4 },    // 5 僵尸骑士 锈甲（中世纪·丛林）
+  { src: 'blue',   scale: 1.0,  tint: [0.74, 0.82, 0.98], walkSpeed: 1.0, attackSpeed: 1.05, score: 4 },   // 6 蓝军装僵尸（二战·城市）
+  { src: 'casual', scale: 0.95, tint: [0.82, 0.90, 0.86], walkSpeed: 1.15, attackSpeed: 1.35, score: 3 },  // 7 便服僵尸 走得快（现代·沙漠）
 ];
 const animMixers = new Set(); // 所有活着的骨骼动画，每帧 update
 
@@ -321,10 +325,13 @@ function loadModels() {
   };
 
   // 加载进度：给界面层（ui.js）一个真实的百分比，模型在后台下载时不至于白屏干等
-  const files = ['b-zombie-soldier.glb', 'b-zombie-male.glb', 'b-zombie-female.glb'];
-  const per = files.map(() => ({ loaded: 0, total: 0, done: false }));
+  // 核心三个（士兵/男僵尸/女僵尸）先加载，加载完就能玩；
+  // 三种"地图专属僵尸"的模型放后台加载，不拖慢首屏，加载完再启用对应 type。
+  const coreFiles = ['b-zombie-soldier.glb', 'b-zombie-male.glb', 'b-zombie-female.glb'];
+  const extraFiles = ['b-zombie-knight.glb', 'b-soldier-blue.glb', 'b-zombie-casual.glb'];
+  const per = coreFiles.concat(extraFiles).map(() => ({ loaded: 0, total: 0, done: false }));
 
-  const loads = files.map((f, i) => new Promise((resolve, reject) => {
+  const loadOne = (f, i) => new Promise((resolve, reject) => {
     loader.load(
       base + f,
       (gltf) => { per[i].done = true; resolve(gltf); },
@@ -334,15 +341,22 @@ function loadModels() {
       },
       (err) => { per[i].done = true; reject(err); }
     );
-  }));
+  });
 
-  Promise.all(loads)
+  const coreLoads = coreFiles.map((f, i) => loadOne(f, i));
+  const extraLoads = extraFiles.map((f, i) => loadOne(f, coreFiles.length + i));
+  // 额外模型失败不影响主流程，只是新僵尸类型用不上
+  extraLoads.forEach((p) => p.catch(() => null));
+
+  Promise.all(coreLoads)
     .then(([s, zm, zf]) => {
       modelLib.soldier = preparePrototype(grab(s, /idle/i), MODEL_TARGET.soldierHeight);
-      // 男/女两个原始场景只作克隆源，五种类型各自从这里克隆
+      // 男/女两个原始场景只作克隆源，各类型各自从这里克隆
       const rawZombie = { male: grab(zm, /walk/i), female: grab(zf, /walk/i) };
       modelLib.zombies = ZOMBIE_LOOKS.map((look) =>
-        prepareZombieType(rawZombie[look.src], look)
+        rawZombie[look.src]
+          ? prepareZombieType(rawZombie[look.src], look)
+          : null   // 5-7 号类型等后台模型到位后再补
       );
       modelLib.loaded = true;
       // 模型到位后把时代配色补上（模型是异步加载的，加载完之前没有材质可乘）
@@ -364,6 +378,28 @@ function loadModels() {
       console.warn('[visuals] 模型加载失败，继续用色块顶替：', err);
       modelLoadState.failed = true;
     });
+
+  // 专属僵尸模型（骑士/蓝军装/便服）后台加载完，再把 5-7 号类型补上。
+  // 这期间如果甲那边已经刷出了这些 type，会走 modelLib.zombies[type] 的空值兜底（回退普通僵尸）。
+  Promise.all(extraLoads)
+    .then((list) => {
+      if (!modelLib.loaded || !list[0]) return;
+      const raw = {};
+      const keys = ['knight', 'blue', 'casual'];
+      list.forEach((gltf, i) => {
+        if (gltf) raw[keys[i]] = grab(gltf, /walk/i);
+      });
+      ZOMBIE_LOOKS.forEach((look, i) => {
+        if (!raw[look.src]) return;
+        modelLib.zombies[i] = prepareZombieType(raw[look.src], look);
+      });
+      // 新原型的材质要重新锁基准色，再补上当前时代的配色
+      zombieMats = [];
+      collectZombieMats();
+      if (currentEra) applyEra(currentEra);
+      console.log('[visuals] 三种专属僵尸模型已就绪（僵尸骑士 / 蓝军装 / 便服）');
+    })
+    .catch(() => {});
 
   modelLoadState.per = per;
 }
