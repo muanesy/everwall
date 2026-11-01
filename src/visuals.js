@@ -2390,7 +2390,7 @@ function makeHpBar(width) {
   group.add(fill);
   scene.add(group);
   group.renderOrder = 20;
-  return { group, fill, width };
+  return { group, bg, fill, width };
 }
 
 function disposeHpBar(bar) {
