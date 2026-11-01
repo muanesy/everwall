@@ -106,6 +106,30 @@ const MAPS = {
 const MAP_ID = new URLSearchParams(window.location.search).get('map') || 'city';
 const MAP = MAPS[MAP_ID] || MAPS.city;
 
+/* 每张地图给僵尸套一层氛围色调（纯视觉，不改任何数值）
+ * 同一批僵尸在城市是灰绿、在雪原偏冷白、在火山被岩浆照成暗红，
+ * 换地图不用换模型也能一眼看出"这是另一片战场"。 */
+const MAP_ZOMBIE_TINT = {
+  city: [1.00, 1.00, 1.00], // 夜城：原色
+  jungle: [0.88, 1.06, 0.86], // 雨林：湿绿
+  desert: [1.14, 1.02, 0.80], // 沙漠：沙黄
+  moon: [0.94, 0.99, 1.12], // 月球：真空冷蓝
+  snow: [0.88, 0.96, 1.08], // 雪原：寒白
+  lava: [1.18, 0.82, 0.72], // 火山：岩浆红
+};
+const MAP_TINT = MAP_ZOMBIE_TINT[MAP_ID] || MAP_ZOMBIE_TINT.city;
+
+// 十六进制颜色乘一个 rgb 倍率（色块回退路径用）
+function tintHex(hex, mul) {
+  const c = new THREE.Color(hex);
+  c.setRGB(
+    Math.min(1, c.r * mul[0]),
+    Math.min(1, c.g * mul[1]),
+    Math.min(1, c.b * mul[2])
+  );
+  return c.getHex();
+}
+
 /* ----------------------------------------------------------
  * 相机：斜视 2.5D
  *
@@ -244,7 +268,12 @@ function prepareZombieType(rawProto, look) {
   preparePrototype(
     proto,
     MODEL_TARGET.zombieHeight * look.scale,
-    new THREE.Color(look.tint[0], look.tint[1], look.tint[2])
+    // 类型乘色 × 地图氛围色
+    new THREE.Color(
+      Math.min(1.2, look.tint[0] * MAP_TINT[0]),
+      Math.min(1.2, look.tint[1] * MAP_TINT[1]),
+      Math.min(1.2, look.tint[2] * MAP_TINT[2])
+    )
   );
   if (look.emissive) {
     // 精英在暗图上要能读出来，给一点点自发光提亮
@@ -278,11 +307,23 @@ function loadModels() {
     return proto;
   };
 
-  Promise.all([
-    loader.loadAsync(base + 'b-zombie-soldier.glb'),
-    loader.loadAsync(base + 'b-zombie-male.glb'),
-    loader.loadAsync(base + 'b-zombie-female.glb'),
-  ])
+  // 加载进度：给界面层（ui.js）一个真实的百分比，模型在后台下载时不至于白屏干等
+  const files = ['b-zombie-soldier.glb', 'b-zombie-male.glb', 'b-zombie-female.glb'];
+  const per = files.map(() => ({ loaded: 0, total: 0, done: false }));
+
+  const loads = files.map((f, i) => new Promise((resolve, reject) => {
+    loader.load(
+      base + f,
+      (gltf) => { per[i].done = true; resolve(gltf); },
+      (e) => {
+        per[i].loaded = e.loaded || 0;
+        per[i].total = e.total || 0;
+      },
+      (err) => { per[i].done = true; reject(err); }
+    );
+  }));
+
+  Promise.all(loads)
     .then(([s, zm, zf]) => {
       modelLib.soldier = preparePrototype(grab(s, /idle/i), MODEL_TARGET.soldierHeight);
       // 男/女两个原始场景只作克隆源，五种类型各自从这里克隆
@@ -303,7 +344,38 @@ function loadModels() {
     })
     .catch((err) => {
       console.warn('[visuals] 模型加载失败，继续用色块顶替：', err);
+      modelLoadState.failed = true;
     });
+
+  modelLoadState.per = per;
+}
+
+/* 模型加载进度：ui.js 用它显示真实的下载百分比
+ * 返回 { progress: 0~1, done: boolean, failed: boolean }
+ * 服务器没给 Content-Length 时按"已完成几个文件"估算，不会卡在 0。 */
+const modelLoadState = { per: [], failed: false };
+
+export function getModelLoadProgress() {
+  if (modelLib.loaded) return { progress: 1, done: true, failed: false };
+  const per = modelLoadState.per;
+  if (!per.length) return { progress: 0, done: false, failed: false };
+
+  let loaded = 0;
+  let total = 0;
+  let doneCount = 0;
+  for (const p of per) {
+    if (p.total > 0) {
+      loaded += Math.min(p.loaded, p.total);
+      total += p.total;
+    }
+    if (p.done) doneCount++;
+  }
+
+  // 有 Content-Length 就用真实字节数，没有就用完成文件数兜底
+  const progress = total > 0
+    ? loaded / total
+    : doneCount / per.length;
+  return { progress: Math.min(1, Math.max(0, progress)), done: false, failed: modelLoadState.failed };
 }
 
 // 从原型克隆一个会动的角色。失败（或还没加载）返回 null，调用方回退到色块。
@@ -1682,7 +1754,8 @@ function makeZombieMesh(type) {
   const mesh = new THREE.Mesh(
     new THREE.BoxGeometry(0.7, 1.15, 0.7),
     new THREE.MeshStandardMaterial({
-      color: colors[type % colors.length],
+      // 色块版也跟地图氛围走，和模型版观感一致
+      color: tintHex(colors[type % colors.length], MAP_TINT),
       roughness: 0.85,
     })
   );
