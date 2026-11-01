@@ -27,9 +27,20 @@ const currentMap = new URLSearchParams(window.location.search).get('map') || 'ci
 
 export function initUI(state, actionsRef) {
   actions = actionsRef;
+  addFavicon();
   els = buildDom();
   bindEvents();
   updateUI(state);
+}
+
+/* 空 favicon：不给它，浏览器每次都会去请求 /favicon.ico 报 404，
+ * 演示时控制台一片红字很碍眼。插一个空图标，一行解决。 */
+function addFavicon() {
+  if (document.querySelector('link[rel="icon"]')) return;
+  const link = document.createElement('link');
+  link.rel = 'icon';
+  link.href = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" rx="3" fill="%230b0f14"/><circle cx="8" cy="6.5" r="2.6" fill="%236dffb0"/><rect x="5" y="9.5" width="6" height="4" rx="1.6" fill="%236fc2ff"/></svg>';
+  document.head.appendChild(link);
 }
 
 export function updateUI(state) {

@@ -177,6 +177,12 @@ let playerVisual = null; // 玩家的真模型（加载完成后替代蓝方块�
 let dayNight = null;
 
 // 兵种阶级：记录当前档位，只在升级那一帧变外观，不每帧重算
+let maxPixelRatio = 2;       // 设备像素比上限
+let qualityScale = 1;        // 当前渲染分辨率倍率（低帧时下调）
+let fpsAcc = 0;              // 帧率采样
+let fpsFrames = 0;
+let fpsValue = 60;
+let lowFpsTicks = 0;         // 连续低帧计数，用来避免来回抖动
 let soldierTierIndex = -1;
 let tierAnnounced = false;   // 开局那次不算"晋升"，不弹提示
 let soldierBaseScale = 1;    // 原型归一化后的基准缩放（乘档位倍率用）
@@ -581,7 +587,8 @@ export function initVisuals(container, events) {
   containerEl = container;
 
   renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  maxPixelRatio = Math.min(window.devicePixelRatio, 2);
+  renderer.setPixelRatio(maxPixelRatio);
   renderer.setSize(container.clientWidth, container.clientHeight);
   container.appendChild(renderer.domElement);
 
@@ -869,6 +876,38 @@ export function getCurrentEraIndex() {
 /* ----------------------------------------------------------
  * 每帧同步
  * ---------------------------------------------------------- */
+/* 自适应画质：帧率掉了就降渲染分辨率。
+ * 演示用的机器不一定有独显，角色堆到几十只时降一档分辨率就能救回来。
+ * 滞回设计：连续两秒低帧才降，帧率稳住五秒才升回去，避免来回抖。 */
+function updateAdaptiveQuality(dt) {
+  if (!renderer) return;
+  fpsAcc += dt;
+  fpsFrames += 1;
+  if (fpsAcc < 1) return;
+
+  fpsValue = fpsFrames / fpsAcc;
+  fpsAcc = 0;
+  fpsFrames = 0;
+
+  if (fpsValue < 45 && qualityScale > 0.6) {
+    lowFpsTicks += 1;
+    if (lowFpsTicks >= 2) {
+      qualityScale = Math.max(0.6, qualityScale - 0.2);
+      renderer.setPixelRatio(maxPixelRatio * qualityScale);
+      lowFpsTicks = 0;
+    }
+  } else if (fpsValue > 58 && qualityScale < 1) {
+    lowFpsTicks -= 1;
+    if (lowFpsTicks <= -5) {
+      qualityScale = Math.min(1, qualityScale + 0.2);
+      renderer.setPixelRatio(maxPixelRatio * qualityScale);
+      lowFpsTicks = 0;
+    }
+  } else {
+    lowFpsTicks = 0;
+  }
+}
+
 export function syncScene(state, dt) {
   if (!renderer) return;
 
@@ -911,6 +950,7 @@ export function syncScene(state, dt) {
   updateBlood(dt);
   updateToast(dt);
   updateBarrels(dt);
+  updateAdaptiveQuality(dt);
   if (dayNight) dayNight.update(dt);
   soldierRecoil = soldierRecoil > 0 ? Math.max(0, soldierRecoil - dt * 0.55) : 0;
   if (muzzleLight) muzzleLight.intensity = Math.max(0, muzzleLight.intensity - dt * 240);
