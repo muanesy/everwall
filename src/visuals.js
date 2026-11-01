@@ -646,6 +646,9 @@ export function initVisuals(container, events) {
   // 背景物：每张地图一套，全部是程序化生成的低面数道具，不占下载体积
   buildProps();
 
+  // 空气感：每张地图自己的粒子（雨丝/萤火虫/风沙/星尘/飘雪/火星）
+  initAmbientFx();
+
   // 炸药桶：摆在两侧通道边（不压僵尸主路、不压士兵阵），模型全程序化生成。
   // 爆炸伤害归甲，这里只负责桶的样子、爆炸特效，以及给甲查命中用的 hitTestBarrel
   initBarrels({ scene, events });
@@ -950,6 +953,7 @@ export function syncScene(state, dt) {
   updateBlood(dt);
   updateToast(dt);
   updateBarrels(dt);
+  updateAmbientFx(dt);
   updateAdaptiveQuality(dt);
   if (dayNight) dayNight.update(dt);
   soldierRecoil = soldierRecoil > 0 ? Math.max(0, soldierRecoil - dt * 0.55) : 0;
@@ -2463,6 +2467,164 @@ function makeBulletMesh() {
   group.add(trail);
 
   return group;
+}
+
+/* ----------------------------------------------------------
+ * 地图氛围粒子：每张图有自己的空气感
+ *   城市=雨丝  雨林=萤火虫  沙漠=风沙  月球=星尘  雪原=飘雪  熔岩=火星
+ * 全部用一个 Points 池，逐帧只改坐标和颜色，不新建对象。
+ * ---------------------------------------------------------- */
+
+const AMBIENT_FX = {
+  city:   { kind: 'rain',   count: 90,  color: [0.62, 0.72, 0.85], size: 0.055, speed: 16, area: [26, 26] },
+  jungle: { kind: 'firefly', count: 34, color: [0.75, 1.0, 0.35], size: 0.13, speed: 0.5, area: [22, 20] },
+  desert: { kind: 'sand',   count: 80,  color: [0.85, 0.75, 0.52], size: 0.05, speed: 7, area: [30, 18] },
+  moon:   { kind: 'star',   count: 90,  color: [0.85, 0.9, 1.0], size: 0.07, speed: 0.1, area: [40, 30] },
+  snow:   { kind: 'snow',   count: 110, color: [0.92, 0.96, 1.0], size: 0.075, speed: 2.6, area: [26, 24] },
+  lava:   { kind: 'ember',  count: 95,  color: [1.0, 0.6, 0.22], size: 0.13, speed: 3.8, area: [22, 18] },
+};
+
+let ambientFx = null;   // { points, geo, pos, col, cfg, state }
+
+function initAmbientFx() {
+  const cfg = AMBIENT_FX[MAP_ID];
+  if (!cfg) return;
+
+  const n = cfg.count;
+  const pos = new Float32Array(n * 3);
+  const col = new Float32Array(n * 3);
+  const state = [];
+
+  for (let i = 0; i < n; i++) {
+    const p = randomAmbientPoint(cfg, true);
+    pos[i * 3] = p.x;
+    pos[i * 3 + 1] = p.y;
+    pos[i * 3 + 2] = p.z;
+    const bright = 0.4 + Math.random() * 0.6;
+    col[i * 3] = cfg.color[0] * bright;
+    col[i * 3 + 1] = cfg.color[1] * bright;
+    col[i * 3 + 2] = cfg.color[2] * bright;
+    state.push({ phase: Math.random() * Math.PI * 2, speed: 0.6 + Math.random() * 0.8 });
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+
+  const points = new THREE.Points(
+    geo,
+    new THREE.PointsMaterial({
+      size: cfg.size,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.85,
+      depthWrite: false,
+      blending: cfg.kind === 'ember' || cfg.kind === 'firefly'
+        ? THREE.AdditiveBlending
+        : THREE.NormalBlending,
+      sizeAttenuation: true,
+    })
+  );
+  points.frustumCulled = false;
+  scene.add(points);
+  ambientFx = { points, geo, pos, col, cfg, state };
+}
+
+// 在场景上方随机撒一个点（按类型决定怎么撒）
+function randomAmbientPoint(cfg, init) {
+  const [aw, ad] = cfg.area;
+  const x = (Math.random() - 0.5) * aw;
+  const z = -6 + (Math.random() - 0.5) * ad;
+
+  switch (cfg.kind) {
+    case 'rain':
+      return { x, y: init ? Math.random() * 22 : 20 + Math.random() * 4, z };
+    case 'snow':
+      return { x, y: init ? Math.random() * 20 : 18 + Math.random() * 4, z };
+    case 'ember':
+      return { x, y: init ? Math.random() * 8 : 0.2, z };
+    case 'firefly':
+      return { x, y: 0.8 + Math.random() * 5, z };
+    case 'sand':
+      return { x, y: 0.4 + Math.random() * 2.5, z };
+    case 'star':
+      return { x, y: 14 + Math.random() * 12, z };
+    default:
+      return { x, y: 2, z };
+  }
+}
+
+function updateAmbientFx(dt) {
+  if (!ambientFx) return;
+  const { cfg, pos, col, geo, state } = ambientFx;
+  const n = state.length;
+  const t = performance.now() * 0.001;
+
+  for (let i = 0; i < n; i++) {
+    const o = i * 3;
+    const s = state[i];
+
+    switch (cfg.kind) {
+      case 'rain':
+        pos[o + 1] -= cfg.speed * dt;
+        pos[o] += 1.6 * dt;
+        if (pos[o + 1] < 0) {
+          const p = randomAmbientPoint(cfg, false);
+          pos[o] = p.x; pos[o + 1] = p.y; pos[o + 2] = p.z;
+        }
+        break;
+      case 'snow':
+        pos[o + 1] -= cfg.speed * s.speed * dt;
+        pos[o] += Math.sin(t * 0.7 + s.phase) * 0.5 * dt;
+        if (pos[o + 1] < 0) {
+          const p = randomAmbientPoint(cfg, false);
+          pos[o] = p.x; pos[o + 1] = p.y; pos[o + 2] = p.z;
+        }
+        break;
+      case 'ember':
+        pos[o + 1] += cfg.speed * s.speed * dt;
+        pos[o] += Math.sin(t * 1.6 + s.phase) * 0.8 * dt;
+        // 火星越飘越暗，灭了就重新来
+        const k = 1 - pos[o + 1] / 12;
+        col[o] = cfg.color[0] * k;
+        col[o + 1] = cfg.color[1] * k * k;
+        col[o + 2] = cfg.color[2] * k * k * k;
+        if (pos[o + 1] > 12) {
+          const p = randomAmbientPoint(cfg, false);
+          pos[o] = p.x; pos[o + 1] = p.y; pos[o + 2] = p.z;
+        }
+        break;
+      case 'firefly':
+        // 萤火虫：慢慢飘 + 一明一暗
+        pos[o] += Math.sin(t * 0.5 + s.phase) * cfg.speed * dt;
+        pos[o + 1] += Math.cos(t * 0.8 + s.phase * 1.7) * cfg.speed * 0.6 * dt;
+        pos[o + 2] += Math.cos(t * 0.4 + s.phase * 0.6) * cfg.speed * 0.5 * dt;
+        if (pos[o + 1] < 0.5 || pos[o + 1] > 6.5) s.phase += Math.PI;
+        const glow = 0.25 + 0.75 * Math.max(0, Math.sin(t * 2.2 + s.phase));
+        col[o] = cfg.color[0] * glow;
+        col[o + 1] = cfg.color[1] * glow;
+        col[o + 2] = cfg.color[2] * glow * 0.6;
+        break;
+      case 'sand':
+        pos[o] -= cfg.speed * s.speed * dt;
+        pos[o + 1] += Math.sin(t * 1.4 + s.phase) * 0.35 * dt;
+        if (pos[o] < -15) {
+          const p = randomAmbientPoint(cfg, false);
+          pos[o] = p.x; pos[o + 1] = p.y; pos[o + 2] = p.z;
+        }
+        break;
+      case 'star':
+        col[o] = cfg.color[0] * (0.5 + 0.5 * Math.sin(t * 1.5 + s.phase));
+        col[o + 1] = cfg.color[1] * (0.5 + 0.5 * Math.sin(t * 1.5 + s.phase));
+        col[o + 2] = cfg.color[2] * (0.5 + 0.5 * Math.sin(t * 1.5 + s.phase));
+        break;
+      default:
+        break;
+    }
+  }
+
+  geo.attributes.position.needsUpdate = true;
+  geo.attributes.color.needsUpdate = true;
 }
 
 /* ----------------------------------------------------------
