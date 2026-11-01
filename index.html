@@ -7,14 +7,14 @@
   <link rel="stylesheet" href="./src/styles.css" />
 
   <!--
-    依赖从网上加载。第七天（或演示前一天）记得把它改成本地文件，
-    防止现场断网白屏。改法写在 docs/接口约定.md 里。
+    Three.js 已经放到本地 assets/vendor/three/，不再依赖外网。
+    GLTFLoader 和工具类在 assets/vendor/ 下。
+    演示现场断网也能正常打开。
   -->
   <script type="importmap">
     {
       "imports": {
-        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+        "three": "./assets/vendor/three/three.module.js"
       }
     }
   </script>
