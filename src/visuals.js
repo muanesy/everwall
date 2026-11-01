@@ -106,7 +106,7 @@ const MAPS = {
 };
 
 // 当前地图：从地址参数读，默认废墟街道
-const MAP_ID = new URLSearchParams(window.location.search).get('map') || 'city';
+let MAP_ID = new URLSearchParams(window.location.search).get('map') || 'city';
 const MAP = MAPS[MAP_ID] || MAPS.city;
 
 /* 时代切换节奏：默认每 5 波一个时代。
@@ -124,7 +124,7 @@ const MAP_ZOMBIE_TINT = {
   snow: [0.88, 0.96, 1.08], // 雪原：寒白
   lava: [1.18, 0.82, 0.72], // 火山：岩浆红
 };
-const MAP_TINT = MAP_ZOMBIE_TINT[MAP_ID] || MAP_ZOMBIE_TINT.city;
+let MAP_TINT = MAP_ZOMBIE_TINT[MAP_ID] || MAP_ZOMBIE_TINT.city;
 
 // 十六进制颜色乘一个 rgb 倍率（色块回退路径用）
 function tintHex(hex, mul) {
@@ -177,6 +177,14 @@ let playerVisual = null; // 玩家的真模型（加载完成后替代蓝方块�
 
 // 昼夜轮转：初始化时创建，波次切换时改状态，每帧推进过渡
 let dayNight = null;
+
+// 场景里几个关键对象提到模块级：换地图（时代 Boss 换图）时需要能改它们
+let hemiLight = null;
+let keyLight = null;
+let fillLight = null;
+let groundMesh = null;
+let backdropMesh = null;
+let propsGroup = null;
 
 // 兵种阶级：记录当前档位，只在升级那一帧变外观，不每帧重算
 let maxPixelRatio = 2;       // 设备像素比上限
@@ -619,26 +627,26 @@ export function initVisuals(container, events) {
 
   // 灯光：按地图走。整体思路是环境光压低、主光斜射，
   // 地面颗粒感靠主光 + 法线贴图，环境光太高会把细节冲平。
-  const hemi = new THREE.HemisphereLight(MAP.hemi.sky, MAP.hemi.ground, MAP.hemi.intensity);
-  scene.add(hemi);
+  hemiLight = new THREE.HemisphereLight(MAP.hemi.sky, MAP.hemi.ground, MAP.hemi.intensity);
+  scene.add(hemiLight);
 
-  const keyLight = new THREE.DirectionalLight(MAP.key.color, MAP.key.intensity);
+  keyLight = new THREE.DirectionalLight(MAP.key.color, MAP.key.intensity);
   keyLight.position.set(-10, 20, 14);
   scene.add(keyLight);
 
   // 一盏彩色补光，营造氛围（雨夜路灯 / 岩浆红光 / 沙漠热浪）
-  const fillLight = new THREE.PointLight(MAP.fill.color, MAP.fill.intensity, 90, 1.6);
+  fillLight = new THREE.PointLight(MAP.fill.color, MAP.fill.intensity, 90, 1.6);
   fillLight.position.set(...MAP.fill.pos);
   scene.add(fillLight);
 
   // 昼夜轮转：把当前地图的灯光/雾/背景当基线记下来，之后只做倍数插值，
   // 六张地图亮度差异大，写死绝对值会让月球糊成黑屏、沙漠看不出变化
-  dayNight = createDayNight({ scene, hemi, key: keyLight, ambient: fillLight });
+  dayNight = createDayNight({ scene, hemi: hemiLight, key: keyLight, ambient: fillLight });
 
   // 地面：按地图加载贴图。路径用 import.meta.url 解析，避免受页面位置影响。
   const groundTex = loadGroundTextures(renderer, MAP.tex);
 
-  const ground = new THREE.Mesh(
+  groundMesh = new THREE.Mesh(
     new THREE.PlaneGeometry(GROUND_W, GROUND_H),
     new THREE.MeshStandardMaterial({
       map: groundTex.map,
@@ -650,17 +658,17 @@ export function initVisuals(container, events) {
       metalness: 0.05,
     })
   );
-  ground.rotation.x = -Math.PI / 2;
-  ground.position.z = GROUND_Z;
-  scene.add(ground);
+  groundMesh.rotation.x = -Math.PI / 2;
+  groundMesh.position.z = GROUND_Z;
+  scene.add(groundMesh);
 
   // 远处的背景墙：把地面尽头挡住，配合雾看起来就是地平线
-  const backdrop = new THREE.Mesh(
+  backdropMesh = new THREE.Mesh(
     new THREE.PlaneGeometry(GROUND_W, 70),
     new THREE.MeshBasicMaterial({ color: MAP.bg, fog: true })
   );
-  backdrop.position.set(0, 30, GROUND_Z - GROUND_H / 2);
-  scene.add(backdrop);
+  backdropMesh.position.set(0, 30, GROUND_Z - GROUND_H / 2);
+  scene.add(backdropMesh);
 
   // 背景物：每张地图一套，全部是程序化生成的低面数道具，不占下载体积
   buildProps();
@@ -884,6 +892,95 @@ export function hitBarrel(x, z, radius = 0.5) {
 /* 运行时补一个炸药桶，归甲调用；场上最多 3 个，位置太近会返回 null */
 export function spawnBarrel(x, z) {
   return spawnBarrelAt(x, z);
+}
+
+/* ----------------------------------------------------------
+ * 换地图（给队长的"时代 Boss 换图"用）
+ *
+ * 只换画面：地面贴图、背景物、雾、灯光、空气粒子、环境音。
+ * 玩家状态、士兵数、波次这些一个都不动（那是 game.js 的事）。
+ *
+ * 用法：
+ *   import { switchMapLook } from './visuals.js';
+ *   switchMapLook('lava');   // 战场换成熔岩图
+ *   applyEraIndex(5);        // 同时把时代切到终幕（可选）
+ * ---------------------------------------------------------- */
+export function switchMapLook(mapId) {
+  const m = MAPS[mapId];
+  if (!m || !scene) return false;
+
+  // 背景色与雾
+  scene.background = new THREE.Color(m.bg);
+  if (scene.fog) {
+    scene.fog.color.setHex(m.bg);
+    scene.fog.near = m.fogNear;
+    scene.fog.far = m.fogFar;
+  }
+  if (backdropMesh) backdropMesh.material.color.setHex(m.bg);
+
+  // 灯光
+  if (hemiLight) {
+    hemiLight.color.setHex(m.hemi.sky);
+    hemiLight.groundColor.setHex(m.hemi.ground);
+    hemiLight.intensity = m.hemi.intensity;
+  }
+  if (keyLight) {
+    keyLight.color.setHex(m.key.color);
+    keyLight.intensity = m.key.intensity;
+  }
+  if (fillLight) {
+    fillLight.color.setHex(m.fill.color);
+    fillLight.intensity = m.fill.intensity;
+    fillLight.position.set(...m.fill.pos);
+  }
+
+  // 地面贴图
+  if (groundMesh) {
+    const tex = loadGroundTextures(renderer, m.tex);
+    const gm = groundMesh.material;
+    if (gm.map) gm.map.dispose();
+    if (gm.normalMap) gm.normalMap.dispose();
+    if (gm.roughnessMap) gm.roughnessMap.dispose();
+    gm.map = tex.map;
+    gm.normalMap = tex.normalMap;
+    gm.roughnessMap = tex.roughnessMap;
+    gm.color.setHex(m.tint);
+    gm.roughness = m.roughness;
+    gm.needsUpdate = true;
+  }
+
+  // 背景物：旧的拆干净再重建（不 dispose 会泄漏显存）
+  if (propsGroup) {
+    scene.remove(propsGroup);
+    propsGroup.traverse((o) => {
+      if (!o.isMesh) return;
+      o.geometry?.dispose();
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      for (const mm of mats) {
+        if (!mm) continue;
+        mm.map?.dispose();
+        mm.dispose();
+      }
+    });
+  }
+  propsGroup = buildProps(mapId);
+
+  // 空气粒子
+  if (ambientFx) {
+    scene.remove(ambientFx.points);
+    ambientFx.geo.dispose();
+    ambientFx.points.material.dispose();
+    ambientFx = null;
+  }
+  initAmbientFx(mapId);
+
+  // 当前地图变了：僵尸的地图氛围色、环境音跟着换
+  MAP_ID = mapId;
+  MAP_TINT = MAP_ZOMBIE_TINT[mapId] || MAP_ZOMBIE_TINT.city;
+  setAmbient(mapId);
+
+  console.log('[visuals] 战场已切换到', mapId);
+  return true;
 }
 
 /* ----------------------------------------------------------
@@ -1498,7 +1595,7 @@ function updatePropAnimations(dt) {
   }
 }
 
-function buildProps() {
+function buildProps(mapId = MAP_ID) {
   const group = new THREE.Group();
   const rng = mulberry32(20261101);
 
@@ -1509,7 +1606,7 @@ function buildProps() {
     moon: buildMoonProps,
     snow: buildSnowProps,
     lava: buildLavaProps,
-  }[MAP_ID] || buildCityProps;
+  }[mapId] || buildCityProps;
 
   builder(group, rng);
 
@@ -1522,7 +1619,7 @@ function buildProps() {
     moon:   { color: 0x1a1c22, count: 8 },
     snow:   { color: 0x5c6672, count: 7 },
     lava:   { color: 0x140806, count: 8 },
-  }[MAP_ID] || { color: 0x11151b, count: 7 };
+  }[mapId] || { color: 0x11151b, count: 7 };
 
   const silMat = mat(silhouette.color, { flat: true, rough: 1 });
   for (let i = 0; i < silhouette.count; i++) {
@@ -2627,8 +2724,8 @@ const AMBIENT_FX = {
 
 let ambientFx = null;   // { points, geo, pos, col, cfg, state }
 
-function initAmbientFx() {
-  const cfg = AMBIENT_FX[MAP_ID];
+function initAmbientFx(mapId = MAP_ID) {
+  const cfg = AMBIENT_FX[mapId];
   if (!cfg) return;
 
   const n = cfg.count;
