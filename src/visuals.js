@@ -9,6 +9,10 @@
  * ========================================================== */
 
 import * as THREE from 'three';
+// GLTFLoader / SkeletonUtils 用仓库本地副本（assets/vendor/），不新增 CDN 依赖：
+// three 本体仍由 index.html 的 importmap 提供，加载器内部 import 'three' 会复用它。
+import { GLTFLoader } from '../assets/vendor/loaders/GLTFLoader.js';
+import { clone as skeletonClone } from '../assets/vendor/utils/SkeletonUtils.js';
 import {
   setAmbient,
   updateAudio,
@@ -44,12 +48,12 @@ const MAPS = {
   jungle: {
     name: '热带雨林（机制建议：洪水上涨）',
     tex: 'b-map-jungle',    // brown_mud_rocks_01
-    tint: 0x9aa69a,
+    tint: 0xb2bfae,
     roughness: 0.75,
-    bg: 0x081009, fogNear: 26, fogFar: 70,
-    hemi: { sky: 0x9fc9a8, ground: 0x0d150f, intensity: 0.85 },
-    key: { color: 0xfff3d9, intensity: 2.0 },
-    fill: { color: 0x3f8f5f, intensity: 45, pos: [14, 11, -16] },
+    bg: 0x081009, fogNear: 34, fogFar: 84,
+    hemi: { sky: 0xcde8d2, ground: 0x2a3626, intensity: 1.7 },
+    key: { color: 0xfff3d9, intensity: 3.0 },
+    fill: { color: 0x3f8f5f, intensity: 55, pos: [14, 11, -16] },
   },
   desert: {
     name: '沙漠（机制建议：沙尘暴遮视野）',
@@ -128,6 +132,149 @@ let camZ = 28;
 let playerMesh = null;
 let playerShadow = null;
 let soldierMesh = null;
+let playerVisual = null; // 玩家的真模型（加载完成后替代蓝方块）
+
+/* ----------------------------------------------------------
+ * 模型库：Quaternius Ultimate Animated Characters（CC0，免署名）
+ *
+ * 士兵和僵尸同一套风格，带骨骼动画。模型在启动时预加载，
+ * 加载完成前所有角色先用色块顶替（fallback），加载完成后自动换成模型。
+ *
+ * 性能实测（Playwright 无 GPU 软件渲染，比真机差好几倍）：
+ * 120 只走路僵尸 48 FPS / 开阴影 18 FPS —— 真 GPU 上绰绰有余，
+ * 所以士兵和僵尸都不限数量地用真模型。
+ * ---------------------------------------------------------- */
+const modelLib = {
+  loaded: false,
+  soldier: null,   // gltf.scene 原型（只作克隆源，不直接进场）
+  zombies: [],     // 两种僵尸混用：男 4046 面 / 女 9750 面
+};
+const animMixers = new Set(); // 所有活着的骨骼动画，每帧 update
+
+const MODEL_TARGET = {
+  soldierHeight: 1.5, // 士兵目标身高（世界单位）
+  zombieHeight: 1.55, // 僵尸目标身高，比方块(1.15)略高一点更有压迫感
+};
+
+// 这个 GLB 的节点树会让 Box3.setFromObject 崩（树里有坏引用），
+// 手动遍历 mesh 的几何包围盒测身高，顺便返回最低点用来落地。
+function measureModelBox(root) {
+  root.updateMatrixWorld(true);
+  const box = new THREE.Box3();
+  const v = new THREE.Vector3();
+  root.traverse((o) => {
+    if ((o.isMesh || o.isSkinnedMesh) && o.geometry) {
+      if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
+      const b = o.geometry.boundingBox;
+      for (const y of [b.min.y, b.max.y]) {
+        for (const x of [b.min.x, b.max.x]) {
+          v.set(x, y, 0).applyMatrix4(o.matrixWorld);
+          box.expandByPoint(v);
+        }
+      }
+    }
+  });
+  return box;
+}
+
+// 把原型标准化：缩放到目标身高、按 tint 调材质色、修正动画名
+// 这个 GLB 的材质偏灰白，在雨夜场景里太亮太"干净"，tint 乘色把它压进氛围
+function preparePrototype(proto, targetHeight, tint) {
+  const box = measureModelBox(proto);
+  const size = box.getSize(new THREE.Vector3());
+  proto.scale.setScalar(targetHeight / (size.y || 1.8));
+  if (tint) {
+    proto.traverse((o) => {
+      if ((o.isMesh || o.isSkinnedMesh) && o.material?.color) {
+        o.material.color.multiply(tint);
+      }
+    });
+  }
+  return proto;
+}
+
+function loadModels() {
+  const loader = new GLTFLoader();
+  const base = new URL('../assets/models/', import.meta.url).href;
+
+  const grab = (gltf, clipPattern) => {
+    const proto = gltf.scene;
+    proto.updateMatrixWorld(true);
+    const clips = gltf.animations || [];
+    proto.userData.clip =
+      clips.find((c) => clipPattern.test(c.name)) ||
+      clips.find((c) => /walk|run|idle/i.test(c.name)) ||
+      clips[0] ||
+      null;
+    return proto;
+  };
+
+  Promise.all([
+    loader.loadAsync(base + 'b-zombie-soldier.glb'),
+    loader.loadAsync(base + 'b-zombie-male.glb'),
+    loader.loadAsync(base + 'b-zombie-female.glb'),
+  ])
+    .then(([s, zm, zf]) => {
+      modelLib.soldier = preparePrototype(grab(s, /idle/i), MODEL_TARGET.soldierHeight);
+      const zombieTint = new THREE.Color(0.8, 0.9, 0.84); // 压暗、偏灰绿，贴合雨夜
+      modelLib.zombies = [
+        preparePrototype(grab(zm, /walk/i), MODEL_TARGET.zombieHeight, zombieTint),
+        preparePrototype(grab(zf, /walk/i), MODEL_TARGET.zombieHeight, zombieTint),
+      ];
+      modelLib.loaded = true;
+      // 玩家也换成模型：面向僵尸潮（-z），移动交给 syncScene 只改 x/z
+      const vis = spawnModel(modelLib.soldier, Math.PI);
+      if (vis) {
+        playerVisual = vis;
+        vis.root.position.set(playerMesh.position.x, 0, playerMesh.position.z);
+        scene.add(vis.root);
+        playerMesh.visible = false;
+      }
+      console.log('[visuals] 模型加载完成，角色已切换为真模型');
+    })
+    .catch((err) => {
+      console.warn('[visuals] 模型加载失败，继续用色块顶替：', err);
+    });
+}
+
+// 从原型克隆一个会动的角色。失败（或还没加载）返回 null，调用方回退到色块。
+function spawnModel(proto, faceDir) {
+  if (!proto) return null;
+  try {
+    const root = skeletonClone(proto);
+    const cb = measureModelBox(root); // 克隆后实际落地（骨架缩放后 min.y 未必是 0）
+    root.position.y = -(cb.min.y || 0);
+    root.rotation.y = faceDir;
+    root.traverse((o) => {
+      if (o.isMesh || o.isSkinnedMesh) o.frustumCulled = true;
+    });
+    // 和色块版一致的假阴影，保证所有角色脚下都有"落地感"
+    const shadow = makeBlobShadow(0.45);
+    root.add(shadow);
+    let mixer = null;
+    const clip = proto.userData.clip;
+    if (clip) {
+      mixer = new THREE.AnimationMixer(root);
+      const action = mixer.clipAction(clip);
+      action.play();
+      action.time = Math.random() * clip.duration; // 打散步伐
+      animMixers.add(mixer);
+    }
+    return { root, mixer };
+  } catch (err) {
+    console.warn('[visuals] 模型克隆失败：', err);
+    return null;
+  }
+}
+
+function despawnModel(vis) {
+  if (vis.mixer) {
+    vis.mixer.stopAllAction();
+    animMixers.delete(vis.mixer);
+  }
+  // clone 共享 geometry/material，只把根节点从场景摘掉，绝不 dispose 共享资源
+  scene.remove(vis.root);
+}
 
 let camBaseX = 0;
 let shake = 0;
@@ -233,6 +380,9 @@ export function initVisuals(container, events) {
   // 环境音跟着地图走（雨林虫鸣、沙漠风沙、月球真空……）
   setAmbient(MAP_ID);
 
+  // 预加载角色模型：加载完成前用色块顶替，完成后自动换
+  loadModels();
+
   // 事件 → 特效 + 音效
   events.addEventListener('shoot', (e) => {
     spawnMuzzleFlash(e.detail.x, e.detail.z);
@@ -281,7 +431,12 @@ export function syncScene(state, dt) {
   updateAudio(dt, state.zombies ? state.zombies.length : 0, state.status === 'playing');
 
   // 队长
-  playerMesh.position.set(state.player.x, 0.675, state.player.z);
+  if (playerVisual) {
+    playerVisual.root.position.x = state.player.x;
+    playerVisual.root.position.z = state.player.z;
+  } else {
+    playerMesh.position.set(state.player.x, 0.675, state.player.z);
+  }
   playerShadow.position.set(state.player.x, 0.02, state.player.z);
 
   // 士兵队伍
@@ -299,30 +454,67 @@ export function syncScene(state, dt) {
   updateEffects(dt);
   updateCamera(state, dt);
 
+  // 骨骼动画：所有活着的 mixer 每帧推进（隐藏的士兵 timeScale=0 不耗动画计算）
+  for (const m of animMixers) m.update(dt);
+
   renderer.render(scene, camera);
 }
 
+function soldierSlot(i, state) {
+  const row = Math.floor(i / 6);
+  const col = i % 6;
+  return {
+    x: state.player.x + (col - 2.5) * 0.5,
+    z: state.player.z + 0.7 + row * 0.55,
+  };
+}
+
+const soldierVisuals = []; // 真模型池：{ root, mixer }
+
 function updateSoldiers(state) {
   const n = Math.min(state.soldiers, MAX_SOLDIER_VISUALS);
-  soldierMesh.count = n;
 
-  for (let i = 0; i < n; i++) {
-    const row = Math.floor(i / 6);
-    const col = i % 6;
+  // 模型没加载好（或加载失败）：维持甲写的实例化方块渲染，逻辑零风险
+  if (!modelLib.loaded || !modelLib.soldier) {
+    soldierMesh.visible = true;
+    soldierMesh.count = n;
 
-    dummy.position.set(
-      state.player.x + (col - 2.5) * 0.5,
-      0.275,
-      state.player.z + 0.7 + row * 0.55
-    );
-    dummy.rotation.set(0, 0, 0);
-    dummy.scale.set(1, 1, 1);
-    dummy.updateMatrix();
-
-    soldierMesh.setMatrixAt(i, dummy.matrix);
+    for (let i = 0; i < n; i++) {
+      const p = soldierSlot(i, state);
+      dummy.position.set(p.x, 0.275, p.z);
+      dummy.rotation.set(0, 0, 0);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      soldierMesh.setMatrixAt(i, dummy.matrix);
+    }
+    soldierMesh.instanceMatrix.needsUpdate = true;
+    return;
   }
 
-  soldierMesh.instanceMatrix.needsUpdate = true;
+  soldierMesh.visible = false;
+
+  // 补齐模型池（只在士兵变多时克隆，克隆失败就地保持方块）
+  while (soldierVisuals.length < n) {
+    const vis = spawnModel(modelLib.soldier, Math.PI); // 面朝僵尸来的方向
+    if (!vis) {
+      modelLib.soldier = null; // 这条路走不通，整队退回方块模式
+      return;
+    }
+    scene.add(vis.root);
+    soldierVisuals.push(vis);
+  }
+
+  for (let i = 0; i < soldierVisuals.length; i++) {
+    const vis = soldierVisuals[i];
+    const active = i < n;
+    vis.root.visible = active;
+    if (vis.mixer) vis.mixer.timeScale = active ? 1 : 0;
+    if (active) {
+      const p = soldierSlot(i, state);
+      vis.root.position.x = p.x;
+      vis.root.position.z = p.z;
+    }
+  }
 }
 
 function syncBarriers(state) {
@@ -356,19 +548,47 @@ function syncZombies(state) {
   for (const z of state.zombies) {
     alive.add(z.id);
 
-    let mesh = zombieMeshes.get(z.id);
-    if (!mesh) {
-      mesh = makeZombieMesh(z.type);
-      scene.add(mesh);
-      zombieMeshes.set(z.id, mesh);
+    let entry = zombieMeshes.get(z.id);
+    // 模型加载完成的那一瞬间，把已经在场的色块统一换成模型
+    if (entry && entry.isModel !== modelLib.loaded) {
+      if (entry.isModel) despawnModel(entry.vis);
+      else {
+        scene.remove(entry.mesh);
+        disposeMesh(entry.mesh);
+      }
+      entry = null;
     }
-    mesh.position.set(z.x, 0.575, z.z);
+
+    if (!entry) {
+      if (modelLib.loaded && modelLib.zombies.length) {
+        // 每 5 只里出 1 只女僵尸（面数更高），按 type 稳定分配不闪烁
+        const proto = modelLib.zombies[z.type % 5 === 4 ? 1 : 0];
+        const vis = spawnModel(proto, 0); // 面朝玩家（+z）
+        entry = vis
+          ? { isModel: true, vis }
+          : { isModel: false, mesh: makeZombieMesh(z.type) };
+      } else {
+        entry = { isModel: false, mesh: makeZombieMesh(z.type) };
+      }
+      scene.add(entry.isModel ? entry.vis.root : entry.mesh);
+      zombieMeshes.set(z.id, entry);
+    }
+
+    if (entry.isModel) {
+      entry.vis.root.position.x = z.x;
+      entry.vis.root.position.z = z.z;
+    } else {
+      entry.mesh.position.set(z.x, 0.575, z.z);
+    }
   }
 
-  for (const [id, mesh] of zombieMeshes) {
+  for (const [id, entry] of zombieMeshes) {
     if (!alive.has(id)) {
-      scene.remove(mesh);
-      disposeMesh(mesh);
+      if (entry.isModel) despawnModel(entry.vis);
+      else {
+        scene.remove(entry.mesh);
+        disposeMesh(entry.mesh);
+      }
       zombieMeshes.delete(id);
     }
   }
