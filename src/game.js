@@ -58,12 +58,11 @@ const CONFIG = {
     minSpawnInterval: 0.14,
     intervalPerWave: 0.03,
     touchLoss: 1,      // 碰到士兵扣 1
-    passLoss: 5,       // 越过士兵扣 5
     maxAlive: 120,
     touchHalfWidth: 0.8, // 士兵队列的碰撞半宽
-    aggroStartZ: 5,      // 走到很靠近士兵的位置才开始动
-    aggroRadius: 4,      // 离士兵 4 以内才追
-    turnSpeed: 6,        // 侧向追击速度，保证近身的僵尸能贴上来
+    aggroStartZ: -30,    // 从出生点就开始追人
+    aggroRadius: 50,     // 保证所有僵尸都能吸附到士兵身上
+    turnSpeed: 6,        // 侧向追击速度
     separation: 0.6,     // 僵尸之间的最小间距，防止叠成一坨
   },
   wave: {
@@ -442,9 +441,9 @@ function updateZombies(dt) {
       continue;
     }
 
+    // 越过防线只是清理，不再扣兵
     if (z.z >= CONFIG.world.killZ) {
       state.zombies.splice(i, 1);
-      damageArmy(CONFIG.zombie.passLoss, 'pass');
     }
   }
 }
