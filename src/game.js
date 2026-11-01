@@ -25,13 +25,14 @@ const CONFIG = {
     screenTopZ: -21.5, // 越过这条线才算进入屏幕，+1 屏障才能被打中
     touchZ: 8.2,       // 僵尸碰到士兵的判定线
     killZ: 8.4,        // 僵尸越过这条线就算突过去，扣更多兵
+    bulletDeathZ: -10, // 子弹飞到这里就消失，避免在屏幕顶端把僵尸清光
     leftZone: [-7.6, -0.6],  // +1 屏障出现的横向范围
     rightZone: [0.6, 7.6],   // 僵尸出现的横向范围
   },
   player: {
     speed: 14,
     baseFireInterval: 0.5, // 1 个士兵时的射击间隔
-    minFireInterval: 0.14, // 射击间隔的下限，防止子弹太多
+    minFireInterval: 0.18, // 射击间隔的下限，防止子弹太多
     bulletSpeed: 28,
     bulletDamage: 10,
   },
@@ -49,13 +50,17 @@ const CONFIG = {
     baseSpeed: 2.2,
     speedPerWave: 0.3,
     maxSpeed: 7,
-    spawnInterval: 0.55,
-    minSpawnInterval: 0.18,
-    intervalPerWave: 0.05,
+    spawnInterval: 0.35,
+    minSpawnInterval: 0.14,
+    intervalPerWave: 0.03,
     touchLoss: 1,      // 碰到士兵扣 1
     passLoss: 5,       // 越过士兵扣 5
-    maxAlive: 90,
-    touchHalfWidth: 1.2, // 士兵队列的碰撞半宽
+    maxAlive: 120,
+    touchHalfWidth: 0.8, // 士兵队列的碰撞半宽
+    aggroStartZ: -30,    // 从出生点就开始追人
+    aggroRadius: 50,     // 全场都能感知到士兵
+    turnSpeed: 2.8,      // 侧向追击速度，越小越容易被甩掉
+    separation: 0.6,     // 僵尸之间的最小间距，防止叠成一坨
   },
   wave: {
     duration: 15,
@@ -87,6 +92,9 @@ const state = {
   zombieTimer: 0,
   nextId: 1,
 };
+
+// 调试用：浏览器控制台输入 __state 可以看实时数据
+window.__state = state;
 
 const events = new EventTarget();
 
@@ -242,7 +250,7 @@ function updateFiring(dt) {
     state.bullets.push({
       id: state.nextId++,
       x,
-      z: state.player.z - 0.9,
+      z: state.player.z - 0.25,
       vz: -CONFIG.player.bulletSpeed,
       damage: CONFIG.player.bulletDamage,
     });
@@ -259,7 +267,7 @@ function updateBullets(dt) {
     const b = state.bullets[i];
     b.z += b.vz * dt;
 
-    if (b.z < CONFIG.world.spawnZ - 1) {
+    if (b.z < CONFIG.world.bulletDeathZ) {
       state.bullets.splice(i, 1);
       continue;
     }
@@ -294,7 +302,7 @@ function updateBullets(dt) {
     for (let j = state.zombies.length - 1; j >= 0; j--) {
       const z = state.zombies[j];
 
-      if (Math.abs(b.x - z.x) < 0.55 && Math.abs(b.z - z.z) < 0.7) {
+      if (Math.abs(b.x - z.x) < 0.72 && Math.abs(b.z - z.z) < 0.7) {
         z.hp -= b.damage;
         state.bullets.splice(i, 1);
 
@@ -364,11 +372,30 @@ function updateZombies(dt) {
     state.zombieTimer = spawnInterval;
   }
 
+  // 移动：进入下半场且离士兵够近时，开始横向追人
+  for (const z of state.zombies) {
+    const dx = state.player.x - z.x;
+    const dz = state.player.z - z.z;
+    const dist = Math.hypot(dx, dz);
+
+    if (z.z > CONFIG.zombie.aggroStartZ && dist < CONFIG.zombie.aggroRadius) {
+      z.aggro = true;
+    }
+
+    if (z.aggro && Math.abs(dx) > 0.12) {
+      z.x += Math.sign(dx) * CONFIG.zombie.turnSpeed * dt;
+    }
+
+    z.x = clamp(z.x, -CONFIG.world.halfWidth - 1, CONFIG.world.halfWidth + 1);
+    z.z += z.speed * dt;
+  }
+
+  separateZombies();
+
+  // 结算：碰到士兵扣 1，越过去扣 5
   for (let i = state.zombies.length - 1; i >= 0; i--) {
     const z = state.zombies[i];
-    z.z += z.speed * dt;
 
-    // 碰到士兵：扣 1
     if (
       z.z >= CONFIG.world.touchZ &&
       Math.abs(z.x - state.player.x) < CONFIG.zombie.touchHalfWidth
@@ -378,11 +405,38 @@ function updateZombies(dt) {
       continue;
     }
 
-    // 越过防线：扣 5
     if (z.z >= CONFIG.world.killZ) {
       state.zombies.splice(i, 1);
       damageArmy(CONFIG.zombie.passLoss, 'pass');
     }
+  }
+}
+
+function separateZombies() {
+  const list = state.zombies;
+  const sep = CONFIG.zombie.separation;
+
+  for (let i = 0; i < list.length; i++) {
+    for (let j = i + 1; j < list.length; j++) {
+      const a = list[i];
+      const b = list[j];
+
+      if (Math.abs(a.z - b.z) > sep) continue;
+
+      const dx = b.x - a.x;
+      const adx = Math.abs(dx);
+      if (adx >= sep) continue;
+
+      const dir = dx === 0 ? (Math.random() < 0.5 ? -1 : 1) : Math.sign(dx);
+      const push = (sep - adx) * 0.5;
+
+      a.x -= dir * push;
+      b.x += dir * push;
+    }
+  }
+
+  for (const z of list) {
+    z.x = clamp(z.x, -CONFIG.world.halfWidth - 1, CONFIG.world.halfWidth + 1);
   }
 }
 
@@ -399,6 +453,7 @@ function spawnZombie() {
       CONFIG.zombie.baseSpeed + (state.wave - 1) * CONFIG.zombie.speedPerWave
     ),
     type: Math.floor(Math.random() * 3),
+    aggro: false,
   });
 }
 
