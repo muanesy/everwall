@@ -29,6 +29,19 @@ const THROTTLE = {
   zombieAttack: 0.7, // 同类攻击吼至少隔 0.7 秒，防糊
 };
 
+/* 地图音色：同一套僵尸，在不同地图听起来不一样。
+ * 纯参数调整，不加任何音频文件。 */
+const MAP_ID = new URLSearchParams(window.location.search).get('map') || 'city';
+const MAP_VOICE = {
+  city:   { freq: 1.0,  q: 1.0, dur: 1.0,  gain: 1.0 },
+  jungle: { freq: 0.88, q: 0.8, dur: 1.18, gain: 1.0, echo: true },   // 湿闷、带点回响
+  desert: { freq: 1.06, q: 1.25, dur: 0.88, gain: 0.95, dry: true },  // 干脆
+  moon:   { freq: 1.18, q: 1.5, dur: 0.82, gain: 0.9, ring: true },    // 真空感：更尖、带金属嗡鸣
+  snow:   { freq: 0.78, q: 0.7, dur: 1.22, gain: 1.05 },              // 寒风里闷闷的
+  lava:   { freq: 0.86, q: 0.95, dur: 1.28, gain: 1.1, rumble: true },// 低沉轰鸣
+};
+const VOICE = MAP_VOICE[MAP_ID] || MAP_VOICE.city;
+
 // 环境音当前状态
 let ambient = null;
 let ambientId = null;
@@ -160,8 +173,29 @@ export function playZombieDie() {
   if (!ready('zombieDie', THROTTLE.zombieDie)) return;
   const t = ctx.currentTime;
 
-  noise(t, 0.2, { type: 'lowpass', freq: 900, sweepTo: 160, gain: 0.2 });
-  tone(t, { type: 'triangle', from: 180, to: 60, dur: 0.18, gain: 0.16 });
+  // 死亡声也带地图音色：雪地闷、沙漠干、月球脆、熔岩带余烬噼啪
+  noise(t, 0.2 * VOICE.dur, {
+    type: 'lowpass',
+    freq: 900 * VOICE.freq,
+    sweepTo: 160,
+    gain: 0.2 * VOICE.gain,
+  });
+  tone(t, {
+    type: 'triangle',
+    from: 180 * (VOICE.freq > 1 ? 1.1 : 0.95),
+    to: 60,
+    dur: 0.18 * VOICE.dur,
+    gain: 0.16 * VOICE.gain,
+  });
+
+  if (VOICE.rumble) {
+    // 熔岩：尸体倒下的同时溅起一小撮火星
+    noise(t + 0.04, 0.16, { type: 'highpass', freq: 2600, gain: 0.07 });
+  }
+  if (VOICE.ring) {
+    // 月球：真空里倒下的一声脆响
+    tone(t + 0.02, { type: 'square', from: 1200, to: 700, dur: 0.1, gain: 0.05 });
+  }
 }
 
 // 僵尸开始攻击的吼声，按类型换嗓子（type 约定见 docs/僵尸类型.md）：
@@ -172,29 +206,49 @@ export function playZombieAttack(type = 0) {
   const t = ctx.currentTime;
 
   const snarl = (base, { dur = 0.5, peak = 0.14, freq = 320, q = 3 } = {}) => {
+    // 套上地图音色：滤波中心、Q、时长、响度都按地图缩放
+    const d = dur * VOICE.dur;
     const osc = ctx.createOscillator();
     osc.type = 'sawtooth';
     osc.frequency.setValueAtTime(base, t);
-    osc.frequency.linearRampToValueAtTime(base * 1.3, t + dur * 0.3);
-    osc.frequency.linearRampToValueAtTime(base * 0.65, t + dur);
+    osc.frequency.linearRampToValueAtTime(base * 1.3, t + d * 0.3);
+    osc.frequency.linearRampToValueAtTime(base * 0.65, t + d);
 
     const f = ctx.createBiquadFilter();
     f.type = 'bandpass';
-    f.frequency.setValueAtTime(freq, t);
-    f.Q.value = q;
+    f.frequency.setValueAtTime(freq * VOICE.freq, t);
+    f.Q.value = q * VOICE.q;
 
     const g = ctx.createGain();
-    env(g, t, peak, 0.03, dur);
+    env(g, t, peak * VOICE.gain, 0.03, d);
 
     const breath = ctx.createBufferSource();
     breath.buffer = noiseBuf;
     const bg = ctx.createGain();
-    env(bg, t, peak * 0.4, 0.03, dur * 0.8);
+    env(bg, t, peak * 0.4 * VOICE.gain, 0.03, d * 0.8);
 
     osc.connect(f).connect(g).connect(master);
     breath.connect(bg).connect(master);
     osc.start(t);
-    osc.stop(t + dur + 0.05);
+    osc.stop(t + d + 0.05);
+
+    // 雨林：加一层远处的回声，像在树丛里
+    if (VOICE.echo) {
+      const echoGain = ctx.createGain();
+      env(echoGain, t + 0.16, peak * 0.22 * VOICE.gain, 0.05, d * 0.7);
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = 900;
+      g.connect(lp).connect(echoGain).connect(master);
+    }
+    // 月球：真空里传不远，但有个金属感的嗡鸣
+    if (VOICE.ring) {
+      tone(t + 0.04, { type: 'sine', from: 1650, to: 1580, dur: d * 0.8, gain: 0.05 * VOICE.gain });
+    }
+    // 火山：底下压一层低频轰鸣
+    if (VOICE.rumble) {
+      tone(t, { type: 'sine', from: 44, to: 30, dur: d * 1.2, gain: 0.12 * VOICE.gain });
+    }
   };
 
   if (type === 1) {
