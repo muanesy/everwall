@@ -41,6 +41,7 @@ const CONFIG = {
     speed: 6.5,            // 压下来的速度
     spawnInterval: 2.4,
     rowGap: 1.44,          // 横向间隔，铺满左半边
+    staggerRange: 8,       // 同一批屏障在纵向错开的范围，避免排成一条直线
     negativeChance: 0.15,  // 每一排里出现负数屏障的概率
     negativeMin: -30,
     negativeMax: -10,
@@ -60,10 +61,10 @@ const CONFIG = {
     touchLoss: 1,      // 碰到士兵扣 1
     maxAlive: 120,
     touchHalfWidth: 0.8, // 士兵队列的碰撞半宽
-    aggroStartZ: 5,        // 走到很靠近士兵的位置才开始追
-    aggroRadius: 4,        // 只在这个范围内主动拐弯
-    turnSpeed: 6,          // 主动追击时的侧向速度
-    lineSlideSpeed: 18,    // 到线后沿防线滑向士兵的速度，必须快过士兵
+    aggroStartZ: 2,        // 比之前更早开始拐弯
+    aggroRadius: 6,        // 主动拐弯的范围
+    turnSpeed: 3.8,        // 主动追击时的侧向速度，放慢一些
+    lineSlideSpeed: 15,    // 到线后沿防线滑向士兵的速度，必须快过士兵
     separation: 0.6,     // 僵尸之间的最小间距，防止叠成一坨
   },
   wave: {
@@ -377,7 +378,7 @@ function spawnBarrierRow() {
     state.barriers.push({
       id: state.nextId++,
       x,
-      z: CONFIG.world.spawnZ - Math.random() * 0.8,
+      z: CONFIG.world.spawnZ - Math.random() * CONFIG.barrier.staggerRange,
       value: negative
         ? randInt(CONFIG.barrier.negativeMin, CONFIG.barrier.negativeMax)
         : 1,
