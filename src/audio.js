@@ -311,6 +311,31 @@ export function playWaveStart() {
   noise(t, 0.4, { type: 'lowpass', freq: 600, sweepTo: 120, gain: 0.12 });
 }
 
+// Boss 咆哮：登场时的一声低沉怒吼，压过所有别的声音
+export function playBossRoar() {
+  if (!ready('bossRoar', 1.5)) return;
+  const t = ctx.currentTime;
+
+  // 主体：低频锯齿波 + 慢慢下滑
+  const osc = ctx.createOscillator();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(95, t);
+  osc.frequency.linearRampToValueAtTime(58, t + 1.1);
+  const lp = ctx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.setValueAtTime(700, t);
+  lp.frequency.linearRampToValueAtTime(220, t + 1.1);
+  const g = ctx.createGain();
+  env(g, t, 0.26, 0.05, 1.1);
+  osc.connect(lp).connect(g).connect(master);
+  osc.start(t);
+  osc.stop(t + 1.25);
+
+  // 底层的轰鸣和一点点气声
+  tone(t, { type: 'sine', from: 42, to: 26, dur: 1.4, gain: 0.24 });
+  noise(t, 1.0, { type: 'bandpass', freq: 520, q: 1.2, gain: 0.12 });
+}
+
 // 炸药桶：引信嘶嘶声（打中时）+ 爆炸（炸响 + 低频冲击 + 碎片）
 export function playBarrelFuse() {
   if (!ready('barrelFuse', 0.12)) return;

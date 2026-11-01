@@ -566,3 +566,14 @@ canvas {
   color: #ffd66d;
   font-weight: 700;
 }
+
+/* ---------- Boss 登场警告 ---------- */
+
+.fx-toast--boss {
+  color: #ff6a4a;
+  border-color: rgba(255, 90, 60, 0.85);
+  box-shadow: 0 0 26px rgba(255, 70, 40, 0.6);
+  font-size: clamp(15px, 3.6vw, 22px);
+  font-weight: 900;
+  letter-spacing: 6px;
+}

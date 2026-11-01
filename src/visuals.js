@@ -25,6 +25,7 @@ import {
   playWaveStart,
   playBarrelFuse,
   playBarrelExplode,
+  playBossRoar,
 } from './audio.js';
 // 三个乙层模块：兵种阶级外观表、昼夜轮转、炸药桶（新文件，按文件边界属乙）
 import { TIERS, getTier, getTierIndex } from './visuals-tiers.js';
@@ -169,6 +170,8 @@ let containerEl = null;
 let camDist = 40;  // 相机到注视点的距离，由 resize() 按视口算
 let camY = 28;
 let camZ = 28;
+let camZoom = 0;      // Boss 在场时镜头推近的偏移
+let bossOnField = false; // 场上是否有 Boss
 
 let playerMesh = null;
 let playerShadow = null;
@@ -242,6 +245,8 @@ const ZOMBIE_LOOKS = [
   { src: 'casual', scale: 0.95, tint: [0.82, 0.90, 0.86], walkSpeed: 1.15, attackSpeed: 1.35, score: 3 },  // 7 便服僵尸 走得快（现代·沙漠）
   { src: 'pirate', scale: 1.0,  tint: [0.95, 0.72, 0.66], walkSpeed: 1.05, attackSpeed: 1.1, score: 5 },   // 8 海盗僵尸（终幕·熔岩）
   { src: 'cyber',  scale: 1.0,  tint: [0.86, 0.92, 1.05], walkSpeed: 1.25, attackSpeed: 1.4, score: 5 },   // 9 生化改造体（后现代·雪地）
+  // 10 号是 Boss：模型自带咆哮/撕咬/死亡全套动画，体型大、走得慢、碰兵扣得多
+  { src: 'boss',   scale: 1.0,  tint: [0.58, 0.54, 0.56], walkSpeed: 0.5, attackSpeed: 0.7, score: 40, isBoss: true, emissive: 0.10 },
 ];
 
 /* 地图 → 僵尸模型覆盖：换地图时，同一种 type 换上本地图专属的模型。
@@ -263,6 +268,9 @@ const MODEL_TARGET = {
   soldierHeight: 1.5, // 士兵目标身高（世界单位）
   zombieHeight: 1.55, // 僵尸目标身高，比方块(1.15)略高一点更有压迫感
 };
+
+// Boss 体型是普通僵尸的几倍：一眼就能从人群里认出它
+const BOSS_HEIGHT_MUL = 1.95;
 
 // 这个 GLB 的节点树会让 Box3.setFromObject 崩（树里有坏引用），
 // 手动遍历 mesh 的几何包围盒测身高，顺便返回最低点用来落地。
@@ -310,6 +318,7 @@ function prepareZombieType(rawProto, look) {
   proto.userData.clip = rawProto.userData.clip;
   proto.userData.attackClip = rawProto.userData.attackClip;
   proto.userData.deathClip = rawProto.userData.deathClip;
+  proto.userData.roarClip = rawProto.userData.roarClip;
   proto.traverse((o) => {
     if ((o.isMesh || o.isSkinnedMesh) && o.material) {
       o.material = Array.isArray(o.material)
@@ -319,7 +328,7 @@ function prepareZombieType(rawProto, look) {
   });
   preparePrototype(
     proto,
-    MODEL_TARGET.zombieHeight * look.scale,
+    MODEL_TARGET.zombieHeight * look.scale * (look.isBoss ? BOSS_HEIGHT_MUL : 1),
     // 类型乘色 × 地图氛围色
     new THREE.Color(
       Math.min(1.2, look.tint[0] * MAP_TINT[0]),
@@ -364,6 +373,9 @@ function loadModels() {
     // 死亡动画：僵尸倒下，比直接消失好看很多
     proto.userData.deathClip =
       clips.find((c) => /death|defeat|dying/i.test(c.name)) || null;
+    // 咆哮动画：只有 Boss 有，出场登场用
+    proto.userData.roarClip =
+      clips.find((c) => /roar/i.test(c.name)) || null;
     return proto;
   };
 
@@ -373,9 +385,9 @@ function loadModels() {
   const coreFiles = ['b-zombie-soldier.glb', 'b-zombie-male.glb', 'b-zombie-female.glb'];
   const extraFiles = [
     'b-zombie-knight.glb', 'b-soldier-blue.glb', 'b-zombie-casual.glb',
-    'b-zombie-pirate.glb', 'b-zombie-cyber.glb',
+    'b-zombie-pirate.glb', 'b-zombie-cyber.glb', 'b-boss-creep.glb',
   ];
-  const extraKeys = ['knight', 'blue', 'casual', 'pirate', 'cyber'];
+  const extraKeys = ['knight', 'blue', 'casual', 'pirate', 'cyber', 'boss'];
   const per = coreFiles.concat(extraFiles).map(() => ({ loaded: 0, total: 0, done: false }));
 
   const loadOne = (f, i) => new Promise((resolve, reject) => {
@@ -527,6 +539,7 @@ function spawnModel(proto, faceDir) {
     let walkAction = null;
     let attackAction = null;
     let deathAction = null;
+    let roarAction = null;
     const clip = proto.userData.clip;
     if (clip) {
       mixer = new THREE.AnimationMixer(root);
@@ -540,6 +553,13 @@ function spawnModel(proto, faceDir) {
         attackAction = mixer.clipAction(proto.userData.attackClip);
         attackAction.timeScale = proto.userData.attackSpeed || 1.0;
       }
+      // 咆哮动作：只有 Boss 有，登场时播一遍
+      if (proto.userData.roarClip) {
+        roarAction = mixer.clipAction(proto.userData.roarClip);
+        roarAction.setLoop(THREE.LoopOnce, 1);
+        roarAction.clampWhenFinished = true;
+        roarAction.paused = true;
+      }
       // 死亡动作待命：死的时候播一遍再消失
       if (proto.userData.deathClip) {
         deathAction = mixer.clipAction(proto.userData.deathClip);
@@ -549,7 +569,7 @@ function spawnModel(proto, faceDir) {
       }
       animMixers.add(mixer);
     }
-    return { root, mixer, walkAction, attackAction, deathAction, attacking: false };
+    return { root, mixer, walkAction, attackAction, deathAction, roarAction, attacking: false };
   } catch (err) {
     console.warn('[visuals] 模型克隆失败：', err);
     return null;
@@ -1067,6 +1087,7 @@ export function syncScene(state, dt) {
 
   // 僵尸
   syncZombies(state, dt);
+  updateBossPresence(state);
 
   // 子弹
   syncBullets(state);
@@ -1378,6 +1399,25 @@ function syncZombies(state, dt) {
         entry = vis
           ? { isModel: true, vis }
           : { isModel: false, mesh: makeZombieMesh(z.type) };
+
+        // Boss 登场：咆哮 + 红光警告 + 强震屏 + 镜头推近
+        const look = ZOMBIE_LOOKS[z.type];
+        if (look && look.isBoss) {
+          if (vis && vis.roarAction) {
+            vis.roarAction.reset();
+            vis.roarAction.paused = false;
+            vis.roarAction.play();
+          }
+          bossOnField = true;
+          shake = Math.max(shake, 0.65);
+          pushToast('BOSS 登场', 'boss');
+          if (fxHurt) {
+            fxHurt.classList.remove('show');
+            void fxHurt.offsetWidth;
+            fxHurt.classList.add('show');
+          }
+          playBossRoar();
+        }
       } else {
         entry = { isModel: false, mesh: makeZombieMesh(z.type) };
       }
@@ -1485,6 +1525,16 @@ function updateDeathQueue(dt) {
   }
 }
 
+// 场上还有没有 Boss：没有就把镜头拉回去
+function updateBossPresence(state) {
+  let has = false;
+  for (const z of state.zombies) {
+    const look = ZOMBIE_LOOKS[z.type];
+    if (look && look.isBoss) { has = true; break; }
+  }
+  bossOnField = has;
+}
+
 function syncBullets(state) {  const alive = new Set();
 
   for (const b of state.bullets) {
@@ -1523,7 +1573,11 @@ function updateCamera(state, dt) {
     sy = (Math.random() - 0.5) * shake;
   }
 
-  camera.position.set(camBaseX + sx, camY + sy, camZ);
+  // Boss 在场时镜头缓缓推近一点，制造压迫感；退场后慢慢拉回
+  const wantZoom = bossOnField ? -1.6 : 0;
+  camZoom += (wantZoom - camZoom) * Math.min(1, dt * 1.6);
+
+  camera.position.set(camBaseX + sx, camY + sy, camZ + camZoom);
   camera.lookAt(camBaseX, 0, 0);
 }
 
