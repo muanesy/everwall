@@ -206,6 +206,7 @@ const modelLib = {
   soldier: null,   // gltf.scene 原型（只作克隆源，不直接进场）
   zombies: [],     // 五种僵尸原型，下标 = game.js 的 z.type，约定见 docs/僵尸类型.md
   soldiersByEra: {}, // 时代 → 士兵模型原型，换时代时整队换装
+  bySrc: {},       // 模型来源名 → 原型，地图覆盖用（把这格的僵尸换成别的模型）
 };
 
 // 五种僵尸的外观表（数值归 game.js，这里只管外观）。
@@ -223,7 +224,23 @@ const ZOMBIE_LOOKS = [
   { src: 'knight', scale: 1.05, tint: [0.86, 0.80, 0.72], walkSpeed: 0.9, attackSpeed: 0.9, score: 4 },    // 5 僵尸骑士 锈甲（中世纪·丛林）
   { src: 'blue',   scale: 1.0,  tint: [0.74, 0.82, 0.98], walkSpeed: 1.0, attackSpeed: 1.05, score: 4 },   // 6 蓝军装僵尸（二战·城市）
   { src: 'casual', scale: 0.95, tint: [0.82, 0.90, 0.86], walkSpeed: 1.15, attackSpeed: 1.35, score: 3 },  // 7 便服僵尸 走得快（现代·沙漠）
+  { src: 'pirate', scale: 1.0,  tint: [0.95, 0.72, 0.66], walkSpeed: 1.05, attackSpeed: 1.1, score: 5 },   // 8 海盗僵尸（终幕·熔岩）
+  { src: 'cyber',  scale: 1.0,  tint: [0.86, 0.92, 1.05], walkSpeed: 1.25, attackSpeed: 1.4, score: 5 },   // 9 生化改造体（后现代·雪地）
 ];
+
+/* 地图 → 僵尸模型覆盖：换地图时，同一种 type 换上本地图专属的模型。
+ * 这样"每张图有自己的僵尸"不依赖甲改玩法，纯画面层就能做出来：
+ * 数值（血量/速度/扣兵）还是甲的 type 说了算，这里只换穿什么。
+ * 键是 type，值是模型来源名（对应 ZOMBIE_LOOKS 的 src）。 */
+const MAP_TYPE_SRC = {
+  jungle: { 0: 'knight' },   // 丛林：中世纪的僵尸骑士
+  city:   { 0: 'blue' },     // 城市废墟：二战蓝军装
+  desert: { 0: 'casual' },   // 沙漠：便服暴徒
+  snow:   { 0: 'cyber' },    // 雪地：后现代生化改造体
+  moon:   { 0: 'blue' },     // 月球：星际蓝甲（配色再往冷里拉）
+  lava:   { 0: 'pirate' },   // 熔岩：终幕海盗
+};
+const MAP_TYPE_OVERRIDE = MAP_TYPE_SRC[MAP_ID] || null;
 const animMixers = new Set(); // 所有活着的骨骼动画，每帧 update
 
 const MODEL_TARGET = {
@@ -329,7 +346,11 @@ function loadModels() {
   // 核心三个（士兵/男僵尸/女僵尸）先加载，加载完就能玩；
   // 三种"地图专属僵尸"的模型放后台加载，不拖慢首屏，加载完再启用对应 type。
   const coreFiles = ['b-zombie-soldier.glb', 'b-zombie-male.glb', 'b-zombie-female.glb'];
-  const extraFiles = ['b-zombie-knight.glb', 'b-soldier-blue.glb', 'b-zombie-casual.glb'];
+  const extraFiles = [
+    'b-zombie-knight.glb', 'b-soldier-blue.glb', 'b-zombie-casual.glb',
+    'b-zombie-pirate.glb', 'b-zombie-cyber.glb',
+  ];
+  const extraKeys = ['knight', 'blue', 'casual', 'pirate', 'cyber'];
   const per = coreFiles.concat(extraFiles).map(() => ({ loaded: 0, total: 0, done: false }));
 
   const loadOne = (f, i) => new Promise((resolve, reject) => {
@@ -386,13 +407,21 @@ function loadModels() {
     .then((list) => {
       if (!modelLib.loaded || !list[0]) return;
       const raw = {};
-      const keys = ['knight', 'blue', 'casual'];
       list.forEach((gltf, i) => {
-        if (gltf) raw[keys[i]] = grab(gltf, /walk/i);
+        if (gltf) raw[extraKeys[i]] = grab(gltf, /walk/i);
       });
       ZOMBIE_LOOKS.forEach((look, i) => {
         if (!raw[look.src]) return;
         modelLib.zombies[i] = prepareZombieType(raw[look.src], look);
+      });
+
+      // 按模型来源建索引：地图覆盖要用它（"这一格换成别的模型"）
+      modelLib.bySrc = {
+        male: modelLib.zombies[0],
+        female: modelLib.zombies[3],
+      };
+      ZOMBIE_LOOKS.forEach((look, i) => {
+        if (raw[look.src]) modelLib.bySrc[look.src] = modelLib.zombies[i];
       });
 
       // 时代换装：同一批模型也拿来当"这个时代的士兵"，
@@ -1169,7 +1198,12 @@ function syncZombies(state, dt) {
     if (!entry) {
       if (modelLib.loaded && modelLib.zombies.length) {
         // 原型下标 = z.type（0-4），约定见 docs/僵尸类型.md；越界兜底回普通
-        const proto = modelLib.zombies[z.type] || modelLib.zombies[0];
+        // 地图覆盖：这张图的专属僵尸长什么样（只换模型，数值还是 type 说了算）
+        const overrideSrc = MAP_TYPE_OVERRIDE ? MAP_TYPE_OVERRIDE[z.type] : null;
+        const proto =
+          (overrideSrc && modelLib.bySrc && modelLib.bySrc[overrideSrc]) ||
+          modelLib.zombies[z.type] ||
+          modelLib.zombies[0];
         const vis = spawnModel(proto, 0); // 面朝玩家（+z）
         entry = vis
           ? { isModel: true, vis }
