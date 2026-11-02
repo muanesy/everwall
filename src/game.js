@@ -62,8 +62,11 @@ const CONFIG = {
   weapon: {
     maxLines: 8,         // 最多几个枪位
     jitterBase: 0.01,    // 枪口抖动
-    pierceChance: 0.08,  // 穿透器：每命中一只僵尸后继续穿透的概率
-    pierceMax: 3,        // 一颗子弹最多穿透几次
+    // 穿透器 1-3 级：等级越高，继续穿透概率和最多穿透次数越高
+    pierceChanceByLevel: [0.08, 0.12, 0.16],
+    pierceMaxByLevel: [3, 4, 5],
+    pierceChance: 0.08,  // 兼容旧字段：未设置等级时按 1 级算
+    pierceMax: 3,
   },
   formation: {
     spacing: 0.42,       // 前排士兵之间的横向间距
@@ -527,6 +530,7 @@ const state = {
   weapon: {
     lines: 1,
     pierce: false,
+    pierceLevel: 0, // 0 未解锁，1-3 对应 pierceChanceByLevel / pierceMaxByLevel
     timers: [0], // 每个枪位各自的发射计时，错开节奏
   },
 
@@ -853,6 +857,7 @@ function resetState(opts = {}) {
   state.startMap = startMap;
   state.weapon.lines = 1;
   state.weapon.pierce = false;
+  state.weapon.pierceLevel = 0;
   state.weapon.timers = [0];
 
   state.upgrades.damage = 1;
@@ -939,6 +944,8 @@ function resetState(opts = {}) {
   if (state.testMode) {
     for (const id of SLOT_IDS) setSlotLevel(id, 1);
     setSlotLevel('barricade', 1);
+  } else {
+    applyStartingLoadout(startEra);
   }
 
   // 开局用的地图也要预载贴图：玩家在开始页已经选好图了，
@@ -965,6 +972,26 @@ function setPaused(paused) {
     input.left = false;
     input.right = false;
     input.pointerActive = false;
+  }
+}
+
+// 从不同时代开局时的初始配置：
+// 二战/现代给 1 级穿透器和 1 级火力增援；后现代起额外按时代给槽位；
+// 中世纪什么都不给。
+function applyStartingLoadout(era) {
+  const weaponTier = era >= 5 ? 3 : era >= 4 ? 2 : era >= 1 ? 1 : 0;
+  const slotTier = era >= 5 ? 3 : era >= 4 ? 2 : era >= 3 ? 1 : 0;
+
+  if (weaponTier > 0) {
+    state.weapon.pierce = true;
+    state.weapon.pierceLevel = weaponTier;
+    // 火力增援 1 级 = 2 个枪位，3 级 = 4 个
+    state.weapon.lines = Math.min(CONFIG.weapon.maxLines, 1 + weaponTier);
+  }
+
+  if (slotTier > 0) {
+    for (const id of SLOT_IDS) setSlotLevel(id, slotTier);
+    setSlotLevel('barricade', slotTier);
   }
 }
 
@@ -3107,6 +3134,7 @@ function updateBullets(dt) {
               emit('weaponUpgrade', { lines: state.weapon.lines });
             } else {
               state.weapon.pierce = true;
+              state.weapon.pierceLevel = Math.max(1, state.weapon.pierceLevel || 0);
               emit('pierceUnlock', {});
             }
             state.barriers.splice(j, 1);
@@ -3148,10 +3176,19 @@ function updateBullets(dt) {
         // 穿透器：小概率不消耗子弹，继续打后面的僵尸
         // 狙击枪的穿透是「必穿」，不走概率；其余走穿透器那套
         const alwaysPierce = !!(state.playerWeapon && state.playerWeapon.pierce);
+        const pierceLevel = state.weapon.pierce
+          ? Math.max(1, state.weapon.pierceLevel || 1)
+          : 0;
+        const pierceMax =
+          CONFIG.weapon.pierceMaxByLevel[pierceLevel - 1] ??
+          CONFIG.weapon.pierceMax;
+        const pierceChance =
+          CONFIG.weapon.pierceChanceByLevel[pierceLevel - 1] ??
+          CONFIG.weapon.pierceChance;
         const pierced =
           (alwaysPierce || state.weapon.pierce) &&
-          (b.pierces || 0) < CONFIG.weapon.pierceMax &&
-          (alwaysPierce || Math.random() < CONFIG.weapon.pierceChance);
+          (b.pierces || 0) < pierceMax &&
+          (alwaysPierce || Math.random() < pierceChance);
 
         if (pierced) {
           b.pierces = (b.pierces || 0) + 1;
