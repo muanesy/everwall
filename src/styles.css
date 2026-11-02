@@ -604,6 +604,14 @@ canvas {
   letter-spacing: 6px;
 }
 
+/* ---------- 补给箱奖励提示 ---------- */
+
+.fx-toast--crate {
+  color: #bff5d2;
+  border-color: rgba(88, 224, 138, 0.7);
+  box-shadow: 0 0 22px rgba(88, 224, 138, 0.45);
+}
+
 /* ---------- 波次倒计时 ---------- */
 
 .wave__next {

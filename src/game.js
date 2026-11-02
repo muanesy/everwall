@@ -19,6 +19,7 @@ import {
   switchEra,
   pickEraMap,
   spawnCampfireFx,
+  setWaterLevel,
 } from './visuals.js';
 import { initUI, updateUI } from './ui.js';
 
@@ -269,6 +270,7 @@ const CONFIG = {
     baseSpeed: 3.2,
     speedPerWave: 0.25,
     nightSpeedMul: 1.15, // 夜晚僵尸移速加成
+    nightSpawnMul: 0.75, // 夜晚刷新间隔乘这个，越小越密（0.75 = 快 33%）
     maxSpeed: 7.5,
     speedCap: 9,       // 快鬼加速后也不会超过这个速度
     spawnInterval: 0.35,
@@ -292,6 +294,16 @@ const CONFIG = {
       { id: 2, name: '快鬼',   hp: 0.5, speed: 1.50, touchLoss: 1, score: 1, baseWeight: 22, growth: 0,                    minWave: 1 },
       { id: 3, name: '精英',   hp: 3.5, speed: 0.85, touchLoss: 3, score: 5, baseWeight: 6,  growth: 0.5, maxWeight: 12, minWave: 3 },
       { id: 4, name: '女僵尸', hp: 1.2, speed: 1.10, touchLoss: 1, score: 2, baseWeight: 12, growth: 0,                    minWave: 1 },
+      // 11 自爆：死了炸一圈，逼玩家优先点掉它，别让它贴近阵型
+      { id: 11, name: '自爆', hp: 1.6, speed: 0.90, touchLoss: 2, score: 4, baseWeight: 6, growth: 0.4, maxWeight: 12, minWave: 4, explode: { radius: 2.8, hpMul: 4 } },
+      // 12 护甲：子弹伤害打对折，靠技能或集火处理
+      { id: 12, name: '护甲', hp: 2.0, speed: 0.85, touchLoss: 2, score: 4, baseWeight: 8, growth: 0.3, maxWeight: 14, minWave: 5, armor: 0.5 },
+      // 13 远程：走到半场就停住，隔着距离往阵型吐酸液，逼玩家优先点掉它
+      { id: 13, name: '远程', hp: 1.4, speed: 0.95, touchLoss: 1, score: 5, baseWeight: 7, growth: 0.35, maxWeight: 13, minWave: 7, ranged: { stopZ: -13, interval: 2.6, damage: 1, speed: 7 } },
+      // 时代 Boss：不参与随机抽签（minWave 999 + boss 标记双保险），
+      // 只由 spawnEraBoss() 在切换时代时单独刷一只
+      // hp 9 = 同波普通僵尸的 9 倍（第 5 波约 470 血），40 兵对准约 20 秒能打完
+      { id: 10, name: '时代Boss', hp: 9, speed: 0.5, touchLoss: 6, score: 40, baseWeight: 0, growth: 0, minWave: 999, boss: true },
     ],
   },
   wave: {
@@ -309,6 +321,35 @@ const CONFIG = {
     recommendedLevel: [1, 2, 3, 4, 4, 5],
     underLevelStep: 0.15, // 每差 1 级 -15%
     underLevelMin: 0.55,  // 最多 -45%
+  },
+  // 时代 Boss：每次切换时代刷一只，作为分段节点
+  // 血量乘子和普通僵尸同一套公式（baseHp + 波次成长），再乘 types 里的 hp=14
+  boss: {
+    rewardSoldiers: 8,   // 击败奖励：加兵
+    rewardScore: 30,     // 击败奖励：额外分数（types 里的 score 40 会另算）
+    toast: true,
+  },
+  // 洪水（点子池「洪水上涨」）：水位随波次上升，漫过脚踝后僵尸变慢
+  flood: {
+    startWave: 5,      // 第几波开始涨
+    perWave: 0.06,     // 每波涨多少（0~1 的水位值）
+    maxLevel: 0.9,     // 涨到这儿封顶，不会真把画面淹掉
+    slowFrom: 0.55,    // 水位超过这个值才开始拖慢僵尸
+    slowMul: 0.62,     // 水里僵尸移速乘这个
+  },
+  // 补给箱：场上随机掉一个木箱，打碎给随机奖励
+  crate: {
+    interval: 16,        // 每隔多少秒尝试刷一个
+    max: 2,              // 场上最多几个
+    firstDelay: 10,      // 开局多久后刷第一个，别一上来就掉
+    fallSpeed: 9,        // 从天而降的速度
+    hitW: 0.8,           // 横向命中半宽（比僵尸宽，别让玩家瞄不准）
+    hitZ: 0.75,
+    rewards: [
+      { kind: 'soldiers', amount: 5, weight: 46, label: '援兵 +5' },
+      { kind: 'score', amount: 30, weight: 34, label: '分数 +30' },
+      { kind: 'soldiers', amount: 10, weight: 20, label: '援兵 +10' },
+    ],
   },
 };
 
@@ -425,12 +466,25 @@ const state = {
   barrierTimer: 0,
   zombieTimer: 0,
   barrelTimer: 0,
+  crateTimer: 0,
+  crates: [],        // 补给箱：{ id, x, z, y, landed, reward }
+  enemyShots: [],    // 远程僵尸吐出来的酸液：{ id, x, z, tx, tz, speed, damage }
+  floodLevel: 0,     // 当前水位 0~1，给画面层和僵尸减速共用
   nextId: 1,
-  spawnCounts: [0, 0, 0, 0, 0], // 调试用：统计每种僵尸刷了多少只
+  spawnCounts: new Array(14).fill(0), // 调试用：统计每种僵尸刷了多少只（0-13）
 };
 
 // 调试用：浏览器控制台输入 __state 可以看实时数据
 window.__state = state;
+
+// 按 id 查僵尸类型。注意**不能用 CONFIG.zombie.types[z.type] 当下标**：
+// 类型 id 是约定编号（画面层按同一套编号，中间留了 5-9 给地图专属僵尸），
+// 而数组里只放实际存在的几个，id 10 的 Boss 只排在第 6 个位置上。
+const ZTYPE_BY_ID = new Map();
+CONFIG.zombie.types.forEach((t) => ZTYPE_BY_ID.set(t.id, t));
+function zombieTypeById(id) {
+  return ZTYPE_BY_ID.get(id) || null;
+}
 
 const events = new EventTarget();
 
@@ -499,10 +553,42 @@ events.addEventListener('barrelExploded', (e) => {
     zb.hp -= damage;
     if (zb.hp <= 0) {
       state.zombies.splice(i, 1);
-      state.score += CONFIG.zombie.types[zb.type]?.score || 1;
+      state.score += zombieTypeById(zb.type)?.score || 1;
       emit('zombieDie', { x: zb.x, z: zb.z, type: zb.type });
     }
   }
+});
+
+// 时代 Boss 被击败：给兵 + 额外分数。
+// 僵尸死亡一共有四个结算点（炸药桶 / 攻城 / 技能 / 路障反击），
+// 全都派 zombieDie，所以奖励在这里单点结算，不会漏也不会重复。
+events.addEventListener('zombieDie', (e) => {
+  const d = e.detail || {};
+
+  // 自爆僵尸：死后炸一圈。伤害按"本波普通僵尸血量 × hpMul"算，
+  // 所以它越晚死、周围僵尸越硬，炸得越狠；连锁引爆是允许的（死者已先被移出数组，不会重复炸）
+  if (d.type === 11) {
+    const cfg = zombieTypeById(11)?.explode;
+    if (cfg && Number.isFinite(d.x) && Number.isFinite(d.z)) {
+      const baseHp = CONFIG.zombie.baseHp + (state.wave - 1) * CONFIG.zombie.hpPerWave;
+      emit('zombieExplode', { x: d.x, z: d.z, radius: cfg.radius });
+      damageZombiesInRadius(d.x, d.z, cfg.radius, baseHp * cfg.hpMul);
+    }
+  }
+
+  if (d.type !== 10) return;
+
+  state.soldiers = Math.min(
+    CONFIG.formation.maxSoldiers,
+    state.soldiers + CONFIG.boss.rewardSoldiers
+  );
+  state.score += CONFIG.boss.rewardScore;
+  emit('bossDefeated', {
+    wave: state.wave,
+    x: d.x,
+    z: d.z,
+    soldiers: CONFIG.boss.rewardSoldiers,
+  });
 });
 
 /* ----------------------------------------------------------
@@ -609,6 +695,11 @@ function resetState(opts = {}) {
   state.barrierTimer = 0.6;
   state.zombieTimer = 1.0;
   state.barrelTimer = CONFIG.barrel.spawnInterval;
+  state.crateTimer = CONFIG.crate.firstDelay;
+  state.crates.length = 0;
+  state.enemyShots.length = 0;
+  state.floodLevel = 0;
+  setWaterLevel(0);
   state.nextId = 1;
   state.spawnCounts.fill(0);
   resetBarricade();
@@ -1179,7 +1270,7 @@ function damageZombieAt(index, damage) {
   if (zb.hp > 0) return false;
 
   state.zombies.splice(index, 1);
-  state.score += CONFIG.zombie.types[zb.type]?.score || 1;
+  state.score += zombieTypeById(zb.type)?.score || 1;
   emit('zombieDie', { x: zb.x, z: zb.z, type: zb.type });
   return true;
 }
@@ -1650,6 +1741,9 @@ function syncEraWithWave(wave) {
   // 只换时代配色和地图，场上僵尸、子弹、屏障全部保留
   switchEra(eraIndex, map);
   refreshSlotsForEra();
+
+  // 新时代开场：一只 Boss 压下来当分段节点
+  spawnEraBoss(eraIndex);
 }
 
 function update(dt) {
@@ -1673,10 +1767,24 @@ function update(dt) {
     }
   }
 
+  // 洪水：水位按波次上涨，漫过脚踝后整场僵尸变慢。
+  // 只在数值真的变了才调画面层，免得每帧都写一遍水面
+  const floodLevel = Math.min(
+    CONFIG.flood.maxLevel,
+    Math.max(0, (state.wave - CONFIG.flood.startWave) * CONFIG.flood.perWave)
+  );
+  if (Math.abs(floodLevel - state.floodLevel) > 0.001) {
+    state.floodLevel = floodLevel;
+    setWaterLevel(floodLevel);
+    if (floodLevel >= CONFIG.flood.slowFrom) emit('floodRise', { level: floodLevel });
+  }
+
   updateFormation();
   updatePlayer(dt);
   updateFiring(dt);
   updateBarrelSpawn(dt);
+  updateCrates(dt);
+  updateEnemyShots(dt);
   updateBullets(dt);
   updateSlots(dt);
   updateBarriers(dt);
@@ -1816,6 +1924,140 @@ function updateBarrelSpawn(dt) {
   spawnBarrel(x, z);
 }
 
+/* ----------------------------------------------------------
+ * 补给箱（点子池「补给箱」）：场上随机掉一个木箱，打碎给随机奖励
+ *
+ * 只放在玩家能打到的地方：x 在战场内、z 在玩家上方不远处。
+ * 子弹是垂直往上飞的，所以箱子必须落在玩家走位能覆盖的横向范围里，
+ * 否则玩家永远打不到（炸药桶当初就踩过这个坑）。
+ * ---------------------------------------------------------- */
+function pickCrateReward() {
+  const list = CONFIG.crate.rewards;
+  const total = list.reduce((s, r) => s + r.weight, 0);
+  let roll = Math.random() * total;
+  for (const r of list) {
+    roll -= r.weight;
+    if (roll <= 0) return r;
+  }
+  return list[0];
+}
+
+function spawnCrate() {
+  if (state.crates.length >= CONFIG.crate.max) return null;
+
+  // 横向铺满玩家能走到的范围（±半宽），纵向放在中场：
+  // 太靠前会被僵尸挡住，太靠后会贴着玩家脚下，中场最容易在交火时被顺手打到
+  const halfW = CONFIG.world.halfWidth;
+  const x = (Math.random() * 2 - 1) * halfW * 0.85;
+  const z = -8 + Math.random() * 12;
+
+  const crate = {
+    id: state.nextId++,
+    x,
+    z,
+    y: 12,               // 从高处落下
+    landed: false,
+    reward: pickCrateReward(),
+  };
+  state.crates.push(crate);
+  emit('crateSpawn', { x, z, id: crate.id });
+  return crate;
+}
+
+function updateCrates(dt) {
+  if (state.testMode) return;
+
+  // 落地动画：从 y=12 掉到 0
+  for (const c of state.crates) {
+    if (c.landed) continue;
+    c.y -= CONFIG.crate.fallSpeed * dt;
+    if (c.y <= 0) {
+      c.y = 0;
+      c.landed = true;
+      emit('crateLand', { x: c.x, z: c.z, id: c.id });
+    }
+  }
+
+  state.crateTimer -= dt;
+  if (state.crateTimer > 0) return;
+  state.crateTimer = CONFIG.crate.interval;
+  spawnCrate();
+}
+
+// 子弹打箱子：打中就碎，奖励当场结算
+function hitCrate(bx, bz) {
+  for (let i = state.crates.length - 1; i >= 0; i--) {
+    const c = state.crates[i];
+    // 还在空中不能打，必须落地（和炸药桶一致）
+    if (!c.landed) continue;
+    if (Math.abs(bx - c.x) > CONFIG.crate.hitW) continue;
+    if (Math.abs(bz - c.z) > CONFIG.crate.hitZ) continue;
+
+    state.crates.splice(i, 1);
+    const r = c.reward;
+    if (r.kind === 'soldiers') {
+      applySoldiers(r.amount);
+    } else if (r.kind === 'score') {
+      state.score += r.amount;
+    }
+    emit('crateHit', {
+      x: c.x, z: c.z, id: c.id,
+      kind: r.kind, amount: r.amount, label: r.label,
+    });
+    return true;
+  }
+  return false;
+}
+
+/* ----------------------------------------------------------
+ * 远程僵尸的酸液（点子池「远程僵尸」）
+ *
+ * 从僵尸位置朝玩家当前位置飞一条直线，飞到就扣兵。玩家可以左右走位躲开，
+ * 这就是"必须优先点掉它"的压力来源——躲一次躲不了十次。
+ * ---------------------------------------------------------- */
+function fireEnemyShot(z) {
+  const targetX = state.player.x;
+  const targetZ = state.player.z;
+  const dx = targetX - z.x;
+  const dz = targetZ - z.z;
+  const len = Math.hypot(dx, dz) || 1;
+  const speed = z.ranged.speed;
+
+  state.enemyShots.push({
+    id: state.nextId++,
+    x: z.x,
+    z: z.z,
+    vx: (dx / len) * speed,
+    vz: (dz / len) * speed,
+    damage: z.ranged.damage,
+    life: 0,
+  });
+  emit('enemyShot', { x: z.x, z: z.z });
+}
+
+function updateEnemyShots(dt) {
+  for (let i = state.enemyShots.length - 1; i >= 0; i--) {
+    const s = state.enemyShots[i];
+    s.x += s.vx * dt;
+    s.z += s.vz * dt;
+    s.life += dt;
+
+    // 飞太久或飞出战场就丢掉
+    if (s.life > 4 || s.z > CONFIG.world.spawnZ + 30) {
+      state.enemyShots.splice(i, 1);
+      continue;
+    }
+
+    const dx = s.x - state.player.x;
+    const dz = s.z - state.player.z;
+    if (dx * dx + dz * dz < 0.45 * 0.45) {
+      state.enemyShots.splice(i, 1);
+      emit('enemyShotHit', { x: s.x, z: s.z });
+      if (!state.testMode) damageArmy(s.damage, 'shot');
+    }
+  }
+}
+
 function updateBullets(dt) {
   for (let i = state.bullets.length - 1; i >= 0; i--) {
     const b = state.bullets[i];
@@ -1829,6 +2071,12 @@ function updateBullets(dt) {
 
     // 打中炸药桶：点燃引信，子弹消失，爆炸伤害由 barrelExploded 结算
     if (!state.testMode && hitBarrel(b.x, b.z, 0.45)) {
+      state.bullets.splice(i, 1);
+      continue;
+    }
+
+    // 打中补给箱：当场碎，奖励已经结算完
+    if (!state.testMode && hitCrate(b.x, b.z)) {
       state.bullets.splice(i, 1);
       continue;
     }
@@ -1900,12 +2148,17 @@ function updateBullets(dt) {
     for (let j = state.zombies.length - 1; j >= 0; j--) {
       const z = state.zombies[j];
 
-      if (Math.abs(b.x - z.x) < 0.72 && Math.abs(b.z - z.z) < 0.7) {
-        z.hp -= b.damage;
+      // Boss 体型是普通僵尸的 1.95 倍，判定跟着放大：否则贴着它身体边缘开枪，
+      // 画面上明明打中了却是空的，读起来像"厚血打不动"
+      const halfW = z.boss ? 1.35 : 0.72;
+      const halfZ = z.boss ? 0.95 : 0.7;
+
+      if (Math.abs(b.x - z.x) < halfW && Math.abs(b.z - z.z) < halfZ) {
+        z.hp -= b.damage * (z.armor ?? 1);
 
         if (z.hp <= 0) {
           state.zombies.splice(j, 1);
-          state.score += CONFIG.zombie.types[z.type].score;
+          state.score += (zombieTypeById(z.type)?.score ?? 1);
           emit('zombieDie', { x: z.x, z: z.z, type: z.type });
         }
 
@@ -2203,9 +2456,13 @@ function updateZombies(dt) {
   // 电磁脉冲：冻结期间所有僵尸原地不动，也不啃路障
   const frozen = state.time < state.freezeUntil;
 
+  // 刷怪间隔：波次越高越密；夜里再密一档（点子池「夜晚加密度」）
+  // 夜晚倍率乘在波次压缩之后，再被 minSpawnInterval 兜底，不会密到瞬移
+  const nightDensity = isNight(state.wave) ? CONFIG.zombie.nightSpawnMul : 1;
   const spawnInterval = Math.max(
     CONFIG.zombie.minSpawnInterval,
-    CONFIG.zombie.spawnInterval - (state.wave - 1) * CONFIG.zombie.intervalPerWave
+    (CONFIG.zombie.spawnInterval - (state.wave - 1) * CONFIG.zombie.intervalPerWave) *
+      nightDensity
   );
 
   if (state.zombieTimer <= 0) {
@@ -2281,6 +2538,22 @@ function updateZombies(dt) {
       z.x += Math.sign(dx) * CONFIG.zombie.turnSpeed * dt;
     }
 
+    // 远程僵尸：走到半场就停，隔着距离往阵型吐酸液
+    // （它不参与贴线滑行，所以下面那段对它不生效）
+    if (z.ranged && z.z >= z.ranged.stopZ) {
+      z.z = z.ranged.stopZ;
+      z.aggro = true;
+      z.x = clamp(z.x, -CONFIG.world.halfWidth - 1, CONFIG.world.halfWidth + 1);
+
+      // 测试模式下也照常吐：伤害由 damageArmy 内部挡掉，弹道该看还是能看
+      z.shotTimer -= dt;
+      if (z.shotTimer <= 0) {
+        z.shotTimer = z.ranged.interval;
+        fireEnemyShot(z);
+      }
+      continue;
+    }
+
     if (z.z >= CONFIG.world.killZ) {
       // 到线就停住，不再往前，改为沿着防线滑向士兵
       // 这样它永远不会越线，最终一定会贴上
@@ -2292,7 +2565,9 @@ function updateZombies(dt) {
       }
     } else {
       const slowMul = state.time < state.slowUntil ? state.slowMul : 1;
-      z.z += z.speed * dt * slowMul;
+      // 水里走不动：水位漫过脚踝后整场僵尸都慢下来
+      const waterMul = state.floodLevel >= CONFIG.flood.slowFrom ? CONFIG.flood.slowMul : 1;
+      z.z += z.speed * dt * slowMul * waterMul;
     }
 
     z.x = clamp(z.x, -CONFIG.world.halfWidth - 1, CONFIG.world.halfWidth + 1);
@@ -2306,7 +2581,7 @@ function updateZombies(dt) {
     if (z.hp > 0) continue;
 
     state.zombies.splice(i, 1);
-    state.score += CONFIG.zombie.types[z.type]?.score || 1;
+    state.score += zombieTypeById(z.type)?.score || 1;
     emit('zombieDie', { x: z.x, z: z.z, type: z.type });
   }
 
@@ -2704,6 +2979,8 @@ function separateZombies() {
 }
 
 function typeWeight(type, wave) {
+  // Boss 永远不进随机池：它只在切换时代时由 spawnEraBoss() 单独刷
+  if (type.boss) return 0;
   if (wave < type.minWave) return 0;
 
   let w = type.baseWeight + (wave - type.minWave) * (type.growth || 0);
@@ -2751,9 +3028,58 @@ function spawnZombie() {
     touchLoss: type.touchLoss,
     type: type.id,
     aggro: false,
+    armor: type.armor || 1,        // 子弹伤害乘子（护甲僵尸 0.5）
+    explode: type.explode || null, // 自爆僵尸：死了按这个半径和倍率炸
+    ranged: type.ranged || null,   // 远程僵尸：停下吐东西的参数
+    // 第一次吐之前随机等一会儿，不然一群远程会同时齐射，画面像被人打了一梭子
+    shotTimer: type.ranged ? type.ranged.interval * (0.4 + Math.random() * 0.6) : 0,
+    boss: false,
   });
 
   if (state.spawnCounts) state.spawnCounts[type.id] += 1;
+}
+
+/* ----------------------------------------------------------
+ * 时代 Boss
+ *
+ * 每次切换时代刷一只，从右侧通道正中压下来，作为"这一时代开场的高潮"。
+ * 不参与随机抽签（typeWeight 里直接返回 0），一局最多同时存在一只。
+ * 血量沿用普通僵尸那套公式再乘 types 里的 hp=14，所以越往后的时代越硬。
+ * ---------------------------------------------------------- */
+function spawnEraBoss(eraIndex) {
+  const type = CONFIG.zombie.types.find((t) => t.boss);
+  if (!type) return null;
+
+  // 场上已经有一只就不刷第二只
+  if (state.zombies.some((z) => z.type === type.id)) return null;
+
+  const [minX, maxX] = CONFIG.world.rightZone;
+  const baseHp = CONFIG.zombie.baseHp + (state.wave - 1) * CONFIG.zombie.hpPerWave;
+  const hp = baseHp * type.hp;
+
+  const boss = {
+    id: state.nextId++,
+    // 从通道正中来，正对士兵，不走边缘
+    x: (minX + maxX) / 2,
+    z: CONFIG.world.spawnZ - 2,
+    hp,
+    maxHp: hp,          // 画面层靠这个显示头顶血条
+    speed: Math.min(CONFIG.zombie.speedCap, CONFIG.zombie.baseSpeed * type.speed),
+    touchLoss: type.touchLoss,
+    type: type.id,
+    aggro: false,
+    armor: type.armor || 1,
+    explode: type.explode || null,
+    ranged: null,
+    shotTimer: 0,
+    boss: true,
+    era: eraIndex,
+  };
+
+  state.zombies.push(boss);
+  state.spawnCounts[type.id] = (state.spawnCounts[type.id] || 0) + 1;
+  emit('bossSpawn', { x: boss.x, z: boss.z, hp, wave: state.wave, era: eraIndex });
+  return boss;
 }
 
 function damageArmy(amount, cause) {

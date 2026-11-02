@@ -291,6 +291,12 @@ const ZOMBIE_LOOKS = [
   { src: 'cyber',  scale: 1.0,  tint: [0.86, 0.92, 1.05], walkSpeed: 1.25, attackSpeed: 1.4, score: 5 },   // 9 生化改造体（后现代·雪地）
   // 10 号是 Boss：模型自带咆哮/撕咬/死亡全套动画，体型大、走得慢、碰兵扣得多
   { src: 'boss',   scale: 1.0,  tint: [0.58, 0.54, 0.56], walkSpeed: 0.5, attackSpeed: 0.7, score: 40, isBoss: true, emissive: 0.10 },
+  // 11 自爆：体型鼓、橙红自发光，像一颗要走路的炸弹——远远就该认出它
+  { src: 'male',   scale: 1.15, tint: [1.15, 0.62, 0.42], walkSpeed: 1.0, attackSpeed: 1.0, score: 4, emissive: 0.30, color: 0xff6a3a },
+  // 12 护甲：金属灰、体型略大，一眼看上去"很硬"
+  { src: 'male',   scale: 1.2,  tint: [0.72, 0.76, 0.82], walkSpeed: 0.9, attackSpeed: 0.95, score: 4, color: 0x8a95a4 },
+  // 13 远程：紫绿自发光——它吐酸液，颜色要和普通僵尸拉开，才好在人群里认出来优先点掉
+  { src: 'male',   scale: 1.05, tint: [0.78, 1.15, 0.62], walkSpeed: 0.95, attackSpeed: 1.1, score: 5, emissive: 0.26, color: 0x8ce05a },
 ];
 
 /* 地图 → 僵尸模型覆盖：换地图时，同一种 type 换上本地图专属的模型。
@@ -1114,6 +1120,71 @@ export function initVisuals(container, events) {
     const d = e.detail || {};
     if (isFinite(d.x) && isFinite(d.z)) triggerMeteor(d.x, d.z);
     else triggerMeteorRandom();
+  });
+
+  // 自爆僵尸炸开：一圈橙红冲击 + 火球 + 震屏，半径由甲传过来，光比伤害半径略小一点
+  events.addEventListener('zombieExplode', (e) => {
+    const d = e.detail || {};
+    const x = Number(d.x);
+    const z = Number(d.z);
+    if (!isFinite(x) || !isFinite(z)) return;
+
+    const r = Math.max(1, Math.min(4, Number(d.radius) || 2.8));
+    shake = Math.max(shake, 0.34);
+    spawnRing(x, z, 0xffb060, 0.34);
+    spawnRing(x, z, 0xff5a24, 0.5);
+    spawnBurst(x, 0.55, z, 0xff8a3a, 20, {
+      speed: 4.4, up: 3.6, spread: 0.7, life: 0.5, gravity: -8,
+    });
+    spawnBurst(x, 0.35, z, 0x4a3a30, 12, {
+      speed: 2.6, up: 2.0, spread: r * 0.5, life: 0.9, gravity: -2.5,
+    });
+    // 地上留一小片烧痕，让人看得出这儿炸过
+    spawnRing(x, z, 0x9a3010, 0.9);
+  });
+
+  // 酸液打到阵型：一小片绿雾 + 轻微震屏，让玩家知道"被远程点到了"
+  events.addEventListener('enemyShotHit', (e) => {
+    const d = e.detail || {};
+    const x = Number(d.x);
+    const z = Number(d.z);
+    if (!isFinite(x) || !isFinite(z)) return;
+    spawnRing(x, z, 0x9aff5a, 0.36);
+    spawnBurst(x, 0.5, z, 0x9aff5a, 10, {
+      speed: 1.8, up: 1.6, spread: 0.35, life: 0.4, gravity: -5,
+    });
+    shake = Math.max(shake, 0.18);
+  });
+
+  // 补给箱砸到地上：一圈土 + 轻微"咚"的震感（不用重震，它不是爆炸）
+  events.addEventListener('crateLand', (e) => {
+    const d = e.detail || {};
+    const x = Number(d.x);
+    const z = Number(d.z);
+    if (!isFinite(x) || !isFinite(z)) return;
+    spawnRing(x, z, 0xc8a878, 0.34);
+    spawnBurst(x, 0.12, z, 0x9a8a6a, 7, {
+      speed: 1.6, up: 1.2, spread: 0.5, life: 0.45, gravity: -6,
+    });
+    shake = Math.max(shake, 0.12);
+  });
+
+  // 补给箱被打碎：木屑四散 + 一道绿色光圈（绿色 = 正向收益，和扣兵红屏区分开）
+  events.addEventListener('crateHit', (e) => {
+    const d = e.detail || {};
+    const x = Number(d.x);
+    const z = Number(d.z);
+    if (!isFinite(x) || !isFinite(z)) return;
+
+    spawnRing(x, z, 0x58e08a, 0.55);
+    spawnBurst(x, 0.35, z, 0xb08148, 16, {
+      speed: 3.0, up: 2.8, spread: 0.45, life: 0.6, gravity: -8,
+    });
+    spawnBurst(x, 0.4, z, 0x58e08a, 8, {
+      speed: 1.6, up: 2.2, spread: 0.3, life: 0.5, gravity: -5,
+    });
+    // 奖励文案走已有的提示条，不新开 UI
+    if (d.label) pushToast(d.label, 'crate');
   });
 }
 
@@ -2348,6 +2419,7 @@ export function syncScene(state, dt) {
   if (lastWave > 1 && state.wave === 1) {
     resetBarrels();                      // 桶全部复原
     clearHazards();                      // 陨石坑、地上的火一起清掉
+    clearCrates();                       // 补给箱模型也清掉，别留到新局
     quakeTime = 0;
     quakeCycle = 10 + Math.random() * 6; // 新局第一震别来得太急
     if (dayNight) dayNight.setNight(false, true); // 立刻回到白天，不要跨局慢慢过渡
@@ -2396,11 +2468,13 @@ export function syncScene(state, dt) {
   syncZombies(state, dt);
   syncBarricade(state);
   syncSlots(state);
+  syncCrates(state);
   updateBossPresence(state);
   updateZombieHitFeedback(state);
 
-  // 子弹
+  // 子弹 + 远程僵尸的酸液
   syncBullets(state);
+  syncEnemyShots(state);
   // 滚木和骑士冲锋：持续移动的实体，按 state 里的数组同步
   syncRollingLogs(state);
   syncKnightCharges(state);
@@ -2932,6 +3006,60 @@ function updateBossPresence(state) {
     if (look && look.isBoss) { has = true; break; }
   }
   bossOnField = has;
+}
+
+/* ----------------------------------------------------------
+ * 远程僵尸吐的酸液（点子池「远程僵尸」）
+ *
+ * 一个亮绿小球 + 一条短拖尾，飞行途中冒几粒火星。
+ * 它必须比僵尸的绿色更亮更饱和，否则混在人群里看不出来躲。
+ * ---------------------------------------------------------- */
+const enemyShotMeshes = new Map();
+let enemyShotGeo = null;
+let enemyShotMat = null;
+
+function ensureEnemyShotAssets() {
+  if (enemyShotGeo) return;
+  enemyShotGeo = new THREE.SphereGeometry(0.16, 8, 6);
+  enemyShotMat = new THREE.MeshBasicMaterial({
+    color: 0xb4ff5a,
+    transparent: true,
+    opacity: 0.95,
+  });
+}
+
+function syncEnemyShots(state) {
+  if (!scene) return;
+  const list = state.enemyShots || [];
+  if (!list.length && !enemyShotMeshes.size) return;
+
+  ensureEnemyShotAssets();
+  const alive = new Set();
+
+  for (const s of list) {
+    alive.add(s.id);
+    let mesh = enemyShotMeshes.get(s.id);
+    if (!mesh) {
+      mesh = new THREE.Mesh(enemyShotGeo, enemyShotMat);
+      scene.add(mesh);
+      enemyShotMeshes.set(s.id, mesh);
+    }
+    mesh.position.set(s.x, 0.85, s.z);
+    // 一边飞一边冒一点点绿火，看得见来向。
+    // 概率压得低：同屏可能有 5-6 发酸液，粒子池只有 500 个，别把血雾挤掉
+    if (Math.random() < 0.18) {
+      spawnBurst(s.x, 0.85, s.z, 0x9aff5a, 1, {
+        speed: 0.4, up: 0.4, spread: 0.12, life: 0.3, gravity: -0.6,
+      });
+    }
+  }
+
+  // 几何体和材质是所有酸液共享的，这里只把 mesh 从场景摘掉，绝不 dispose
+  for (const [id, mesh] of enemyShotMeshes) {
+    if (alive.has(id)) continue;
+    scene.remove(mesh);
+    enemyShotMeshes.delete(id);
+  }
 }
 
 function syncBullets(state) {  const alive = new Set();
@@ -4387,14 +4515,16 @@ function updateBarrierAppearance(mesh, bar) {
 
 function makeZombieMesh(type) {
   // 色块版的五色：和 ZOMBIE_LOOKS 的 tint 方向一致（普通绿/暗红灰/黄绿/灰白/灰绿）
+  // 11 自爆=橙红、12 护甲=金属灰，按 type 取，取不到回落到普通
   const colors = [0x6f8f6a, 0x8f5a4a, 0x9aa04a, 0xb8bcc4, 0x647f68];
+  const COLOR_BY_TYPE = { 10: 0x6b6068, 11: 0xd85a2a, 12: 0x8a95a4, 13: 0x7ac850 };
   const look = ZOMBIE_LOOKS[type] || ZOMBIE_LOOKS[0];
 
   const mesh = new THREE.Mesh(
     new THREE.BoxGeometry(0.7, 1.15, 0.7),
     new THREE.MeshStandardMaterial({
       // 色块版也跟地图氛围走，和模型版观感一致
-      color: tintHex(colors[type % colors.length], MAP_TINT),
+      color: tintHex(COLOR_BY_TYPE[type] ?? colors[type % colors.length], MAP_TINT),
       roughness: 0.85,
     })
   );
@@ -4589,6 +4719,117 @@ function syncSlots(state) {
     v.structure.visible = !eraLocked && on;
     if (!eraLocked) v.ring.material.opacity = on ? 0.8 : 0.16;
   }
+}
+
+/* ----------------------------------------------------------
+ * 补给箱（点子池「补给箱」）
+ *
+ * 玩法层管刷新、下落、命中、奖励；这里只负责画：
+ *   木箱 + 金色包角 + 顶上一面小旗，落地砸起一圈灰，打碎炸成木屑。
+ * 箱子在屏幕上只有十几像素，所以轮廓要做粗——深色底 + 亮金包角，
+ * 比精细木纹更容易在手机屏上一眼认出来。
+ * ---------------------------------------------------------- */
+const crateVisuals = new Map();
+let crateGeos = null;
+
+function getCrateGeo() {
+  if (crateGeos) return crateGeos;
+  crateGeos = {
+    body: new THREE.BoxGeometry(0.72, 0.62, 0.72),
+    corner: new THREE.BoxGeometry(0.08, 0.66, 0.08),
+    band: new THREE.BoxGeometry(0.78, 0.07, 0.78),
+    flag: new THREE.PlaneGeometry(0.19, 0.13),
+  };
+  return crateGeos;
+}
+
+function makeCrateMesh() {
+  const g = new THREE.Group();
+  const geo = getCrateGeo();
+
+  const woodMat = new THREE.MeshStandardMaterial({
+    color: 0xa8793e, roughness: 0.85, metalness: 0.05,
+    emissive: 0x3a2408, emissiveIntensity: 0.5,
+  });
+  const goldMat = new THREE.MeshStandardMaterial({
+    color: 0xe8c060, roughness: 0.4, metalness: 0.7,
+    emissive: 0x8a6008, emissiveIntensity: 0.6,
+  });
+
+  const body = new THREE.Mesh(geo.body, woodMat);
+  body.position.y = 0.31;
+  g.add(body);
+
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      const corner = new THREE.Mesh(geo.corner, goldMat);
+      corner.position.set(sx * 0.33, 0.31, sz * 0.33);
+      g.add(corner);
+    }
+  }
+  const band = new THREE.Mesh(geo.band, goldMat);
+  band.position.y = 0.31;
+  g.add(band);
+
+  // 小旗用金色而不是亮绿：亮绿在绿地面和绿色 HUD 里容易糊成一片，
+  // 金色和包角同色系，箱子整体读起来就是一个"发光的小金块"
+  const flag = new THREE.Mesh(
+    geo.flag,
+    new THREE.MeshBasicMaterial({
+      color: 0xffd45a, transparent: true, opacity: 0.9, side: THREE.DoubleSide,
+    })
+  );
+  flag.position.set(0.12, 0.82, 0);
+  g.add(flag);
+
+  return { group: g, flag, woodMat, goldMat };
+}
+
+function syncCrates(state) {
+  if (!scene) return;
+  const list = state.crates || [];
+  const alive = new Set();
+
+  for (const c of list) {
+    alive.add(c.id);
+    let entry = crateVisuals.get(c.id);
+    if (!entry) {
+      entry = makeCrateMesh();
+      entry.phase = Math.random() * Math.PI * 2;
+      scene.add(entry.group);
+      crateVisuals.set(c.id, entry);
+    }
+    entry.group.position.set(c.x, c.y || 0, c.z);
+
+    // 落地前翻滚，落地后停住；旗子一直轻轻晃，方便一眼找到
+    if (!c.landed) {
+      entry.group.rotation.y += 0.14;
+      entry.group.rotation.z += 0.04;
+    } else {
+      entry.group.rotation.z *= 0.9;
+    }
+    entry.flag.rotation.y = Math.sin(performance.now() * 0.004 + entry.phase) * 0.5;
+  }
+
+  // 被打碎的箱子：把场上多余的模型拆掉（材质是每个箱子独立的，要释放）
+  for (const [id, entry] of crateVisuals) {
+    if (alive.has(id)) continue;
+    scene.remove(entry.group);
+    entry.woodMat.dispose();
+    entry.goldMat.dispose();
+    entry.flag.material.dispose();
+    crateVisuals.delete(id);
+  }
+}
+
+function clearCrates() {
+  for (const [, entry] of crateVisuals) {
+    scene.remove(entry.group);
+    entry.woodMat.dispose();
+    entry.goldMat.dispose();
+    entry.flag.material.dispose();
+  }
+  crateVisuals.clear();
 }
 
 /* ----------------------------------------------------------
