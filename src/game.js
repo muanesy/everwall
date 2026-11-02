@@ -53,11 +53,12 @@ const CONFIG = {
     bulletSpeed: 28,
     bulletDamage: 10,
     maxVolley: 5,          // 总火力上限，越大总射速越高
-    // 兵种阶级：门槛和 visuals-tiers.js 的 5/20/50 保持一致
+    // 兵种阶级：门槛和 visuals-tiers.js 的 5/20/50/100 保持一致
     tiers: [
       { min: 0, name: '保安', damage: 1.0, fireInterval: 0.18 },
       { min: 20, name: '正规军', damage: 1.15, fireInterval: 0.17 },
       { min: 50, name: '特种兵', damage: 1.35, fireInterval: 0.16 },
+      { min: 100, name: '超级士兵', damage: 1.50, fireInterval: 0.15 },
     ],
   },
   weapon: {
