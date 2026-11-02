@@ -19,6 +19,7 @@ import {
   switchEra,
   pickEraMap,
   igniteFireZone,
+  spawnCampfireFx,
 } from './visuals.js';
 import { initUI, updateUI } from './ui.js';
 
@@ -131,8 +132,8 @@ const CONFIG = {
     minGap: 1.6,       // 两个骑士之间的最小横向距离
     speed: 20,         // 向上冲的速度
     damage: 50,        // 每个骑士对同一只僵尸只结算一次
-    hitRadius: 0.75,   // 横向命中半径
-    hitDepth: 1.1,     // 纵向命中厚度
+    hitRadius: 0.9,    // 横向命中半径（比原来 0.75 放大一点）
+    hitDepth: 1.25,    // 纵向命中厚度（比原来 1.1 放大一点）
     spawnZ: 9.8,       // 屏幕下方出生
   },
   campfire: {
@@ -1136,8 +1137,9 @@ function castSkill(id) {
         remaining: cfg.duration,
         dps: cfg.dps,
       });
-      // 火区视觉由画面层负责，这里只传位置、半径和持续时间
+      // 地面火区 + 篝火本体的木柴/火苗/火星/暖光
       igniteFireZone(target.x, target.z, cfg.radius, cfg.duration);
+      spawnCampfireFx(target.x, target.z, cfg.duration);
       break;
     }
     case 'slow':

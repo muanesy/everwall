@@ -1048,7 +1048,13 @@ export function initVisuals(container, events) {
     // 桶里装的是油，炸完地上留一片还在烧的火（视觉自己做闭环，
     // 持续灼烧伤害由甲监听 fireZoneSpawned 或轮询 getFireZones() 决定）
     const d = e.detail || {};
-    igniteFireZone(d.x ?? 0, d.z ?? 0, Math.min(2.8, (d.radius || 3.2) * 0.78));
+    // 爆炸痕迹比篝火短：2.2 秒就烧完，不在地面留太久
+    igniteFireZone(
+      d.x ?? 0,
+      d.z ?? 0,
+      Math.min(2.8, (d.radius || 3.2) * 0.78),
+      2.2
+    );
   });
 
   // 甲想主动砸陨石，派个 'meteor' 事件就行，不用 import 函数
@@ -1663,6 +1669,7 @@ function updateMeteors(dt) {
  *   b. 每帧调 getFireZones() 拿当前活着的火区（带 remaining 剩余秒数）
  * ---------------------------------------------------------- */
 const fireZones = [];
+const campfireFx = [];   // 篝火的木柴、火苗、火星、暖光
 const FIRE_LIFE = 4.5;
 const FIRE_RADIUS = 2.4;
 const FIRE_MAX = 4;      // 同屏最多几片火，超了顶掉最早的
@@ -1798,6 +1805,149 @@ export function igniteFireZone(x, z, radius = FIRE_RADIUS, duration = FIRE_LIFE)
   return zone;
 }
 
+/* 篝火：交叉木柴 + 火苗 + 火星 + 暖光，和油桶火区叠在一起 */
+export function spawnCampfireFx(x, z, duration = 5) {
+  if (!scene || !isFinite(x) || !isFinite(z)) return null;
+
+  const group = new THREE.Group();
+  group.position.set(x, 0, z);
+
+  // 石圈
+  const stoneMat = new THREE.MeshBasicMaterial({ color: 0x4a4640 });
+  for (let i = 0; i < 7; i++) {
+    const a = (i / 7) * Math.PI * 2;
+    const stone = new THREE.Mesh(new THREE.SphereGeometry(0.13, 5, 4), stoneMat);
+    stone.position.set(Math.cos(a) * 0.58, 0.1, Math.sin(a) * 0.58);
+    stone.scale.y = 0.7;
+    group.add(stone);
+  }
+
+  // 交叉木柴
+  const logMat = new THREE.MeshBasicMaterial({ color: 0x4a2c16 });
+  for (let i = 0; i < 3; i++) {
+    const log = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.09, 0.09, 1.02, 6),
+      logMat
+    );
+    log.rotation.z = Math.PI / 2;
+    log.rotation.y = (i / 3) * Math.PI;
+    log.position.y = 0.14 + i * 0.035;
+    group.add(log);
+  }
+
+  // 三层火苗：外橙、中黄、内白
+  const flameColors = [0xff5a16, 0xffa22b, 0xffe08a];
+  const flames = [];
+  for (let i = 0; i < 9; i++) {
+    const h = 0.5 + Math.random() * 0.55;
+    const color = flameColors[i < 5 ? 0 : i < 8 ? 1 : 2];
+    const mesh = new THREE.Mesh(
+      new THREE.ConeGeometry(0.14 + Math.random() * 0.08, h, 6),
+      new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.7,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      })
+    );
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.random() * 0.3;
+    const baseY = 0.2 + h / 2;
+    mesh.position.set(Math.cos(a) * r, baseY, Math.sin(a) * r);
+    group.add(mesh);
+    flames.push({
+      mesh,
+      baseY,
+      phase: Math.random() * Math.PI * 2,
+      speed: 5 + Math.random() * 4,
+    });
+  }
+
+  // 火星
+  const emberCount = 24;
+  const pos = new Float32Array(emberCount * 3);
+  const seeds = new Float32Array(emberCount);
+  for (let i = 0; i < emberCount; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.random() * 0.34;
+    pos[i * 3] = Math.cos(a) * r;
+    pos[i * 3 + 1] = 0.2 + Math.random() * 1.1;
+    pos[i * 3 + 2] = Math.sin(a) * r;
+    seeds[i] = Math.random();
+  }
+  const emberGeo = new THREE.BufferGeometry();
+  emberGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const embers = new THREE.Points(
+    emberGeo,
+    new THREE.PointsMaterial({
+      color: 0xffc75a,
+      size: 0.075,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  group.add(embers);
+
+  // 暖光
+  const light = new THREE.PointLight(0xff8a3d, 1.8, 8, 2);
+  light.position.y = 1.2;
+  group.add(light);
+
+  scene.add(group);
+
+  const fx = {
+    group,
+    flames,
+    embers,
+    emberSeeds: seeds,
+    light,
+    life: 0,
+    maxLife: Math.max(0.5, duration),
+  };
+  campfireFx.push(fx);
+  return fx;
+}
+
+function updateCampfireFx(dt) {
+  for (let i = campfireFx.length - 1; i >= 0; i--) {
+    const fx = campfireFx[i];
+    fx.life += dt;
+
+    if (fx.life >= fx.maxLife) {
+      scene.remove(fx.group);
+      disposeMesh(fx.group);
+      campfireFx.splice(i, 1);
+      continue;
+    }
+
+    // 最后 0.8 秒整体淡出
+    const fade = Math.min(1, (fx.maxLife - fx.life) / 0.8);
+
+    for (const fl of fx.flames) {
+      const t = fx.life * fl.speed + fl.phase;
+      const sx = 1 + Math.sin(t * 0.7) * 0.12;
+      const sy = 0.82 + Math.sin(t * 1.1) * 0.2;
+      fl.mesh.scale.set(sx, sy, sx);
+      fl.mesh.position.y = fl.baseY + Math.sin(t * 0.9) * 0.05;
+      fl.mesh.material.opacity = (0.45 + Math.sin(t * 1.3) * 0.18) * fade;
+      fl.mesh.rotation.y += dt * 0.8;
+    }
+
+    const arr = fx.embers.geometry.attributes.position.array;
+    for (let j = 0; j < arr.length; j += 3) {
+      arr[j + 1] += dt * (0.35 + fx.emberSeeds[j / 3] * 0.45);
+      if (arr[j + 1] > 1.35) arr[j + 1] = 0.18;
+    }
+    fx.embers.geometry.attributes.position.needsUpdate = true;
+    fx.embers.material.opacity = 0.85 * fade;
+
+    fx.light.intensity = (1.45 + Math.sin(fx.life * 17) * 0.35) * fade;
+  }
+}
+
 /* 甲查当前火区：remaining 是还能烧几秒 */
 export function getFireZones() {
   return fireZones.map((f) => ({
@@ -1878,6 +2028,12 @@ function clearHazards() {
 
   for (const f of fireZones) removeFireZone(f);
   fireZones.length = 0;
+
+  for (const f of campfireFx) {
+    scene.remove(f.group);
+    disposeMesh(f.group);
+  }
+  campfireFx.length = 0;
 
   for (const c of craters) {
     scene.remove(c.mesh);
@@ -2009,6 +2165,7 @@ export function syncScene(state, dt) {
   updateParticleFx(dt);
   updateMeteors(dt);
   updateFireZones(dt);
+  updateCampfireFx(dt);
   updateCraters(dt);
   updateFloats(dt);
   updateBlood(dt);
