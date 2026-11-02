@@ -272,6 +272,7 @@ const CONFIG = {
     aggroRadius: 6,        // 主动拐弯的范围
     turnSpeed: 3.8,        // 主动追击时的侧向速度，放慢一些
     lineSlideSpeed: 15,    // 到线后沿防线滑向士兵的速度，必须快过士兵
+    chainDetourRange: 4,   // 离锁链多近才开始横向绕行，避免从出生点就吸附
     touchBase: 0.9,        // 士兵阵型的基础接触半宽
     touchPerSoldier: 0.04, // 每多一个兵，接触范围加多少
     touchMaxBonus: 0.6,    // 接触范围最多额外加多少
@@ -2831,7 +2832,10 @@ function updateZombies(dt) {
     // 有锁链时"绕链"优先于"追人"，两者必须互斥：
     // 同时加两个方向的力会互相抵消，僵尸会贴着链子原地磨
     const chain = state.chains.length ? state.chains[0] : null;
-    const detour = chain ? chainDetour(chain, z.x, z.z) : null;
+    // 只在接近锁链时才开始横向绕行；太早调用会让僵尸从出生点就吸向缺口
+    const detour = chain && z.z >= chain.z - CONFIG.zombie.chainDetourRange
+      ? chainDetour(chain, z.x, z.z)
+      : null;
 
     if (detour && detour.dir !== 0) {
       z.x += detour.dir * CONFIG.zombie.turnSpeed * dt * slowMul;
