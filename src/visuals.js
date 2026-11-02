@@ -3758,6 +3758,166 @@ function soldierSlot(i, state) {
 
 const soldierVisuals = []; // 真模型池：{ root, mixer }
 
+/* ----------------------------------------------------------
+ * 超级士兵前排英雄（100 兵第 4 阶）
+ *
+ * 美术需求：和普通士兵同源，体型 1.35~1.50，三管重武器 + 肩甲 +
+ * 能量背包 + 头盔天线 + 脚下金色光环。这里不新建骨骼，克隆当前时代
+ * 的士兵原型再挂程序化配件，所以 Walk / Fire 动画自动继承。
+ * ---------------------------------------------------------- */
+let superHero = null;       // { vis, root, mats, baseY }
+let superHeroRing = null;   // 脚下金色光环
+let superHeroRingMat = null;
+
+function clearSuperHero() {
+  if (superHero) {
+    despawnModel(superHero.vis);
+    superHero.root.traverse((o) => {
+      if (o.isMesh && o.userData.heroPart) o.geometry?.dispose();
+    });
+    for (const m of superHero.mats || []) m.dispose();
+    superHero = null;
+  }
+  if (superHeroRing) {
+    scene.remove(superHeroRing);
+    superHeroRing.geometry.dispose();
+    superHeroRingMat?.dispose();
+    superHeroRing = null;
+    superHeroRingMat = null;
+  }
+}
+
+function buildSuperHeroVisual() {
+  if (!modelLib.soldier) return null;
+  const vis = spawnModel(modelLib.soldier, Math.PI);
+  if (!vis) return null;
+
+  const root = vis.root;
+  const baseY = root.position.y;
+  const box = new THREE.Box3().setFromObject(root);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+
+  // 英雄自己一套材质：克隆后乘金白，不会把整队士兵染成金色
+  const heroMats = [];
+  root.traverse((o) => {
+    if (!o.isMesh && !o.isSkinnedMesh) return;
+    if (!o.material) return;
+    const list = Array.isArray(o.material) ? o.material : [o.material];
+    const cloned = list.map((src) => {
+      const m = src.clone();
+      if (m.color) m.color.multiply(new THREE.Color(1.08, 1.02, 0.82));
+      if (m.emissive) {
+        m.emissive.setHex(0xffd27a);
+        m.emissiveIntensity = Math.max(m.emissiveIntensity || 0, 0.16);
+      }
+      heroMats.push(m);
+      return m;
+    });
+    o.material = Array.isArray(o.material) ? cloned : cloned[0];
+  });
+
+  const gold = new THREE.MeshStandardMaterial({
+    color: 0xd8b45a, metalness: 0.75, roughness: 0.35,
+    emissive: 0xffd27a, emissiveIntensity: 0.18,
+  });
+  const dark = new THREE.MeshStandardMaterial({
+    color: 0x2a2f38, metalness: 0.6, roughness: 0.5,
+  });
+  heroMats.push(gold, dark);
+
+  const part = (geo, mat, x, y, z, rx = 0, ry = 0, rz = 0) => {
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(x, y, z);
+    mesh.rotation.set(rx, ry, rz);
+    mesh.userData.heroPart = true;
+    root.add(mesh);
+    return mesh;
+  };
+
+  // 肩甲：左右各一块斜面金板
+  const shoulderY = size.y * 0.74;
+  for (const sx of [-1, 1]) {
+    part(new THREE.BoxGeometry(size.x * 0.2, size.y * 0.09, size.z * 0.24),
+      gold, sx * size.x * 0.34, shoulderY, 0, 0, 0, sx * 0.35);
+  }
+
+  // 能量背包：背后一个方箱 + 两盏小灯
+  part(new THREE.BoxGeometry(size.x * 0.34, size.y * 0.28, size.z * 0.16),
+    dark, 0, size.y * 0.58, -size.z * 0.26);
+  for (const sx of [-1, 1]) {
+    part(new THREE.SphereGeometry(size.x * 0.035, 8, 6),
+      gold, sx * size.x * 0.09, size.y * 0.62, -size.z * 0.34);
+  }
+
+  // 三管重机枪：朝模型正前方（clone 后 faceDir=π，本地 +z 就是世界 -z）
+  const gun = new THREE.Group();
+  gun.position.set(size.x * 0.12, size.y * 0.5, size.z * 0.16);
+  root.add(gun);
+  for (const gx of [-0.035, 0, 0.035]) {
+    const barrel = new THREE.Mesh(
+      new THREE.CylinderGeometry(size.y * 0.018, size.y * 0.022, size.z * 0.5, 8),
+      dark
+    );
+    barrel.position.set(gx * size.x, 0, size.z * 0.22);
+    barrel.rotation.x = Math.PI / 2;
+    barrel.userData.heroPart = true;
+    gun.add(barrel);
+  }
+  const gunBody = new THREE.Mesh(
+    new THREE.BoxGeometry(size.x * 0.16, size.y * 0.08, size.z * 0.18), gold);
+  gunBody.position.set(0, 0, 0);
+  gunBody.userData.heroPart = true;
+  gun.add(gunBody);
+
+  // 头盔天线
+  part(new THREE.CylinderGeometry(size.y * 0.008, size.y * 0.008, size.y * 0.22, 5),
+    dark, -size.x * 0.06, size.y * 0.93, 0);
+  part(new THREE.SphereGeometry(size.y * 0.018, 6, 5),
+    gold, -size.x * 0.06, size.y * 1.04, 0);
+
+  // 脚下金色光环
+  superHeroRingMat = new THREE.MeshBasicMaterial({
+    color: 0xffd27a, transparent: true, opacity: 0.45,
+    depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  superHeroRing = new THREE.Mesh(new THREE.TorusGeometry(0.62, 0.035, 8, 32), superHeroRingMat);
+  superHeroRing.rotation.x = -Math.PI / 2;
+  superHeroRing.position.y = 0.07;
+  superHeroRing.renderOrder = 4;
+  scene.add(superHeroRing);
+
+  superHero = { vis, root, mats: heroMats, baseY };
+  return superHero;
+}
+
+function syncSuperHero(state, tierIndex) {
+  const active = tierIndex === 3 && !!modelLib.soldier && !!modelLib.loaded;
+  if (!active) {
+    if (superHero) superHero.root.visible = false;
+    if (superHeroRing) superHeroRing.visible = false;
+    return;
+  }
+  if (!superHero) buildSuperHeroVisual();
+  if (!superHero) return;
+
+  // 站在玩家身前一步：作为"领头"的视觉焦点，不挡后排士兵
+  superHero.root.visible = true;
+  superHero.root.position.x = state.player.x;
+  superHero.root.position.z = state.player.z - 0.45 + soldierRecoil;
+  superHero.root.position.y = superHero.baseY;
+  superHero.root.scale.setScalar(soldierBaseScale * 1.45);
+
+  if (superHeroRing) {
+    superHeroRing.visible = true;
+    superHeroRing.position.x = superHero.root.position.x;
+    superHeroRing.position.z = superHero.root.position.z;
+    const t = performance.now() * 0.001;
+    superHeroRing.scale.setScalar(1 + Math.sin(t * 2.2) * 0.08);
+    if (superHeroRingMat) superHeroRingMat.opacity = 0.34 + Math.sin(t * 2.2) * 0.14;
+  }
+}
+
 /* 兵种阶级：把档位外观套到士兵身上
  * 色块回退和真模型两条路都要管，而且只在档位变化那一帧做，不每帧重算材质。
  * 门槛 5 / 20 / 50（保安 → 正规军 → 特种兵）在 visuals-tiers.js 里，
@@ -3855,6 +4015,9 @@ function swapSoldierModel(proto) {
 
   const oldProto = modelLib.soldier;
 
+  // 英雄是从旧原型克隆的，换时代必须一起换掉
+  clearSuperHero();
+
   for (const vis of soldierVisuals) {
     scene.remove(vis.root);
     despawnModel(vis);
@@ -3901,7 +4064,8 @@ function applyEra(era) {
   }
 
   // 路障换成这个时代的长相（木栅栏 → 沙袋 → 混凝土 → 钢板 → 能量场 → 激光）
-  buildBarricadeLook(era.id);
+  // 等级也要带上，不然换时代会把已经升到 4-5 级的墙打回 1 级外观
+  buildBarricadeLook(era.id, barricadeLookLevel, barricadeLookWidth);
 }
 
 function updateSoldiers(state) {
@@ -3933,6 +4097,9 @@ function updateSoldiers(state) {
     tierAnnounced = true;
   }
   const tierScale = tier.scale || 1;
+
+  // 第 4 阶（100 兵）在最前面放一个英雄；低阶时只隐藏，不重建
+  syncSuperHero(state, ti);
 
   // 模型没加载好（或加载失败）：维持甲写的实例化方块渲染，逻辑零风险
   if (!modelLib.loaded || !modelLib.soldier) {
@@ -6594,7 +6761,11 @@ function syncSlots(state, dt) {
     // 满级 / 星际以上的旋转件转起来（炮塔缓转、能量环转、虫巢脉动）
     if (v.structure.visible) {
       for (let i = 0; i < v.spin.length; i++) {
-        v.spin[i].rotation.z = t * (0.6 + i * 0.15);
+        const part = v.spin[i];
+        const speed = part.userData.spinSpeed || (0.6 + i * 0.15);
+        // 炮塔 / 雷达这类有朝向的零件必须绕 y 转，绕 z 会看起来像翻倒
+        if (part.userData.spinY) part.rotation.y = t * speed;
+        else part.rotation.z = t * speed;
       }
       // 5 级加一点呼吸，让"满级"不用看数字也认得出来
       if (v.level >= 5 && v.structure.userData.mats) {
@@ -7344,6 +7515,10 @@ function clearChains() {
  * ---------------------------------------------------------- */
 const barricadeParts = [];
 let barricadeGlowMat = null;
+// 当前外观是按「时代 + 等级 + 宽度」造出来的，syncBarricade 靠这三个值判断要不要重建
+let barricadeLookEra = -1;
+let barricadeLookLevel = 1;
+let barricadeLookWidth = BARRICADE_WIDTH;
 
 function clearBarricadeLook() {
   if (!barricadeGroup) return;
@@ -7368,14 +7543,24 @@ function addBarPart(geo, mat, x, y, z, rotY = 0) {
   return mesh;
 }
 
-function buildBarricadeLook(eraId) {
+function buildBarricadeLook(eraId, level = 1, width = BARRICADE_WIDTH) {
   if (!barricadeGroup) return;
   clearBarricadeLook();
   // 部件全换了新的，破损段位也要跟着归零——
   // 否则重建后的墙会继续沿用上一条命的段位，一建好就是破的
   barricadeGroup.userData.damageStage = -1;
 
-  const W = BARRICADE_WIDTH;
+  const lv = Math.max(1, Math.min(5, Math.floor(Number(level)) || 1));
+  // 按当前等级的真实宽度造，不再用 scale.x 把同一个模型拉长
+  const W = Math.max(3.2, Number(width) || BARRICADE_WIDTH);
+  const H = 0.62 + lv * 0.14;                // 1 级 0.76 → 5 级 1.32
+  barricadeLookEra = eraId;
+  barricadeLookLevel = lv;
+  barricadeLookWidth = W;
+
+  // 确定性抖动：同一段位每次重建都落在同一批零件上，不会随机跳
+  const jitter = (i) => ((i * 37) % 11) / 11 - 0.5;
+
   const std = (color, rough = 0.8, metal = 0.05, emissive = 0x000000, ei = 0) =>
     new THREE.MeshStandardMaterial({
       color,
@@ -7386,11 +7571,13 @@ function buildBarricadeLook(eraId) {
     });
 
   if (eraId === 1) {
-    // 二战：一层层码起来的沙袋
+    // 二战沙袋：等级 = 码几层 + 有没有端柱
+    const rows = Math.min(5, lv + 1);
     const a = std(0x8d7f5c, 0.95);
     const b = std(0x9c8e68, 0.95);
-    for (let row = 0; row < 3; row++) {
-      const n = row === 2 ? 4 : 5;
+    const perRow = Math.max(4, Math.round(W / 0.86));
+    for (let row = 0; row < rows; row++) {
+      const n = perRow - (row > 2 ? 1 : 0);
       for (let i = 0; i < n; i++) {
         const x = (i - (n - 1) / 2) * 0.86 + (row % 2 ? 0.2 : 0);
         addBarPart(
@@ -7399,47 +7586,112 @@ function buildBarricadeLook(eraId) {
           x,
           0.13 + row * 0.22,
           0,
-          (Math.random() - 0.5) * 0.12
+          jitter(i + row * 9) * 0.12
         );
+      }
+    }
+    // 4 级起两端码立柱沙袋，5 级再高一层，远看是个"门"形掩体
+    if (lv >= 4) {
+      for (const sx of [-1, 1]) {
+        const stack = lv >= 5 ? 3 : 2;
+        for (let k = 0; k < stack; k++) {
+          addBarPart(new THREE.BoxGeometry(0.5, 0.2, 0.42), (k % 2 ? a : b),
+            sx * (W / 2 - 0.35), 0.13 + (rows + k) * 0.22, 0, jitter(k) * 0.1);
+        }
       }
     }
     return;
   }
 
   if (eraId === 2) {
-    // 现代：混凝土隔离墩 + 黄黑警示条
+    // 现代混凝土：等级 = 隔离墩分段数 + 顶部结构
+    const segs = lv;
+    const segW = (W - (segs - 1) * 0.08) / segs;
     const conc = std(0x9b9a92, 0.9, 0.02);
-    addBarPart(new THREE.BoxGeometry(W, 0.42, 0.46), conc, 0, 0.21, 0);
-    addBarPart(new THREE.BoxGeometry(W, 0.16, 0.34), conc, 0, 0.5, 0);
     const warn = std(0xd8a63a, 0.6, 0.1);
-    for (let i = 0; i < 5; i++) {
-      addBarPart(new THREE.BoxGeometry(0.4, 0.1, 0.02), warn, -1.6 + i * 0.8, 0.36, 0.24);
+    const baseH = 0.28 + lv * 0.1;
+    for (let s = 0; s < segs; s++) {
+      const x = (s - (segs - 1) / 2) * (segW + 0.08);
+      addBarPart(new THREE.BoxGeometry(segW, baseH, 0.42), conc, x, baseH * 0.5, 0);
+      addBarPart(new THREE.BoxGeometry(segW * 0.86, 0.1, 0.34), conc, x, baseH + 0.05, 0);
+      // 每段两条黄黑警示条
+      for (const oz of [-1, 1]) {
+        addBarPart(new THREE.BoxGeometry(segW * 0.56, 0.07, 0.02), warn,
+          x, baseH * 0.55, oz * 0.22);
+      }
+    }
+    if (lv >= 4) {
+      // 斜撑
+      for (const sx of [-1, 1]) {
+        addBarPart(new THREE.BoxGeometry(0.07, baseH * 0.9, 0.07), conc,
+          sx * (W / 2 - 0.2), baseH * 0.55, 0.25, 0.45, 0, 0);
+      }
+    }
+    if (lv >= 5) {
+      // 两侧塔柱 + 顶部连续发光带
+      const glow = std(0x2e6b52, 0.5, 0.3, 0x2e6b52, 0.8);
+      for (const sx of [-1, 1]) {
+        addBarPart(new THREE.BoxGeometry(0.3, H + 0.12, 0.3), conc, sx * (W / 2 - 0.12), (H + 0.12) * 0.5, 0);
+      }
+      addBarPart(new THREE.BoxGeometry(W - 0.2, 0.06, 0.14), glow, 0, H + 0.04, 0);
     }
     return;
   }
 
   if (eraId === 3) {
-    // 后现代：钢板墙 + 顶部一圈圈铁丝网
+    // 后现代钢板：等级 = 钢板段数 + 立柱 + 铁丝网密度
+    const panels = lv + 1;
+    const panW = (W - panels * 0.04) / panels;
     const steel = std(0x6b727a, 0.5, 0.6);
     const rust = std(0x7a5236, 0.9, 0.15);
     const wire = std(0x9aa2aa, 0.4, 0.8);
-    addBarPart(new THREE.BoxGeometry(W, 0.6, 0.1), steel, 0, 0.3, 0);
-    for (let i = -2; i <= 2; i++) {
-      addBarPart(new THREE.BoxGeometry(0.07, 0.6, 0.16), rust, i * 0.9, 0.3, 0.04);
+    for (let i = 0; i < panels; i++) {
+      const x = (i - (panels - 1) / 2) * (panW + 0.04);
+      addBarPart(new THREE.BoxGeometry(panW, H * 0.72, 0.1), steel, x, H * 0.36, 0);
     }
-    for (let i = 0; i < 4; i++) {
-      addBarPart(new THREE.TorusGeometry(0.19, 0.022, 6, 14), wire, -1.5 + i * 1.0, 0.74, 0, 0.3);
+    for (let i = 0; i <= panels; i++) {
+      const x = (i - panels / 2) * (panW + 0.04);
+      addBarPart(new THREE.BoxGeometry(0.07, H * 0.72, 0.16), rust, x, H * 0.36, 0.04);
+    }
+    const coils = panels + (lv >= 5 ? 1 : 0);
+    for (let i = 0; i < coils; i++) {
+      addBarPart(new THREE.TorusGeometry(0.18, 0.022, 6, 14), wire,
+        (i - (coils - 1) / 2) * (W / coils), H * 0.78, 0, 0.3);
+    }
+    if (lv >= 4) {
+      // 护盾发生器：中间一块小方箱 + 发光片
+      addBarPart(new THREE.BoxGeometry(0.3, 0.24, 0.2), std(0x4a5864, 0.5, 0.5),
+        0, H * 0.42, 0.16);
+      barricadeGlowMat = new THREE.MeshBasicMaterial({
+        color: 0x6ad9ff, transparent: true, opacity: 0.35,
+        depthWrite: false, blending: THREE.AdditiveBlending,
+      });
+      const shield = new THREE.Mesh(new THREE.PlaneGeometry(panW * 1.6, H * 0.5), barricadeGlowMat);
+      shield.position.set(0, H * 0.4, 0.18);
+      barricadeGroup.add(shield);
+      barricadeParts.push(shield);
+    }
+    if (lv >= 5) {
+      // 两侧塔柱 + 顶部发光带
+      const glow = std(0x3a4a58, 0.5, 0.6, 0x4ad9ff, 0.7);
+      for (const sx of [-1, 1]) {
+        addBarPart(new THREE.BoxGeometry(0.16, H + 0.1, 0.16), glow, sx * (W / 2 - 0.08), (H + 0.1) * 0.5, 0);
+      }
+      addBarPart(new THREE.BoxGeometry(W - 0.1, 0.05, 0.12), std(0x4ad9ff, 0.4, 0.2, 0x4ad9ff, 0.9),
+        0, H + 0.03, 0);
     }
     return;
   }
 
   if (eraId === 4) {
-    // 星际：两根发光立柱 + 中间一层能量场
+    // 星际能量墙：等级 = 立柱数 + 墙高 + 顶部光带
+    const posts = lv + 1;
     const post = std(0x2f3a46, 0.4, 0.8, 0x1b6f8a, 0.9);
-    addBarPart(new THREE.CylinderGeometry(0.09, 0.11, 1.0, 8), post, -1.9, 0.5, 0);
-    addBarPart(new THREE.CylinderGeometry(0.09, 0.11, 1.0, 8), post, 1.9, 0.5, 0);
     addBarPart(new THREE.BoxGeometry(W, 0.1, 0.5), std(0x2a333d, 0.6, 0.5), 0, 0.05, 0);
-
+    for (let i = 0; i < posts; i++) {
+      const x = (i - (posts - 1) / 2) * ((W - 0.4) / Math.max(1, posts - 1));
+      addBarPart(new THREE.CylinderGeometry(0.08, 0.1, H + 0.06, 8), post, x, (H + 0.06) * 0.5, 0);
+    }
     const fieldMat = new THREE.MeshBasicMaterial({
       color: 0x4ad9ff,
       transparent: true,
@@ -7448,54 +7700,90 @@ function buildBarricadeLook(eraId) {
       depthWrite: false,
       blending: THREE.AdditiveBlending,
     });
-    const fieldMesh = new THREE.Mesh(new THREE.PlaneGeometry(W - 0.5, 0.86), fieldMat);
-    fieldMesh.position.set(0, 0.5, 0);
+    const fieldMesh = new THREE.Mesh(new THREE.PlaneGeometry(W - 0.5, H * 0.82), fieldMat);
+    fieldMesh.position.set(0, H * 0.48, 0);
     barricadeGroup.add(fieldMesh);
     barricadeParts.push(fieldMesh);
     barricadeGlowMat = fieldMat;
+    if (lv >= 5) {
+      addBarPart(new THREE.BoxGeometry(W - 0.2, 0.04, 0.1), fieldMat, 0, H + 0.02, 0);
+    }
     return;
   }
 
   if (eraId === 5) {
-    // 终幕：两根立柱之间拉四道激光
+    // 终幕激光栅栏：等级 = 立柱数 + 激光道数
+    const posts = lv + 1;
     const post = std(0x3a2a24, 0.5, 0.6, 0xff6a24, 0.9);
-    addBarPart(new THREE.CylinderGeometry(0.1, 0.12, 1.05, 8), post, -1.9, 0.52, 0);
-    addBarPart(new THREE.CylinderGeometry(0.1, 0.12, 1.05, 8), post, 1.9, 0.52, 0);
+    for (let i = 0; i < posts; i++) {
+      const x = (i - (posts - 1) / 2) * ((W - 0.4) / Math.max(1, posts - 1));
+      addBarPart(new THREE.CylinderGeometry(0.09, 0.11, H + 0.1, 8), post, x, (H + 0.1) * 0.5, 0);
+    }
     const barMat = new THREE.MeshBasicMaterial({
       color: 0xff8a3c,
       transparent: true,
       opacity: 0.9,
     });
-    for (let i = 0; i < 4; i++) {
-      addBarPart(new THREE.BoxGeometry(W - 0.6, 0.035, 0.035), barMat, 0, 0.2 + i * 0.18, 0);
+    const bars = lv + 1;
+    for (let i = 0; i < bars; i++) {
+      addBarPart(new THREE.BoxGeometry(W - 0.6, 0.035, 0.035), barMat,
+        0, 0.16 + i * (H / bars), 0);
     }
     barricadeGlowMat = barMat;
+    if (lv >= 5) {
+      addBarPart(new THREE.BoxGeometry(W - 0.3, 0.05, 0.06), barMat, 0, H + 0.06, 0);
+    }
     return;
   }
 
-  // 默认 / 中世纪：木栅栏（立桩 + 两道横梁）
+  // 默认 / 中世纪木栅栏：等级 = 桩数 + 横梁层数 + 斜撑/塔柱
   const wood = std(0x7a5a34, 0.9, 0.02);
   const dark = std(0x5c4126, 0.95, 0.02);
-  for (let i = 0; i < 7; i++) {
+  const posts = Math.max(4, Math.round(W / 0.55) + 1);
+  const postH = 0.48 + lv * 0.12;
+  for (let i = 0; i < posts; i++) {
+    const x = (i - (posts - 1) / 2) * (W - 0.3) / Math.max(1, posts - 1);
     const log = addBarPart(
-      new THREE.CylinderGeometry(0.085, 0.1, 0.8, 6),
+      new THREE.CylinderGeometry(0.07, 0.09, postH, 6),
       i % 2 ? wood : dark,
-      -1.8 + i * 0.6,
-      0.4,
-      (Math.random() - 0.5) * 0.06,
-      (Math.random() - 0.5) * 0.16
+      x,
+      postH * 0.5,
+      jitter(i) * 0.06,
+      jitter(i + 3) * 0.16
     );
-    log.rotation.z = (Math.random() - 0.5) * 0.06;
+    log.rotation.z = jitter(i + 7) * 0.06;
+    // 3 级起每根桩顶加一个尖头，远看是"成排的栅栏"而不是一片木板
+    if (lv >= 3) {
+      addBarPart(new THREE.ConeGeometry(0.075, 0.12, 5), dark, x, postH + 0.02, 0);
+    }
   }
-  addBarPart(new THREE.BoxGeometry(W - 0.3, 0.09, 0.09), dark, 0, 0.62, 0.12);
-  addBarPart(new THREE.BoxGeometry(W - 0.3, 0.09, 0.09), dark, 0, 0.24, 0.12);
+  const rails = lv >= 4 ? 4 : lv >= 2 ? 3 : 2;
+  for (let i = 0; i < rails; i++) {
+    addBarPart(new THREE.BoxGeometry(W - 0.3, 0.08, 0.08), dark,
+      0, 0.18 + i * (postH * 0.8) / (rails - 1), 0.12);
+  }
+  if (lv >= 4) {
+    // 斜撑
+    for (const sx of [-1, 1]) {
+      addBarPart(new THREE.BoxGeometry(0.07, postH * 0.9, 0.07), dark,
+        sx * (W / 2 - 0.25), postH * 0.55, 0.3, 0.5, 0, 0);
+    }
+  }
+  if (lv >= 5) {
+    // 两侧塔柱 + 顶部火把光带
+    for (const sx of [-1, 1]) {
+      addBarPart(new THREE.BoxGeometry(0.14, H, 0.14), dark, sx * (W / 2 - 0.08), H * 0.5, 0);
+    }
+    const glow = std(0x8a5a2a, 0.6, 0.1, 0xffa64d, 0.8);
+    addBarPart(new THREE.BoxGeometry(W - 0.1, 0.05, 0.1), glow, 0, H + 0.02, 0);
+  }
 }
 
 function initBarricade() {
   barricadeGroup = new THREE.Group();
   barricadeGroup.position.set(BARRICADE_X, 0, BARRICADE_Z);
 
-  buildBarricadeLook(getCurrentEraIndex());
+  buildBarricadeLook(getCurrentEraIndex(), 1, BARRICADE_WIDTH);
 
   scene.add(barricadeGroup);
 
@@ -7596,13 +7884,23 @@ function syncBarricade(state) {
     return;
   }
 
-  // 等级会改宽度：左边界不动，向右长；整段墙和 UI 一起缩放
-  const center = b.xMin + b.width / 2;
-  const scale = b.width / BARRICADE_WIDTH;
+  // 每级是独立结构（桩数/层数/段数/塔柱都不同），所以按等级重建，
+  // 不再用 scale.x 把 1 级那套模型横向拉长。
+  const eraNow = getCurrentEraIndex();
+  const lv = Math.max(1, Math.min(5, b.level || 1));
+  const targetW = b.width || BARRICADE_WIDTH;
+  if (barricadeLookEra !== eraNow ||
+      barricadeLookLevel !== lv ||
+      Math.abs(barricadeLookWidth - targetW) > 0.02) {
+    buildBarricadeLook(eraNow, lv, targetW);
+  }
+
+  // 左边界不动，向右长；几何体已经按真实宽度造好，这里只摆放
+  const center = b.xMin + targetW / 2;
   barricadeGroup.position.x = center;
-  barricadeGroup.scale.x = scale;
+  barricadeGroup.scale.x = 1;
   barricadeHpBar.group.position.x = center;
-  barricadeHpBar.group.scale.x = scale;
+  barricadeHpBar.group.scale.x = targetW / BARRICADE_WIDTH;
   barricadeCountdown.position.x = center;
 
   const active = !!b.active;

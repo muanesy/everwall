@@ -3,23 +3,25 @@
  *
  * 对应 docs/美术需求-槽位与技能.md 里的「P1 六个槽位」。
  *
- * 设计原则（照文档的"制作方式建议"来）：
- *   1. 一个基础模型 + 4 级附件套件，不做 30 个独立模型
- *   2. 时代决定"长什么样"（投石机 / 车厢炮 / 履带炮塔 / 生物罐 / 能量环 / 黑球）
- *   3. 等级只决定"多大、加多少附件"，不换科技家族
- *   4. 全程序化几何体，零外部素材——文档也要求"特效优先程序化"
+ * 设计原则（按文档「槽位等级外观（1-5 级，新标准）」来）：
+ *   1. 每个槽位按等级换主体轮廓，不是只放大
+ *   2. 时代决定家族语言（投石机 / 列车炮 / 履带炮 / 培养罐 / 能量环 / 黑球）
+ *   3. 等级决定结构：发射件数量、舱体数量、塔架层数、环的数量
+ *   4. 全程序化几何体，零外部素材
  *
- * 为什么不用 GLB：这六套东西全是箱体、圆柱、圆环的组合，
- * 用 200 行代码就能参数化出 30 个变体；做成 30 个 GLB 反而要 30 次建模 + 30 次加载。
- * 文档说的「模型统一 GLB、单个不超过 2MB」是针对要贴图的高模，这里不需要。
+ * 30 个等级外形是「6 个槽位 × 5 级」的等级基础体；
+ * 同一等级在不同时代换材质和时代附件，不重雕 180 个模型。
  * ========================================================== */
 
 import * as THREE from 'three';
 import { GLTFLoader } from '../assets/vendor/loaders/GLTFLoader.js';
 
 /* ----------------------------------------------------------
- * 攻城槽位的正式模型：Poly by Google「Catapult」，CC-BY 3.0
+ * 攻城 1 级的正式模型：Poly by Google「Catapult」，CC-BY 3.0
  * （署名见开始页底部小字）。只加载一次，之后每个槽位 clone 一份。
+ *
+ * 只给 1 级用：2-5 级要求独立轮廓（双联抛臂 / 带轮底盘 / 攻城塔），
+ * 单个投石机 GLB 表达不了这些升级，所以高等级走程序化结构。
  * 加载失败就静默返回 null，走程序化兜底，槽位不会消失。
  * ---------------------------------------------------------- */
 let siegeModelPromise = null;
@@ -138,65 +140,63 @@ function add(group, geo, mat, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0) {
 }
 
 /* ----------------------------------------------------------
- * 等级附件
- *
- * 文档要求"每升 1 级至少多一个可识别的附件"。
- * 这里做四组通用附件，每个槽位按自己的形状取用——
- * 不做 30 套不同的附件，那和"从零建模"没区别。
+ * 通用等级零件
  * ---------------------------------------------------------- */
 
-// 2 级：加固支架。四角斜撑，读起来是"加固了一圈"
-function addBraces(g, m, w, h) {
-  const len = Math.hypot(w * 0.42, h * 0.75);
+/* 水平发光环。外面包一层 Group 让"转环"绕 y 轴转，
+ * 直接转 torus 因为对称看不出在转。 */
+function spinRing(g, m, radius, y, tube = 0.032, tilt = 0) {
+  const holder = new THREE.Group();
+  holder.position.y = y;
+  holder.userData.spinY = true;
+  holder.userData.spinSpeed = 0.7;
+  add(holder, new THREE.TorusGeometry(radius, tube, 6, 26), m.glow,
+    0, 0, 0, Math.PI / 2 + tilt, 0, 0);
+  g.add(holder);
+  return holder;
+}
+
+/* 可旋转炮塔：lv >= 4 才转，低等级保持静止（文档要求） */
+function turret(g, m, y, lv, spinSpeed = 0.4) {
+  const t = new THREE.Group();
+  t.position.y = y;
+  if (lv >= 4) {
+    t.userData.spinY = true;
+    t.userData.spinSpeed = spinSpeed;
+  }
+  g.add(t);
+  return t;
+}
+
+/* 一排横向位置：n 个零件居中排开 */
+function spreadX(n, spacing) {
+  const out = [];
+  for (let i = 0; i < n; i++) out.push((i - (n - 1) / 2) * spacing);
+  return out;
+}
+
+/* 车轮：lv >= 4 的底盘用 */
+function addWheels(g, m, halfW, zOff, r = 0.13) {
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) {
-      add(g, new THREE.BoxGeometry(0.05, len, 0.05), m.accent,
-        sx * w * 0.4, h * 0.38, sz * w * 0.4,
-        sz * 0.42, 0, -sx * 0.42);
+      add(g, new THREE.CylinderGeometry(r, r, 0.07, 10), m.accent,
+        sx * halfW, r, sz * zOff, 0, 0, Math.PI / 2);
     }
   }
 }
 
-// 3 级：弹药架 / 备件架。侧面一排小箱子
-function addAmmoRack(g, m, w, y) {
-  for (let i = 0; i < 3; i++) {
-    add(g, new THREE.BoxGeometry(0.12, 0.14, 0.1), m.accent,
-      -w * 0.42 - 0.02, y + i * 0.16, 0.16);
-  }
-  add(g, new THREE.BoxGeometry(0.06, 0.5, 0.06), m.dark, -w * 0.42, y + 0.24, 0.2);
-}
-
-// 4 级：装甲护板。正面两块斜板
-function addArmorPlate(g, m, w, h) {
-  for (const sx of [-1, 1]) {
-    add(g, new THREE.BoxGeometry(w * 0.34, h * 0.5, 0.05), m.accent,
-      sx * w * 0.22, h * 0.42, w * 0.36, 0, sx * 0.3, 0);
-  }
-}
-
-// 5 级：充能环 / 光带。这是"满级一眼可辨"的关键
-function addChargeRing(g, m, radius, y, tube = 0.045) {
-  const ring = add(g, new THREE.TorusGeometry(radius, tube, 6, 26), m.glow,
-    0, y, 0, Math.PI / 2, 0, 0);
-  ring.userData.spin = true;
-  return ring;
-}
-
 /* ----------------------------------------------------------
- * 各槽位的时代变体
+ * 攻城：投石机 → 列车炮 → 履带炮 → 生物喷射罐 → 轨道炮 → 引力炮
  *
- * 每个函数接收 (g, m, level)，只负责摆基础形状；
- * 等级附件由外部统一叠加。
+ * 等级轮廓：
+ *   1 单管/短臂 · 2 加长加固 · 3 双联 · 4 带底盘 · 5 多联装/塔架
  * ---------------------------------------------------------- */
-
-/* 攻城：投石机 → 车厢炮 → 履带炮塔 → 生物喷射罐 → 能量轨道 → 引力球 */
 function buildSiege(g, m, era, lv = 1) {
   if (era === 0) {
-    // 正式模型是 Poly by Google 的投石机（CC-BY 3.0），下面这套程序化几何体
-    // 只当加载失败时的兜底，加载成功就整组隐藏。
+    // 1 级用正式 GLB；2-5 级走程序化，保证"双联/带轮/攻城塔"能读出来
     const base = new THREE.Group();
     g.add(base);
-    // 木架投石机：等级决定臂长、单/双联、有没有底盘
+
     const twin = lv >= 3;                       // 3 级起双联抛臂
     const wheeled = lv >= 4;                    // 4 级起带轮底盘
     const armLen = 0.78 + (lv - 1) * 0.12;      // 0.78 → 1.26
@@ -204,26 +204,26 @@ function buildSiege(g, m, era, lv = 1) {
     const legH = pivotY + 0.1;
 
     if (wheeled) {
-      // 带轮底盘：四个木轮 + 车架
       add(base, new THREE.BoxGeometry(1.0, 0.12, 0.72), m.dark, 0, 0.2, 0);
-      for (const sx of [-1, 1]) {
-        for (const sz of [-1, 1]) {
-          add(base, new THREE.CylinderGeometry(0.13, 0.13, 0.07, 10), m.accent,
-            sx * 0.4, 0.13, sz * 0.26, 0, 0, Math.PI / 2);
-        }
-      }
+      addWheels(base, m, 0.4, 0.26, 0.13);
     } else {
-      // 落地木底座
       add(base, new THREE.BoxGeometry(0.96, 0.14, 0.64), m.main, 0, 0.07, 0);
     }
 
-    // 3 级起加转盘：双联抛臂要能左右扫
     if (twin) {
       add(base, new THREE.TorusGeometry(0.33, 0.028, 6, 20), m.accent,
         0, wheeled ? 0.27 : 0.15, 0, Math.PI / 2, 0, 0);
     }
 
-    // A 形木架：左右两侧各两根内倾立柱 + 顶部横梁
+    // 2 级起加 A 形加固斜撑
+    if (lv >= 2) {
+      const baseY = wheeled ? 0.26 : 0.14;
+      for (const sx of [-1, 1]) {
+        add(base, new THREE.BoxGeometry(0.06, 0.7, 0.06), m.accent,
+          sx * 0.42, baseY + 0.3, 0.25, 0.35, 0, -sx * 0.3);
+      }
+    }
+
     const baseY = wheeled ? 0.26 : 0.14;
     for (const sx of [-1, 1]) {
       for (const sz of [-1, 1]) {
@@ -238,11 +238,10 @@ function buildSiege(g, m, era, lv = 1) {
     const armGroup = new THREE.Group();
     armGroup.position.set(0, baseY + pivotY, 0);
     armGroup.rotation.x = -0.3;                 // 长臂朝 -z 抬起
-    const armZ = twin ? [-0.1, 0.1] : [0];
-    for (const ox of armZ) {
+    const armOffsets = twin ? [-0.1, 0.1] : [0];
+    for (const ox of armOffsets) {
       add(armGroup, new THREE.BoxGeometry(0.07, 0.07, armLen), m.accent,
         ox, 0, -armLen * 0.12);
-      // 配重箱挂在短臂一侧，石块/皮兜在长臂尽头
       add(armGroup, new THREE.BoxGeometry(0.22, 0.22, 0.2), m.dark,
         ox, -0.18, armLen * 0.32);
       add(armGroup, new THREE.SphereGeometry(0.075, 8, 6), m.dark,
@@ -250,303 +249,662 @@ function buildSiege(g, m, era, lv = 1) {
     }
     base.add(armGroup);
 
-    // 5 级：顶部再起一层塔架，远处看是"攻城塔"而不是放大版投石机
+    // 4 级：侧面弹药箱
+    if (lv >= 4) {
+      for (let i = 0; i < 3; i++) {
+        add(base, new THREE.BoxGeometry(0.16, 0.12, 0.2), m.accent,
+          -0.52, 0.3 + i * 0.14, -0.1);
+      }
+    }
+
+    // 5 级：顶部塔架 + 充电环，远处看是"攻城塔"而不是放大版投石机
     if (lv >= 5) {
       for (const sx of [-1, 1]) {
-        add(base, new THREE.BoxGeometry(0.06, 0.46, 0.06), m.main,
-          sx * 0.36, baseY + legH + 0.2, 0.16, 0, 0, -sx * 0.06);
+        add(base, new THREE.BoxGeometry(0.06, 0.56, 0.06), m.main,
+          sx * 0.36, baseY + legH + 0.26, 0.16, 0, 0, -sx * 0.06);
       }
       add(base, new THREE.BoxGeometry(0.8, 0.06, 0.34), m.accent,
-        0, baseY + legH + 0.44, 0.16);
+        0, baseY + legH + 0.56, 0.16);
+      const r = add(base, new THREE.TorusGeometry(0.5, 0.03, 6, 24), m.glow,
+        0, 0.12, 0, Math.PI / 2, 0, 0);
+      r.userData.spinY = true;
     }
 
-    loadSiegeModel().then((src) => {
-      if (!src) return;
-      const model = src.clone(true);
-      fitSlotModel(model, 0.86, 1.2);
-      base.visible = false;
-      g.add(model);
-    });
+    if (lv === 1) {
+      loadSiegeModel().then((src) => {
+        if (!src) return;
+        const model = src.clone(true);
+        fitSlotModel(model, 0.86, 1.2);
+        base.visible = false;
+        g.add(model);
+      });
+    }
     return;
   }
+
   if (era === 1) {
-    // 装甲车厢 + 长炮管
-    add(g, new THREE.BoxGeometry(0.9, 0.5, 1.15), m.main, 0, 0.3, 0);
-    add(g, new THREE.CylinderGeometry(0.09, 0.11, 1.25, 10), m.accent,
-      0, 0.56, -0.5, Math.PI / 2 - 0.12, 0, 0);
+    // 二战列车炮：车厢 + 长炮管，升级加长、双联、带轮、四联
+    add(g, new THREE.BoxGeometry(0.9, 0.42, 1.15), m.main, 0, 0.27, 0);
+    const barrels = lv >= 5 ? 4 : lv >= 3 ? 2 : 1;
+    const len = 0.9 + lv * 0.12;
+    const xs = spreadX(barrels, 0.17);
+    const t = turret(g, m, 0.5, lv, 0.32);
+    for (const x of xs) {
+      add(t, new THREE.CylinderGeometry(0.075, 0.095, len, 10), m.accent,
+        x, 0, -len * 0.42, Math.PI / 2 - 0.1, 0, 0);
+    }
+    if (lv >= 2) {
+      // 加固炮架 / 侧面装甲
+      for (const sx of [-1, 1]) {
+        add(g, new THREE.BoxGeometry(0.05, 0.3, 0.8), m.accent,
+          sx * 0.46, 0.42, 0.1);
+      }
+    }
+    if (lv >= 4) {
+      addWheels(g, m, 0.46, 0.34, 0.17);
+      // 驻锄：前方两根液压腿
+      for (const sx of [-1, 1]) {
+        add(g, new THREE.BoxGeometry(0.06, 0.5, 0.06), m.dark,
+          sx * 0.32, 0.22, 0.5, 0.5, 0, 0);
+      }
+    }
+    if (lv >= 5) {
+      add(g, new THREE.BoxGeometry(0.34, 0.12, 0.3), m.dark, 0, 1.0, 0.2);
+      spinRing(g, m, 0.46, 0.16);
+    }
+    return;
+  }
+
+  if (era === 2) {
+    // 现代自行火炮：履带底盘 + 炮塔
+    add(g, new THREE.BoxGeometry(0.82, 0.2, 1.05), m.dark, 0, 0.13, 0);
+    if (lv >= 4) {
+      // 履带侧裙
+      for (const sx of [-1, 1]) {
+        add(g, new THREE.BoxGeometry(0.12, 0.16, 1.1), m.accent, sx * 0.46, 0.13, 0);
+      }
+      addWheels(g, m, 0.4, 0.3, 0.11);
+    }
+    const barrels = lv >= 5 ? 2 : 1;
+    const xs = barrels === 2 ? [-0.13, 0.13] : [0];
+    const len = 0.8 + lv * 0.13;
+    const t = turret(g, m, 0.34, lv, lv >= 5 ? 0.5 : 0.3);
+    add(t, new THREE.CylinderGeometry(0.26, 0.3, 0.24 + lv * 0.02, 12), m.main, 0, 0.1, 0.04);
+    for (const x of xs) {
+      add(t, new THREE.CylinderGeometry(0.07, 0.085, len, 10), m.accent,
+        x, 0.12, -len * 0.45, Math.PI / 2 - 0.08, 0, 0);
+    }
+    if (lv >= 3) {
+      // 输弹机构
+      add(g, new THREE.BoxGeometry(0.18, 0.16, 0.24), m.accent, 0.4, 0.34, 0.2);
+    }
+    if (lv >= 5) {
+      add(g, new THREE.BoxGeometry(0.28, 0.1, 0.22), m.dark, 0, 0.86, 0.16);
+      spinRing(g, m, 0.5, 0.14);
+    }
+    return;
+  }
+
+  if (era === 3) {
+    // 后现代酸液迫击炮：储罐 + 喷嘴
+    const tanks = lv >= 5 ? 3 : lv >= 3 ? 2 : 1;
+    const xs = spreadX(tanks, 0.34);
+    for (const x of xs) {
+      const h = 0.5 + lv * 0.06;
+      add(g, new THREE.CylinderGeometry(0.22, 0.26, h, 12), m.main, x, 0.1 + h * 0.5, 0.04);
+      add(g, new THREE.SphereGeometry(0.22, 12, 8), m.main, x, 0.1 + h, 0.04);
+      add(g, new THREE.SphereGeometry(0.15, 10, 7), m.glowSoft, x, 0.1 + h, 0.04);
+      add(g, new THREE.CylinderGeometry(0.05, 0.12, 0.42 + lv * 0.04, 10), m.accent,
+        x, 0.32 + h * 0.55, -0.4, Math.PI / 2 - 0.28, 0, 0);
+    }
+    if (lv >= 4) {
+      add(g, new THREE.BoxGeometry(1.0, 0.1, 0.72), m.dark, 0, 0.1, 0);
+      addWheels(g, m, 0.4, 0.26, 0.12);
+    }
+    if (lv >= 5) {
+      spinRing(g, m, 0.58, 0.14);
+      add(g, new THREE.TorusGeometry(0.34, 0.03, 6, 18), m.accent, 0, 1.12, 0.04, Math.PI / 2, 0, 0);
+    }
+    return;
+  }
+
+  if (era === 4) {
+    // 星际轨道炮：底座 + 多层能量环 + 平行轨道
+    add(g, new THREE.CylinderGeometry(0.4, 0.46, 0.16 + lv * 0.02, 14), m.main, 0, 0.08, 0);
+    const rails = lv >= 5 ? 4 : lv >= 3 ? 2 : 1;
+    const xs = spreadX(rails, 0.16);
+    for (const x of xs) {
+      add(g, new THREE.BoxGeometry(0.055, 0.7 + lv * 0.07, 0.055), m.accent, x, 0.4, 0);
+    }
+    const rings = lv;
+    for (let i = 0; i < rings; i++) {
+      spinRing(g, m, 0.34 + i * 0.055, 0.22 + i * 0.16, 0.03);
+    }
+    add(g, new THREE.SphereGeometry(0.12 + lv * 0.012, 10, 8), m.glow, 0, 0.6, 0);
+    if (lv >= 5) {
+      add(g, new THREE.BoxGeometry(0.22, 0.08, 0.5), m.dark, 0, 1.0, -0.16);
+    }
+    return;
+  }
+
+  // 终幕引力炮：黑色核心 + 多道不同倾角的引力环
+  add(g, new THREE.CylinderGeometry(0.35, 0.44, 0.12 + lv * 0.03, 12), m.main, 0, 0.1, 0);
+  add(g, new THREE.SphereGeometry(0.28 + lv * 0.025, 14, 12), m.main, 0, 0.52, 0);
+  const ringCount = lv;
+  for (let i = 0; i < ringCount; i++) {
+    const holder = new THREE.Group();
+    holder.position.y = 0.52;
+    holder.rotation.y = i * 0.7;
+    if (lv >= 4) {
+      holder.userData.spinY = true;
+      holder.userData.spinSpeed = 0.4 + i * 0.15;
+    }
+    add(holder, new THREE.TorusGeometry(0.42 + i * 0.06, 0.026, 6, 24),
+      m.glow, 0, 0, 0, Math.PI / 2 + (i - 1) * 0.42, 0, 0);
+    g.add(holder);
+  }
+  add(g, new THREE.SphereGeometry(0.13, 10, 8), m.glow, 0, 0.52, 0);
+  if (lv >= 5) {
+    add(g, new THREE.TorusGeometry(0.52, 0.025, 6, 26), m.glowSoft, 0, 0.52, 0, 0.2, 0, 0);
+  }
+}
+
+/* ----------------------------------------------------------
+ * 近防：滚油锅 → 火焰碉堡 → 霰弹炮塔 → 纳米刃 → 等离子网 → 熵刃
+ *
+ * 等级轮廓：
+ *   1 单管/单锅 · 2 加长加固 · 3 双管 · 4 装甲罩/双弹药鼓 · 5 多管旋转/环形能量
+ * ---------------------------------------------------------- */
+function buildCloseDefense(g, m, era, lv = 1) {
+  // 共用底座：高度随等级一点点长，但主体轮廓靠上面的发射件
+  const baseH = 0.2 + lv * 0.03;
+  add(g, new THREE.CylinderGeometry(0.36, 0.44, baseH, 14), m.dark, 0, baseH * 0.5, 0);
+
+  if (era === 0) {
+    // 油锅：1 口 → 2 口 → 3 口，4 级加装甲圈，5 级加充能环
+    const pots = lv >= 5 ? 3 : lv >= 3 ? 2 : 1;
+    const xs = spreadX(pots, 0.3);
+    for (const x of xs) {
+      const h = 0.2 + lv * 0.03;
+      add(g, new THREE.CylinderGeometry(0.2, 0.17, h, 12), m.main, x, baseH + h * 0.5, 0);
+      add(g, new THREE.TorusGeometry(0.2, 0.028, 6, 16), m.accent,
+        x, baseH + h, 0, Math.PI / 2, 0, 0);
+    }
+    if (lv >= 4) {
+      add(g, new THREE.TorusGeometry(0.3, 0.04, 6, 18), m.accent, 0, baseH + 0.14, 0, Math.PI / 2, 0, 0);
+    }
+    if (lv >= 5) spinRing(g, m, 0.42, baseH + 0.05);
+    return;
+  }
+
+  if (era === 1) {
+    // 火焰碉堡：喷口 1 → 2 → 3，4 级加燃料罐，5 级加环
+    add(g, new THREE.BoxGeometry(0.5 + lv * 0.04, 0.32 + lv * 0.02, 0.46), m.main,
+      0, baseH + 0.16 + lv * 0.01, 0.04);
+    const nozzles = lv >= 5 ? 3 : lv >= 3 ? 2 : 1;
+    const xs = spreadX(nozzles, 0.15);
+    for (const x of xs) {
+      add(g, new THREE.CylinderGeometry(0.06, 0.09, 0.28 + lv * 0.04, 10), m.accent,
+        x, baseH + 0.16, -0.28, Math.PI / 2 - 0.2, 0, 0);
+    }
+    if (lv >= 4) {
+      for (const sx of [-1, 1]) {
+        add(g, new THREE.CylinderGeometry(0.09, 0.09, 0.3, 10), m.dark,
+          sx * 0.24, baseH + 0.14, 0.26, 0, 0, Math.PI / 2);
+      }
+    }
+    if (lv >= 5) spinRing(g, m, 0.4, baseH + 0.02);
+    return;
+  }
+
+  if (era === 2) {
+    // 自动霰弹炮塔：单管 → 双管 → 四管旋转
+    const barrels = lv >= 5 ? 4 : lv >= 3 ? 2 : 1;
+    const xs = spreadX(barrels, 0.14);
+    const len = 0.4 + lv * 0.05;
+    const t = turret(g, m, baseH + 0.1, lv, 0.55);
+    add(t, new THREE.CylinderGeometry(0.24, 0.28, 0.16, 12), m.main, 0, 0.08, 0);
+    for (const x of xs) {
+      add(t, new THREE.CylinderGeometry(0.07, 0.09, len, 10), m.accent,
+        x, 0.1, -len * 0.42, Math.PI / 2 - 0.16, 0, 0);
+    }
+    if (lv >= 4) {
+      // 半球装甲罩 + 双弹药鼓
+      add(g, new THREE.SphereGeometry(0.32, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.5), m.main,
+        0, baseH + 0.06, 0, Math.PI, 0, 0);
+      for (const sx of [-1, 1]) {
+        add(g, new THREE.CylinderGeometry(0.1, 0.1, 0.2, 10), m.accent,
+          sx * 0.34, baseH + 0.16, 0.18, 0, 0, Math.PI / 2);
+      }
+    }
+    if (lv >= 5) spinRing(g, m, 0.4, baseH + 0.02);
+    return;
+  }
+
+  if (era === 3) {
+    // 纳米刃发生器：1 → 2 → 3 片刃，4 级加冷却罐，5 级加环
+    const blades = lv >= 5 ? 5 : lv >= 4 ? 3 : lv >= 3 ? 2 : 1;
+    add(g, new THREE.BoxGeometry(0.16, 0.3 + lv * 0.04, 0.16), m.main, 0, baseH + 0.16, 0.02);
+    const xs = spreadX(blades, 0.1);
+    for (const x of xs) {
+      add(g, new THREE.BoxGeometry(0.03, 0.05, 0.5 + lv * 0.04), m.glow,
+        x, baseH + 0.3, -0.3, -0.18, 0, 0);
+    }
+    if (lv >= 4) {
+      add(g, new THREE.CylinderGeometry(0.07, 0.08, 0.22, 9), m.dark,
+        0.26, baseH + 0.14, 0.14);
+    }
+    if (lv >= 5) spinRing(g, m, 0.38, baseH + 0.04);
+    return;
+  }
+
+  if (era === 4) {
+    // 等离子网：杆 2 → 4 → 6，环 0 → 1 → 2
+    const rods = lv >= 5 ? 6 : lv >= 3 ? 4 : 2;
+    add(g, new THREE.CylinderGeometry(0.2, 0.24, 0.2, 12), m.main, 0, baseH + 0.08, 0);
+    for (let i = 0; i < rods; i++) {
+      const a = (i / rods) * Math.PI * 2;
+      add(g, new THREE.CylinderGeometry(0.025, 0.025, 0.4 + lv * 0.05, 6), m.glow,
+        Math.cos(a) * 0.2, baseH + 0.32, Math.sin(a) * 0.2);
+    }
+    if (lv >= 3) spinRing(g, m, 0.24 + lv * 0.02, baseH + 0.55, 0.02);
+    if (lv >= 5) spinRing(g, m, 0.34, baseH + 0.12, 0.025);
+    return;
+  }
+
+  // 终幕熵刃：1 → 2 → 3 片黑刃，4 级加装甲，5 级加环
+  const blades = lv >= 5 ? 3 : lv >= 4 ? 3 : lv >= 3 ? 2 : 1;
+  const xs = spreadX(blades, 0.12);
+  for (const x of xs) {
+    add(g, new THREE.BoxGeometry(0.045 + (lv >= 4 ? 0.015 : 0), 0.55 + lv * 0.08, 0.4), m.main,
+      x, baseH + 0.3, 0);
+    add(g, new THREE.BoxGeometry(0.015, 0.57 + lv * 0.08, 0.03), m.glow,
+      x, baseH + 0.3, -0.22);
+  }
+  if (lv >= 4) {
+    add(g, new THREE.TorusGeometry(0.3, 0.03, 6, 18), m.accent, 0, baseH + 0.06, 0, Math.PI / 2, 0, 0);
+  }
+  if (lv >= 5) spinRing(g, m, 0.4, baseH + 0.02);
+}
+
+/* ----------------------------------------------------------
+ * 支援：医疗帐篷 → 战地医院 → 医疗直升机 → 克隆舱 → 量子塔 → 回溯祭坛
+ *
+ * 等级轮廓：
+ *   1 小帐/单药箱 · 2 大帐/仓储箱 · 3 医疗站/旋翼 · 4 双舱 · 5 量子塔/祭坛
+ * ---------------------------------------------------------- */
+function buildSupport(g, m, era, lv = 1) {
+  if (era === 0) {
+    // 中世纪：帐篷随等级变大，4 级双帐，5 级加塔架和光环
+    const w = 0.55 + lv * 0.09;
+    const h = 0.22 + lv * 0.035;
+    add(g, new THREE.BoxGeometry(w + 0.1, 0.05, 0.74), m.accent, 0, 0.025, 0);
     for (const sx of [-1, 1]) {
-      add(g, new THREE.CylinderGeometry(0.17, 0.17, 0.1, 10), m.dark,
-        sx * 0.46, 0.17, 0.32, 0, 0, Math.PI / 2);
+      add(g, new THREE.BoxGeometry(w * 0.55, 0.05, 0.74), m.main,
+        sx * w * 0.24, 0.03 + h * 0.5, 0, 0, 0, sx * 0.95);
+    }
+    add(g, new THREE.BoxGeometry(0.28, 0.07, 0.035), m.glow, 0, 0.3 + h * 0.2, 0.38);
+    add(g, new THREE.BoxGeometry(0.07, 0.26 + lv * 0.03, 0.035), m.glow,
+      0, 0.3 + h * 0.2, 0.38);
+    if (lv >= 2) {
+      // 担架 + 药箱堆
+      add(g, new THREE.BoxGeometry(0.16, 0.08, 0.5), m.dark, w * 0.42, 0.08, 0);
+      add(g, new THREE.BoxGeometry(0.14, 0.14, 0.14), m.accent, -w * 0.52, 0.09, 0.1);
+      add(g, new THREE.BoxGeometry(0.14, 0.14, 0.14), m.accent, -w * 0.52, 0.23, 0.1);
+    }
+    if (lv >= 3) {
+      add(g, new THREE.CylinderGeometry(0.03, 0.03, 0.62 + lv * 0.06, 6), m.accent, 0, 0.32, -0.34);
+    }
+    if (lv >= 4) {
+      add(g, new THREE.BoxGeometry(0.5, 0.06, 0.3), m.main, -w * 0.3, 0.44, 0.1);
+      add(g, new THREE.BoxGeometry(0.48, 0.05, 0.26), m.accent, -w * 0.3, 0.54, 0.1, 0, 0, 0.12);
+    }
+    if (lv >= 5) {
+      spinRing(g, m, 0.42, 0.06, 0.025);
+      add(g, new THREE.SphereGeometry(0.1, 9, 7), m.glow, 0, 0.78, 0);
     }
     return;
   }
+
+  if (era === 1) {
+    // 二战战地医院：帐篷 1 → 2 → 塔架
+    const w = 0.62 + lv * 0.1;
+    add(g, new THREE.BoxGeometry(w + 0.15, 0.05, 0.82), m.accent, 0, 0.025, 0);
+    add(g, new THREE.BoxGeometry(w, 0.24 + lv * 0.04, 0.78), m.main, 0, 0.14 + lv * 0.02, 0);
+    add(g, new THREE.BoxGeometry(w - 0.1, 0.05, 0.84), m.accent, 0, 0.26 + lv * 0.04, 0);
+    add(g, new THREE.BoxGeometry(0.28, 0.075, 0.03), m.glow, 0, 0.15 + lv * 0.02, 0.4);
+    add(g, new THREE.BoxGeometry(0.075, 0.28 + lv * 0.04, 0.03), m.glow,
+      0, 0.15 + lv * 0.02, 0.4);
+    if (lv >= 2) {
+      add(g, new THREE.BoxGeometry(0.18, 0.08, 0.52), m.dark, -w * 0.4, 0.08, 0);
+      add(g, new THREE.BoxGeometry(0.18, 0.14, 0.14), m.accent, w * 0.42, 0.09, 0.12);
+    }
+    if (lv >= 4) {
+      add(g, new THREE.BoxGeometry(0.46, 0.28, 0.56), m.main, w * 0.3, 0.16, 0.1);
+      add(g, new THREE.BoxGeometry(0.52, 0.05, 0.62), m.accent, w * 0.3, 0.32, 0.1);
+    }
+    if (lv >= 5) {
+      add(g, new THREE.CylinderGeometry(0.03, 0.035, 0.7, 6), m.accent, 0, 0.36, -0.32);
+      spinRing(g, m, 0.44, 0.06, 0.025);
+    }
+    return;
+  }
+
   if (era === 2) {
-    // 履带底盘 + 炮塔
-    add(g, new THREE.BoxGeometry(0.82, 0.24, 1.2), m.dark, 0, 0.16, 0);
-    add(g, new THREE.CylinderGeometry(0.34, 0.38, 0.32, 12), m.main, 0, 0.44, 0.06);
-    add(g, new THREE.CylinderGeometry(0.07, 0.08, 1.05, 10), m.accent,
-      0, 0.48, -0.5, Math.PI / 2 - 0.08, 0, 0);
-    return;
-  }
-  if (era === 3) {
-    // 生物储罐 + 喷嘴
-    add(g, new THREE.CylinderGeometry(0.3, 0.36, 0.76, 12), m.main, 0, 0.42, 0.06);
-    add(g, new THREE.SphereGeometry(0.3, 12, 10), m.main, 0, 0.82, 0.06);
-    add(g, new THREE.CylinderGeometry(0.06, 0.14, 0.5, 10), m.accent,
-      0, 0.62, -0.44, Math.PI / 2 - 0.25, 0, 0);
-    // 培养液：半透明发光内胆
-    add(g, new THREE.SphereGeometry(0.22, 10, 8), m.glowSoft, 0, 0.82, 0.06);
-    return;
-  }
-  if (era === 4) {
-    // 能量环 + 轨道
-    add(g, new THREE.CylinderGeometry(0.4, 0.48, 0.2, 14), m.main, 0, 0.1, 0);
-    for (let i = 0; i < 2; i++) {
-      add(g, new THREE.TorusGeometry(0.42 + i * 0.1, 0.035, 6, 24), m.glow,
-        0, 0.52 + i * 0.34, 0, Math.PI / 2, 0, 0);
+    // 现代医疗直升机：旋翼 3 级才转，4 级双侧吊舱，5 级大旋翼 + 环
+    add(g, new THREE.BoxGeometry(0.4 + lv * 0.02, 0.3, 0.8 + lv * 0.03), m.main, 0, 0.36, 0);
+    add(g, new THREE.BoxGeometry(0.1, 0.09, 0.38 + lv * 0.03), m.accent, 0, 0.4, 0.5 + lv * 0.02);
+    add(g, new THREE.CylinderGeometry(0.03, 0.03, 0.1, 8), m.dark, 0, 0.56, 0);
+    const rotor = new THREE.Group();
+    rotor.position.y = 0.62;
+    rotor.userData.spinY = true;
+    rotor.userData.spinSpeed = 1.6;
+    add(rotor, new THREE.BoxGeometry(0.6 + lv * 0.16, 0.02, 0.08), m.accent, 0, 0, 0);
+    add(rotor, new THREE.BoxGeometry(0.08, 0.02, 0.3), m.accent, 0, 0, 0);
+    g.add(rotor);
+    if (lv >= 4) {
+      for (const sx of [-1, 1]) {
+        add(g, new THREE.CylinderGeometry(0.08, 0.08, 0.34, 10), m.accent,
+          sx * 0.3, 0.34, 0.1, 0, 0, Math.PI / 2);
+      }
     }
-    add(g, new THREE.BoxGeometry(0.1, 0.62, 0.1), m.accent, 0, 0.44, 0);
-    add(g, new THREE.SphereGeometry(0.13, 10, 8), m.glow, 0, 0.84, 0);
+    if (lv >= 5) spinRing(g, m, 0.42, 0.04);
     return;
   }
-  // 终幕：黑色球体 + 引力环
-  add(g, new THREE.SphereGeometry(0.36, 14, 12), m.main, 0, 0.5, 0);
-  for (let i = 0; i < 3; i++) {
-    add(g, new THREE.TorusGeometry(0.5 + i * 0.07, 0.028, 6, 22), m.glow,
-      0, 0.5, 0, Math.PI / 2 + (i - 1) * 0.5, i * 0.7, 0);
+
+  if (era === 3) {
+    // 后现代克隆舱：单舱 → 双舱 → 三舱，5 级加大环
+    const pods = lv >= 5 ? 3 : lv >= 4 ? 2 : 1;
+    const xs = spreadX(pods, 0.3);
+    const h = 0.55 + lv * 0.07;
+    add(g, new THREE.CylinderGeometry(0.36, 0.4, 0.14, 14), m.dark, 0, 0.07, 0);
+    for (const x of xs) {
+      add(g, new THREE.CylinderGeometry(0.17, 0.19, h, 12), m.main, x, 0.14 + h * 0.5, 0);
+      add(g, new THREE.CylinderGeometry(0.12, 0.12, h - 0.06, 10), m.glowSoft, x, 0.14 + h * 0.5, 0);
+      add(g, new THREE.TorusGeometry(0.18, 0.025, 6, 16), m.glow,
+        x, 0.14 + h, 0, Math.PI / 2, 0, 0);
+    }
+    if (lv >= 3) {
+      // 管线
+      for (let i = 0; i < 3; i++) {
+        add(g, new THREE.CylinderGeometry(0.02, 0.02, 0.4, 6), m.accent,
+          Math.cos(i * 2.1) * 0.3, 0.32, Math.sin(i * 2.1) * 0.3, 0, 0, 0.3);
+      }
+    }
+    if (lv >= 5) spinRing(g, m, 0.46, 0.05, 0.025);
+    return;
   }
-  add(g, new THREE.SphereGeometry(0.16, 10, 8), m.glow, 0, 0.5, 0);
+
+  if (era === 4) {
+    // 星际量子塔：塔身随等级长高，环数 2 → 5
+    const h = 0.5 + lv * 0.1;
+    add(g, new THREE.CylinderGeometry(0.24, 0.32, 0.1, 14), m.main, 0, 0.05, 0);
+    add(g, new THREE.CylinderGeometry(0.14, 0.2, h, 10), m.main, 0, 0.1 + h * 0.5, 0);
+    for (let i = 0; i < lv; i++) {
+      spinRing(g, m, 0.28 - i * 0.015, 0.2 + i * (h / lv), 0.02);
+    }
+    add(g, new THREE.SphereGeometry(0.1 + lv * 0.01, 9, 7), m.glow, 0, 0.12 + h, 0);
+    if (lv >= 4) {
+      for (const sx of [-1, 1]) {
+        add(g, new THREE.CylinderGeometry(0.035, 0.035, 0.5, 6), m.accent, sx * 0.3, 0.26, 0);
+      }
+    }
+    return;
+  }
+
+  // 终幕时间祭坛：沙漏随等级变大，4 级双沙漏，5 级多层环
+  const w = 0.38 + lv * 0.04;
+  add(g, new THREE.CylinderGeometry(w, w + 0.06, 0.1 + lv * 0.02, 14), m.main, 0, 0.06, 0);
+  const glassH = 0.24 + lv * 0.04;
+  add(g, new THREE.ConeGeometry(0.2 + lv * 0.015, glassH, 12), m.accent, 0, 0.12 + glassH * 0.5, 0);
+  add(g, new THREE.ConeGeometry(0.2 + lv * 0.015, glassH, 12), m.accent,
+    0, 0.12 + glassH * 1.5, 0, Math.PI, 0, 0);
+  add(g, new THREE.TorusGeometry(0.18 + lv * 0.015, 0.02, 5, 18), m.glow,
+    0, 0.12 + glassH, 0, Math.PI / 2, 0, 0);
+  if (lv >= 4) {
+    add(g, new THREE.ConeGeometry(0.1, 0.2, 10), m.accent, -0.42, 0.2, 0.1);
+    add(g, new THREE.ConeGeometry(0.1, 0.2, 10), m.accent, -0.42, 0.4, 0.1, Math.PI, 0, 0);
+  }
+  if (lv >= 5) {
+    spinRing(g, m, 0.46, 0.08, 0.025);
+    spinRing(g, m, 0.34, 0.5, 0.022);
+  }
 }
 
-/* 近防：滚油锅 → 火焰碉堡 → 霰弹炮塔 → 纳米刃 → 等离子网 → 熵刃 */
-function buildCloseDefense(g, m, era) {
-  // 共用底座：一个矮墩，其余按时代换上半部分
-  add(g, new THREE.CylinderGeometry(0.38, 0.46, 0.3, 14), m.dark, 0, 0.15, 0);
-
+/* ----------------------------------------------------------
+ * 指挥：战鼓旗杆 → 电台天线 → 卫星站 → 神经链接舱 → 舰队指挥台 → 终焉方碑
+ *
+ * 等级轮廓：
+ *   1 旗杆/战鼓 · 2 电台箱 · 3 雷达锅 · 4 全息台/多面板 · 5 方碑/指挥塔 + 大环
+ * ---------------------------------------------------------- */
+function buildCommand(g, m, era, lv = 1) {
   if (era === 0) {
-    // 滚油锅
-    add(g, new THREE.CylinderGeometry(0.28, 0.2, 0.26, 14), m.main, 0, 0.44, 0);
-    add(g, new THREE.TorusGeometry(0.28, 0.035, 6, 18), m.accent, 0, 0.56, 0, Math.PI / 2, 0, 0);
-    return;
-  }
-  if (era === 1) {
-    // 火焰喷射碉堡：一个扁箱 + 前方喷口
-    add(g, new THREE.BoxGeometry(0.6, 0.42, 0.5), m.main, 0, 0.5, 0.04);
-    add(g, new THREE.CylinderGeometry(0.07, 0.11, 0.34, 10), m.accent,
-      0, 0.52, -0.36, Math.PI / 2 - 0.2, 0, 0);
-    return;
-  }
-  if (era === 2) {
-    // 自动霰弹炮塔：转台 + 短粗炮管
-    add(g, new THREE.CylinderGeometry(0.26, 0.3, 0.18, 12), m.main, 0, 0.38, 0);
-    add(g, new THREE.CylinderGeometry(0.1, 0.12, 0.6, 10), m.accent,
-      0, 0.5, -0.24, Math.PI / 2 - 0.16, 0, 0);
-    return;
-  }
-  if (era === 3) {
-    // 纳米刃发生器：细长刃片
-    add(g, new THREE.BoxGeometry(0.16, 0.5, 0.16), m.main, 0, 0.48, 0.02);
-    for (let i = 0; i < 3; i++) {
-      add(g, new THREE.BoxGeometry(0.03, 0.06, 0.62), m.glow,
-        (i - 1) * 0.1, 0.52, -0.38, -0.18, 0, 0);
+    // 中世纪：鼓 + 旗杆；4 级起平台，5 级成塔
+    const drumR = 0.2 + lv * 0.02;
+    add(g, new THREE.CylinderGeometry(drumR, drumR, 0.24 + lv * 0.02, 14), m.main, 0, 0.12, 0);
+    add(g, new THREE.CylinderGeometry(drumR + 0.01, drumR + 0.01, 0.025, 14), m.accent, 0, 0.24 + lv * 0.02, 0);
+    add(g, new THREE.CylinderGeometry(0.025, 0.03, 0.7 + lv * 0.14, 8), m.accent, drumR * 0.9, 0.36, 0);
+    const flags = lv >= 4 ? 4 : lv >= 2 ? 2 : 1;
+    for (let i = 0; i < flags; i++) {
+      const f = add(g, new THREE.BoxGeometry(0.22, 0.14 + lv * 0.01, 0.02), m.glow,
+        drumR * 0.9 + 0.12, 0.58 + lv * 0.14 + i * 0.1, 0);
+      f.rotation.z = -0.2;
+    }
+    if (lv >= 4) {
+      add(g, new THREE.BoxGeometry(0.9, 0.05, 0.5), m.accent, 0, 0.04, 0);
+    }
+    if (lv >= 5) {
+      add(g, new THREE.CylinderGeometry(0.02, 0.025, 0.5, 6), m.accent, -0.36, 0.4, 0.1);
+      spinRing(g, m, 0.42, 0.08, 0.025);
     }
     return;
   }
-  if (era === 4) {
-    // 等离子网发射器：四根短杆 + 网面
-    add(g, new THREE.CylinderGeometry(0.2, 0.24, 0.22, 12), m.main, 0, 0.4, 0);
-    for (let i = 0; i < 4; i++) {
-      const a = (i / 4) * Math.PI * 2;
-      add(g, new THREE.CylinderGeometry(0.03, 0.03, 0.46, 6), m.glow,
-        Math.cos(a) * 0.2, 0.62, Math.sin(a) * 0.2, 0, 0, 0);
-    }
-    add(g, new THREE.TorusGeometry(0.24, 0.02, 5, 18), m.glowSoft, 0, 0.84, 0, Math.PI / 2, 0, 0);
-    return;
-  }
-  // 终幕：熵刃，一片竖立的黑刃 + 边缘发光
-  add(g, new THREE.BoxGeometry(0.06, 0.9, 0.5), m.main, 0, 0.62, 0);
-  add(g, new THREE.BoxGeometry(0.02, 0.92, 0.04), m.glow, 0, 0.62, -0.26);
-}
 
-/* 支援：医疗帐篷 → 战地医院 → 医疗直升机 → 克隆舱 → 量子塔 → 回溯祭坛 */
-function buildSupport(g, m, era) {
-  if (era === 0) {
-    // 小帐篷：三棱柱用两个斜面盒拼
-    add(g, new THREE.BoxGeometry(0.9, 0.06, 0.8), m.accent, 0, 0.03, 0);
-    for (const sx of [-1, 1]) {
-      add(g, new THREE.BoxGeometry(0.5, 0.05, 0.8), m.main, sx * 0.22, 0.3, 0, 0, 0, sx * 0.9);
-    }
-    add(g, new THREE.BoxGeometry(0.3, 0.08, 0.04), m.glow, 0, 0.3, 0.42);
-    add(g, new THREE.BoxGeometry(0.08, 0.26, 0.04), m.glow, 0, 0.3, 0.42);
-    return;
-  }
   if (era === 1) {
-    // 战地医院帐篷：大一号 + 立柱 + 红十字
-    add(g, new THREE.BoxGeometry(1.05, 0.06, 0.9), m.accent, 0, 0.03, 0);
-    add(g, new THREE.BoxGeometry(1.0, 0.5, 0.86), m.main, 0, 0.3, 0, 0, 0, 0);
-    add(g, new THREE.BoxGeometry(0.9, 0.06, 0.92), m.accent, 0, 0.56, 0);
-    add(g, new THREE.BoxGeometry(0.3, 0.09, 0.03), m.glow, 0, 0.32, 0.44);
-    add(g, new THREE.BoxGeometry(0.09, 0.3, 0.03), m.glow, 0, 0.32, 0.44);
-    return;
-  }
-  if (era === 2) {
-    // 医疗直升机：机身 + 旋翼 + 尾梁
-    add(g, new THREE.BoxGeometry(0.42, 0.34, 0.86), m.main, 0, 0.44, 0);
-    add(g, new THREE.BoxGeometry(0.12, 0.1, 0.42), m.accent, 0, 0.48, 0.56);
-    add(g, new THREE.CylinderGeometry(0.04, 0.04, 0.1, 8), m.dark, 0, 0.66, 0);
-    // 旋翼：两片薄板，后面让它转
-    const rotor = add(g, new THREE.BoxGeometry(1.05, 0.02, 0.08), m.accent, 0, 0.72, 0);
-    rotor.userData.spin = true;
-    add(g, new THREE.BoxGeometry(0.06, 0.02, 0.4), m.accent, 0, 0.72, 0);
-    return;
-  }
-  if (era === 3) {
-    // 克隆舱：竖立培养管 + 内部液体
-    add(g, new THREE.CylinderGeometry(0.3, 0.34, 0.2, 12), m.dark, 0, 0.1, 0);
-    add(g, new THREE.CylinderGeometry(0.24, 0.24, 0.86, 14), m.main, 0, 0.6, 0);
-    add(g, new THREE.CylinderGeometry(0.18, 0.18, 0.8, 12), m.glowSoft, 0, 0.6, 0);
-    add(g, new THREE.TorusGeometry(0.25, 0.03, 6, 18), m.glow, 0, 1.02, 0, Math.PI / 2, 0, 0);
-    return;
-  }
-  if (era === 4) {
-    // 量子修复塔：细高塔 + 三层光环
-    add(g, new THREE.CylinderGeometry(0.18, 0.26, 0.9, 10), m.main, 0, 0.45, 0);
-    for (let i = 0; i < 3; i++) {
-      add(g, new THREE.TorusGeometry(0.26 - i * 0.04, 0.025, 5, 18), m.glow,
-        0, 0.34 + i * 0.3, 0, Math.PI / 2, 0, 0);
+    // 二战电台：箱体 + 天线数量随等级增加
+    const w = 0.4 + lv * 0.05;
+    add(g, new THREE.BoxGeometry(w, 0.24 + lv * 0.03, 0.36 + lv * 0.02), m.main,
+      0, 0.12 + lv * 0.015, 0);
+    const antennas = lv >= 4 ? 3 : lv >= 3 ? 2 : 1;
+    for (let i = 0; i < antennas; i++) {
+      add(g, new THREE.CylinderGeometry(0.012, 0.014, 0.5 + lv * 0.1, 5), m.accent,
+        (i - (antennas - 1) / 2) * 0.2, 0.24 + lv * 0.015, 0);
+      add(g, new THREE.SphereGeometry(0.035, 7, 5), m.glow,
+        (i - (antennas - 1) / 2) * 0.2, 0.52 + lv * 0.1, 0);
     }
-    add(g, new THREE.SphereGeometry(0.1, 8, 6), m.glow, 0, 0.98, 0);
+    if (lv >= 5) {
+      spinRing(g, m, 0.42, 0.05, 0.025);
+      add(g, new THREE.BoxGeometry(0.24, 0.12, 0.2), m.dark, 0.32, 0.2, 0.1);
+    }
     return;
   }
-  // 终幕：时间回溯祭坛，倒流沙漏
-  add(g, new THREE.CylinderGeometry(0.44, 0.5, 0.14, 14), m.main, 0, 0.07, 0);
-  add(g, new THREE.ConeGeometry(0.24, 0.4, 12), m.accent, 0, 0.34, 0);
-  add(g, new THREE.ConeGeometry(0.24, 0.4, 12), m.accent, 0, 0.74, 0, Math.PI, 0, 0);
-  add(g, new THREE.TorusGeometry(0.3, 0.02, 5, 20), m.glow, 0, 0.54, 0, Math.PI / 2, 0, 0);
-}
 
-/* 指挥：战鼓旗杆 → 电台天线 → 卫星站 → 神经链接舱 → 舰队指挥台 → 终焉方碑 */
-function buildCommand(g, m, era) {
-  if (era === 0) {
-    // 战鼓 + 旗杆
-    add(g, new THREE.CylinderGeometry(0.3, 0.3, 0.3, 14), m.main, 0, 0.28, 0);
-    add(g, new THREE.CylinderGeometry(0.31, 0.31, 0.03, 14), m.accent, 0, 0.44, 0);
-    add(g, new THREE.CylinderGeometry(0.04, 0.04, 1.1, 8), m.accent, 0.34, 0.55, 0);
-    add(g, new THREE.BoxGeometry(0.4, 0.24, 0.02), m.glow, 0.56, 0.94, 0);
-    return;
-  }
-  if (era === 1) {
-    // 前线电台 + 天线
-    add(g, new THREE.BoxGeometry(0.56, 0.36, 0.42), m.main, 0, 0.24, 0);
-    add(g, new THREE.CylinderGeometry(0.02, 0.02, 0.9, 6), m.accent, 0.18, 0.72, 0);
-    add(g, new THREE.SphereGeometry(0.05, 8, 6), m.glow, -0.14, 0.46, 0.2);
-    return;
-  }
   if (era === 2) {
-    // 卫星地面站：锅 + 支架
-    add(g, new THREE.BoxGeometry(0.42, 0.24, 0.42), m.dark, 0, 0.12, 0);
-    add(g, new THREE.CylinderGeometry(0.05, 0.06, 0.42, 8), m.main, 0, 0.4, 0);
-    const dish = add(g, new THREE.SphereGeometry(0.32, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.42),
-      m.main, 0, 0.68, 0, -0.6, 0, 0);
-    add(g, new THREE.SphereGeometry(0.04, 6, 5), m.glow, 0, 0.8, -0.16);
+    // 现代雷达站：锅随等级变大，3 级起转向
+    add(g, new THREE.BoxGeometry(0.36, 0.18, 0.36), m.dark, 0, 0.09, 0);
+    add(g, new THREE.CylinderGeometry(0.04, 0.05, 0.3 + lv * 0.03, 8), m.main, 0, 0.26, 0);
+    const dishR = 0.24 + lv * 0.035;
+    const holder = new THREE.Group();
+    holder.position.y = 0.42 + lv * 0.03;
+    if (lv >= 3) {
+      holder.userData.spinY = true;
+      holder.userData.spinSpeed = 0.3;
+    }
+    add(holder, new THREE.SphereGeometry(dishR, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.42),
+      m.main, 0, 0, 0, -0.6, 0, 0);
+    add(holder, new THREE.SphereGeometry(0.035, 6, 5), m.glow, 0, dishR * 0.3, -dishR * 0.45);
+    g.add(holder);
+    if (lv >= 4) {
+      add(g, new THREE.SphereGeometry(dishR, 12, 7, 0, Math.PI * 2, 0, Math.PI * 0.4),
+        m.accent, -0.36, 0.42, 0.12, -0.5, 0, 0.5);
+    }
+    if (lv >= 5) spinRing(g, m, 0.46, 0.05, 0.025);
     return;
   }
+
   if (era === 3) {
-    // 神经链接舱：横躺舱体 + 神经线
-    // 注意别写成 `new THREE.CapsuleGeometry ? ...`：那会先真造一个默认胶囊
-    // 再当条件用，每次重建都泄漏一份几何体
+    // 后现代神经链接舱：横躺胶囊，4 级加控制台
+    const r = 0.16 + lv * 0.02;
     add(g, THREE.CapsuleGeometry
-      ? new THREE.CapsuleGeometry(0.22, 0.5, 6, 10)
-      : new THREE.CylinderGeometry(0.22, 0.22, 0.7, 10),
-      m.main, 0, 0.36, 0, 0, 0, Math.PI / 2);
-    add(g, new THREE.SphereGeometry(0.13, 10, 8), m.glow, 0, 0.36, 0);
-    for (let i = 0; i < 3; i++) {
-      add(g, new THREE.CylinderGeometry(0.015, 0.015, 0.3, 5), m.glowSoft,
-        (i - 1) * 0.14, 0.56, 0, 0.3, 0, (i - 1) * 0.4);
+      ? new THREE.CapsuleGeometry(r, 0.4 + lv * 0.05, 6, 10)
+      : new THREE.CylinderGeometry(r, r, 0.6 + lv * 0.05, 10),
+      m.main, 0, 0.24 + lv * 0.02, 0, 0, 0, Math.PI / 2);
+    add(g, new THREE.SphereGeometry(0.09 + lv * 0.008, 10, 8), m.glow, 0, 0.24 + lv * 0.02, 0);
+    const wires = lv >= 5 ? 4 : lv >= 3 ? 3 : 2;
+    for (let i = 0; i < wires; i++) {
+      add(g, new THREE.CylinderGeometry(0.012, 0.012, 0.24 + lv * 0.03, 5), m.glowSoft,
+        (i - (wires - 1) / 2) * 0.12, 0.4, 0, 0.3, 0, (i - 1) * 0.35);
     }
+    if (lv >= 4) {
+      add(g, new THREE.BoxGeometry(0.3, 0.14, 0.24), m.main, 0.36, 0.12, 0.1);
+      add(g, new THREE.BoxGeometry(0.24, 0.02, 0.18), m.glow, 0.36, 0.2, 0.1);
+    }
+    if (lv >= 5) spinRing(g, m, 0.4, 0.06, 0.025);
     return;
   }
+
   if (era === 4) {
-    // 舰队指挥台：斜台 + 全息星图
-    add(g, new THREE.CylinderGeometry(0.34, 0.4, 0.14, 14), m.main, 0, 0.07, 0);
-    add(g, new THREE.BoxGeometry(0.62, 0.2, 0.4), m.main, 0, 0.24, 0);
-    add(g, new THREE.BoxGeometry(0.5, 0.02, 0.3), m.glow, 0, 0.36, 0);
-    // 全息小星图：几个亮点
-    for (let i = 0; i < 5; i++) {
-      const a = (i / 5) * Math.PI * 2;
-      add(g, new THREE.SphereGeometry(0.025, 6, 5), m.glow,
-        Math.cos(a) * 0.16, 0.44 + Math.sin(i) * 0.05, Math.sin(a) * 0.1);
+    // 星际全息指挥台：星点数量随等级增加
+    add(g, new THREE.CylinderGeometry(0.32 + lv * 0.02, 0.38 + lv * 0.02, 0.1, 14), m.main, 0, 0.05, 0);
+    add(g, new THREE.BoxGeometry(0.5 + lv * 0.04, 0.14, 0.34), m.main, 0, 0.17, 0);
+    add(g, new THREE.BoxGeometry(0.44 + lv * 0.04, 0.02, 0.28), m.glow, 0, 0.25, 0);
+    const stars = 3 + lv * 2;
+    for (let i = 0; i < stars; i++) {
+      const a = (i / stars) * Math.PI * 2;
+      add(g, new THREE.SphereGeometry(0.02, 6, 4), m.glow,
+        Math.cos(a) * (0.16 + lv * 0.01), 0.34 + Math.sin(i) * 0.06, Math.sin(a) * 0.1);
     }
+    if (lv >= 4) {
+      for (const sx of [-1, 1]) {
+        add(g, new THREE.BoxGeometry(0.06, 0.32, 0.2), m.accent, sx * 0.36, 0.18, 0.1);
+      }
+    }
+    if (lv >= 5) spinRing(g, m, 0.44, 0.06, 0.025);
     return;
   }
-  // 终幕：方碑 + 符文
-  add(g, new THREE.BoxGeometry(0.44, 1.15, 0.18), m.main, 0, 0.6, 0);
-  for (let i = 0; i < 3; i++) {
-    add(g, new THREE.BoxGeometry(0.3, 0.03, 0.02), m.glow, 0, 0.34 + i * 0.28, 0.1);
+
+  // 终幕方碑：高度和符文随等级增加，5 级大光环
+  const h = 0.7 + lv * 0.12;
+  add(g, new THREE.CylinderGeometry(0.3, 0.36, 0.08, 12), m.main, 0, 0.04, 0);
+  add(g, new THREE.BoxGeometry(0.36 + lv * 0.02, h, 0.16), m.main, 0, 0.08 + h * 0.5, 0);
+  for (let i = 0; i < lv; i++) {
+    add(g, new THREE.BoxGeometry(0.24, 0.025, 0.02), m.glow, 0, 0.2 + i * (h / (lv + 1)), 0.09);
   }
-  add(g, new THREE.TorusGeometry(0.34, 0.02, 5, 20), m.glowSoft, 0, 0.6, 0, 0, 0, 0);
+  if (lv >= 3) {
+    spinRing(g, m, 0.3 + lv * 0.015, 0.08 + h * 0.5, 0.02, 0);
+  }
+  if (lv >= 5) {
+    add(g, new THREE.SphereGeometry(0.1, 9, 7), m.glow, 0, 0.1 + h, 0);
+  }
 }
 
-/* 召唤：小裂隙 → 加固基座 → 培养槽 → 多舱 → 虫巢 → 虚空裂隙 */
-function buildSummon(g, m, era) {
+/* ----------------------------------------------------------
+ * 召唤：小裂隙 → 加固基座 → 培养槽 → 多舱 → 虫巢 → 虚空裂隙
+ *
+ * 等级轮廓：
+ *   1 单舱/窄裂隙 · 2 双舱 · 3 大槽/三卵 · 4 多舱环 · 5 母巢/巨裂隙
+ * ---------------------------------------------------------- */
+function buildSummon(g, m, era, lv = 1) {
   if (era === 0) {
-    // 单培养舱（早期时代其实是"小裂隙"，用一个暗色拱表示）
-    add(g, new THREE.TorusGeometry(0.3, 0.07, 6, 16), m.main, 0, 0.34, 0, 0, 0, 0);
-    add(g, new THREE.SphereGeometry(0.22, 10, 8), m.glowSoft, 0, 0.34, 0);
+    // 中世纪暗色拱环：1 道 → 2 道 → 大裂隙
+    const rifts = lv >= 4 ? 3 : lv >= 2 ? 2 : 1;
+    const xs = spreadX(rifts, 0.26);
+    for (const x of xs) {
+      add(g, new THREE.TorusGeometry(0.2 + lv * 0.02, 0.06, 6, 16), m.main, x, 0.3, 0);
+      add(g, new THREE.SphereGeometry(0.14 + lv * 0.015, 10, 8), m.glowSoft, x, 0.3, 0);
+    }
+    if (lv >= 5) spinRing(g, m, 0.44, 0.04, 0.025);
     return;
   }
+
   if (era === 1) {
-    // 加固基座 + 双舱雏形
-    add(g, new THREE.CylinderGeometry(0.4, 0.46, 0.22, 14), m.main, 0, 0.11, 0);
-    for (const sx of [-1, 1]) {
-      add(g, new THREE.CylinderGeometry(0.14, 0.15, 0.5, 10), m.accent, sx * 0.2, 0.42, 0);
+    // 二战加固基座 + 双舱：舱数随等级增加
+    add(g, new THREE.CylinderGeometry(0.34, 0.4, 0.16 + lv * 0.02, 14), m.main, 0, 0.08, 0);
+    const pods = lv >= 5 ? 3 : lv >= 3 ? 2 : 1;
+    const xs = spreadX(pods, 0.28);
+    for (const x of xs) {
+      const h = 0.34 + lv * 0.05;
+      add(g, new THREE.CylinderGeometry(0.12, 0.14, h, 10), m.accent, x, 0.16 + h * 0.5, 0);
+      add(g, new THREE.SphereGeometry(0.1, 8, 6), m.glowSoft, x, 0.16 + h, 0);
     }
-    add(g, new THREE.SphereGeometry(0.12, 8, 6), m.glowSoft, 0, 0.55, 0);
+    if (lv >= 4) spinRing(g, m, 0.38, 0.04, 0.02);
     return;
   }
+
   if (era === 2) {
-    // 大培养槽 + 管线
-    add(g, new THREE.CylinderGeometry(0.32, 0.36, 0.8, 14), m.main, 0, 0.42, 0);
-    add(g, new THREE.CylinderGeometry(0.26, 0.26, 0.72, 12), m.glowSoft, 0, 0.42, 0);
-    for (let i = 0; i < 3; i++) {
-      const a = (i / 3) * Math.PI * 2;
-      add(g, new THREE.CylinderGeometry(0.035, 0.035, 0.5, 6), m.accent,
-        Math.cos(a) * 0.34, 0.36, Math.sin(a) * 0.34, 0, 0, 0.12);
+    // 现代大培养槽 + 管线，4 级双槽，5 级三槽
+    const tanks = lv >= 5 ? 3 : lv >= 4 ? 2 : 1;
+    const xs = spreadX(tanks, 0.3);
+    const h = 0.5 + lv * 0.06;
+    for (const x of xs) {
+      add(g, new THREE.CylinderGeometry(0.2, 0.24, h, 12), m.main, x, 0.1 + h * 0.5, 0);
+      add(g, new THREE.CylinderGeometry(0.15, 0.15, h - 0.06, 10), m.glowSoft, x, 0.1 + h * 0.5, 0);
+      if (lv >= 3) {
+        for (let i = 0; i < 3; i++) {
+          const a = (i / 3) * Math.PI * 2;
+          add(g, new THREE.CylinderGeometry(0.025, 0.025, 0.4 + lv * 0.04, 6), m.accent,
+            x + Math.cos(a) * 0.26, 0.28, Math.sin(a) * 0.26, 0, 0, 0.12);
+        }
+      }
     }
+    if (lv >= 5) spinRing(g, m, 0.48, 0.05, 0.025);
     return;
   }
+
   if (era === 3) {
-    // 多舱 + 孵化臂
-    add(g, new THREE.CylinderGeometry(0.38, 0.44, 0.18, 14), m.main, 0, 0.09, 0);
-    for (let i = 0; i < 3; i++) {
-      const a = (i / 3) * Math.PI * 2;
+    // 后现代胶囊舱：1 → 2 → 3 → 4 → 5 个环形分布
+    add(g, new THREE.CylinderGeometry(0.34, 0.4, 0.14, 14), m.main, 0, 0.07, 0);
+    const pods = lv;
+    const radius = 0.16 + lv * 0.02;
+    for (let i = 0; i < pods; i++) {
+      const a = (i / pods) * Math.PI * 2 + (lv >= 4 ? 0.4 : 0);
+      const x = Math.cos(a) * radius;
+      const z = Math.sin(a) * radius;
+      const h = 0.28 + lv * 0.04;
       add(g, THREE.CapsuleGeometry
-        ? new THREE.CapsuleGeometry(0.12, 0.28, 5, 9)
-        : new THREE.CylinderGeometry(0.12, 0.12, 0.5, 9),
-        m.main, Math.cos(a) * 0.2, 0.42, Math.sin(a) * 0.2);
-      add(g, new THREE.SphereGeometry(0.09, 8, 6), m.glowSoft,
-        Math.cos(a) * 0.2, 0.42, Math.sin(a) * 0.2);
+        ? new THREE.CapsuleGeometry(0.075, h, 5, 9)
+        : new THREE.CylinderGeometry(0.075, 0.075, h + 0.15, 9),
+        m.main, x, 0.14 + h * 0.5, z);
+      add(g, new THREE.SphereGeometry(0.06 + lv * 0.005, 8, 6), m.glowSoft, x, 0.14 + h * 0.5, z);
+    }
+    if (lv >= 4) {
+      // 孵化臂
+      for (const sx of [-1, 1]) {
+        add(g, new THREE.BoxGeometry(0.04, 0.24, 0.04), m.accent, sx * 0.3, 0.34, 0, 0, 0, sx * 0.4);
+      }
+      spinRing(g, m, 0.4, 0.04, 0.02);
     }
     return;
   }
+
   if (era === 4) {
-    // 虫巢：一堆膨大的卵体 + 生物膜
-    add(g, new THREE.SphereGeometry(0.4, 12, 10), m.main, 0, 0.42, 0);
-    for (let i = 0; i < 5; i++) {
-      const a = (i / 5) * Math.PI * 2 + 0.4;
-      add(g, new THREE.SphereGeometry(0.15, 9, 7), m.accent,
-        Math.cos(a) * 0.33, 0.34 + (i % 2) * 0.2, Math.sin(a) * 0.33);
+    // 星际虫巢：卵数 = 等级
+    const coreR = 0.3 + lv * 0.03;
+    add(g, new THREE.SphereGeometry(coreR, 12, 10), m.main, 0, 0.3 + lv * 0.03, 0);
+    const eggs = lv;
+    for (let i = 0; i < eggs; i++) {
+      const a = (i / eggs) * Math.PI * 2 + 0.4;
+      const rr = 0.26 + lv * 0.02;
+      add(g, new THREE.SphereGeometry(0.13, 9, 7), m.accent,
+        Math.cos(a) * rr, 0.24 + (i % 2) * 0.16, Math.sin(a) * rr);
     }
-    add(g, new THREE.SphereGeometry(0.2, 10, 8), m.glowSoft, 0, 0.68, 0);
+    add(g, new THREE.SphereGeometry(0.13 + lv * 0.008, 10, 8), m.glowSoft, 0, 0.5 + lv * 0.04, 0);
+    if (lv >= 4) spinRing(g, m, 0.42, 0.05, 0.025);
     return;
   }
-  // 终幕：虚空裂隙，黑色竖缝 + 倒流粒子
-  add(g, new THREE.BoxGeometry(0.1, 1.05, 0.34), m.main, 0, 0.6, 0);
-  add(g, new THREE.BoxGeometry(0.05, 1.0, 0.12), m.glow, 0, 0.6, 0);
-  for (let i = 0; i < 4; i++) {
-    add(g, new THREE.SphereGeometry(0.03, 6, 5), m.glow,
-      (i % 2 ? 0.12 : -0.12), 0.3 + i * 0.22, 0);
+
+  // 终幕虚空裂隙：裂隙随等级变宽变高，粒子数 = 等级 + 2
+  const h = 0.6 + lv * 0.12;
+  add(g, new THREE.CylinderGeometry(0.26, 0.32, 0.08, 12), m.main, 0, 0.04, 0);
+  add(g, new THREE.BoxGeometry(0.08 + lv * 0.02, h, 0.28 + lv * 0.02), m.main,
+    0, 0.08 + h * 0.5, 0);
+  add(g, new THREE.BoxGeometry(0.04, h - 0.06, 0.1), m.glow, 0, 0.08 + h * 0.5, 0);
+  const parts = lv + 2;
+  for (let i = 0; i < parts; i++) {
+    add(g, new THREE.SphereGeometry(0.028, 6, 5), m.glow,
+      (i % 2 ? 0.1 : -0.1), 0.16 + i * (h / (parts + 1)), 0);
   }
+  if (lv >= 4) spinRing(g, m, 0.4, 0.05, 0.025);
 }
 
 const BUILDERS = {
@@ -576,19 +934,14 @@ export function buildSlotStructure(id, era, level) {
 
   if (builder) builder(g, m, clampEra(era), lv);
 
-  // 等级附件：2 级起逐级叠加，5 级一起全有
-  if (lv >= 2) addBraces(g, m, 0.95, 0.7);
-  if (lv >= 3) addAmmoRack(g, m, 0.95, 0.28);
-  if (lv >= 4) addArmorPlate(g, m, 0.95, 0.7);
-  if (lv >= 5) addChargeRing(g, m, 0.62, 0.12);
+  // 体积只做轻微补偿：升级主要靠上面的结构变化，不再用 1.32 倍整体缩放
+  // 去糊弄剪影（那会让 5 级看起来只是同一个模型放大）。
+  g.scale.setScalar(1 + (lv - 1) * 0.05);
 
-  // 体积：1.0 → 1.32，5 级明显大一圈（文档要求）
-  g.scale.setScalar(1 + (lv - 1) * 0.08);
-
-  // 收集可旋转部件，交给外部每帧推进
+  // 收集可旋转部件，交给外部每帧推进（spinY 绕 y，其余沿用原来的 z）
   const spinParts = [];
   g.traverse((o) => {
-    if (o.userData && o.userData.spin) spinParts.push(o);
+    if (o.userData && (o.userData.spin || o.userData.spinY)) spinParts.push(o);
   });
   g.userData.spinParts = spinParts;
   g.userData.level = lv;
