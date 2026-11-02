@@ -223,6 +223,9 @@ export function createDayNight({ scene, hemi, key, ambient } = {}) {
     setNight,
     setBloodMoon,
     update,
+    /** 按当前进度重画一次（不改目标，不打断过渡）。
+     * 天气雾结束时要先让昼夜层把最新的雾写回来，再从这里开始渐出。 */
+    refresh: () => repaint(),
     /** 0 = 白天，1 = 全黑 */
     getProgress: () => progress,
     /** 0 = 没有血月，1 = 全红 */

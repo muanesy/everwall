@@ -314,12 +314,18 @@ function updateUpgradePanel(state) {
   if (els.upgradeVersion !== state.upgradePanel.version) {
     els.upgradeVersion = state.upgradePanel.version;
     const pool = actions && actions.getUpgradePool ? actions.getUpgradePool() : [];
-    els.upgradeGrid.innerHTML = pool.map((c) => `
-      <button class="upgrade-choice" type="button" data-upgrade-id="${c.id}">
+    const counts = state.upgradePanel.pickCounts || {};
+    els.upgradeGrid.innerHTML = pool.map((c) => {
+      // 本次面板里点过几次：1 次蓝框，2 次及以上橙黄框，方便看清重复升级
+      const n = counts[c.id] || 0;
+      const pickedClass = n >= 2 ? ' is-picked-2' : n === 1 ? ' is-picked-1' : '';
+      return `
+      <button class="upgrade-choice${pickedClass}" type="button" data-upgrade-id="${c.id}">
         <strong>${c.name} ${UPGRADE_EMOJI[c.id] || '⭐'}</strong>
         <span>${c.desc}</span>
       </button>
-    `).join('');
+    `;
+    }).join('');
   }
 }
 

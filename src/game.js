@@ -604,6 +604,7 @@ const state = {
     picks: 0,
     timeLeft: 0,
     version: 0,
+    pickCounts: {},   // 本次面板里每张卡点了几次：1 次蓝框，2 次及以上橙黄框
   },
   upgradeCarry: 0,
   // 地图环境事件：{ id, wave, phase, timer, spots, weatherKind }
@@ -2892,6 +2893,7 @@ function openUpgradePanel() {
   state.upgradePanel.active = true;
   state.upgradePanel.picks = picks;
   state.upgradePanel.timeLeft = 30;
+  state.upgradePanel.pickCounts = {};
   state.upgradePanel.version += 1;
   emit('upgradePanelOpen', { picks });
 }
@@ -2922,6 +2924,8 @@ function chooseUpgrade(id) {
   if (!card) return false;
 
   card.apply();
+  const counts = state.upgradePanel.pickCounts;
+  counts[id] = (counts[id] || 0) + 1;
   state.upgradePanel.picks -= 1;
   state.upgradePanel.version += 1;
 

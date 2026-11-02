@@ -243,7 +243,14 @@ let playerShadow = null;
 let playerRing = null;     // 玩家脚下的指挥光环
 let buffRing = null;       // 基因爆发的绿色攻速光环
 let commandMarkGroup = null; // 指挥槽的集火标记
-let envFogBackup = null;     // 恶劣天气临时改雾，结束时恢复
+// 恶劣天气临时把雾压近：p 从 0 渐变到 1，结束后再渐回 0。
+// 以前是直接改 scene.fog，浓雾会"啪"一下糊脸，退场也硬切。
+const envFogFade = {
+  p: 0,          // 当前混合进度 0~1
+  target: 0,     // 目标进度
+  base: null,    // 天气开始时的雾（{ near, far, color }）
+  color: null,   // 天气雾色
+};
 let lastPlayerX = 0;
 let soldierMesh = null;
 let playerVisual = null; // 玩家的真模型（加载完成后替代蓝方块）
@@ -1361,7 +1368,7 @@ export function initVisuals(container, events) {
     shake = Math.max(shake, 0.35);
   });
 
-  // 恶劣天气：临时把雾拉近，结束后恢复原状
+  // 恶劣天气：雾色和浓度都走渐变，结束再渐回原状
   events.addEventListener('envWeatherStart', (e) => {
     if (!scene || !scene.fog) return;
     const kind = e.detail?.kind || 'rain';
@@ -1369,24 +1376,34 @@ export function initVisuals(container, events) {
       rain: 0x1a2430, fog: 0x8a939c, storm: 0x141c26,
       dust: 0x6b5438, wind: 0x3a424c, snow: 0xaebccc,
     };
-    if (!envFogBackup) {
-      envFogBackup = {
+    // 让昼夜层先把当前基线写回雾，再记录起点；否则天气跨过昼夜过渡时
+    // 结束会渐回到过期的雾值
+    if (dayNight) dayNight.refresh();
+    if (!envFogFade.base) {
+      envFogFade.base = {
+        near: scene.fog.near,
+        far: scene.fog.far,
+        color: scene.fog.color.clone(),
+      };
+      envFogFade.p = 0;
+    }
+    envFogFade.color = new THREE.Color(colors[kind] || 0x1a2430);
+    envFogFade.target = 1;
+  });
+
+  events.addEventListener('envWeatherEnd', () => {
+    if (!scene || !scene.fog || !envFogFade.base) return;
+    // 天气持续期间可能跨过昼夜过渡，旧基线会过期。
+    // 先让昼夜层按当前进度重画，再把它写出的雾当作渐出终点。
+    if (dayNight) {
+      dayNight.refresh();
+      envFogFade.base = {
         near: scene.fog.near,
         far: scene.fog.far,
         color: scene.fog.color.clone(),
       };
     }
-    scene.fog.color.setHex(colors[kind] || 0x1a2430);
-    scene.fog.near = 8;
-    scene.fog.far = 46;
-  });
-
-  events.addEventListener('envWeatherEnd', () => {
-    if (!scene || !scene.fog || !envFogBackup) return;
-    scene.fog.near = envFogBackup.near;
-    scene.fog.far = envFogBackup.far;
-    scene.fog.color.copy(envFogBackup.color);
-    envFogBackup = null;
+    envFogFade.target = 0;
   });
 
   events.addEventListener('friendlyDie', (e) => {
@@ -1868,6 +1885,13 @@ export function switchMapLook(mapId, opts = {}) {
 
 function doSwitchMapLook(mapId) {
   const m = MAPS[mapId];
+
+  // 换图时直接结束天气雾的过渡，否则渐隐的最后几帧会用旧地图的雾
+  // 盖掉刚设好的新地图雾，最后停在上一张图的数值上
+  envFogFade.p = 0;
+  envFogFade.target = 0;
+  envFogFade.base = null;
+  envFogFade.color = null;
 
   // 背景色与雾
   scene.background = new THREE.Color(m.bg);
@@ -3519,6 +3543,32 @@ function updateBloodMoon(dt) {
   }
 }
 
+// 天气雾的每帧渐变。放在 dayNight.update 之后调用，
+// 这样雾的基线先用昼夜层算好，再在上面按进度叠天气那一层。
+function updateEnvFogFade(dt) {
+  const f = envFogFade;
+  if (!f.base || !scene || !scene.fog) return;
+
+  // 淡入约 0.8 秒、淡出更干脆，避免视野变化拖泥带水
+  const speed = f.target > f.p ? 3.0 : 4.0;
+  f.p += (f.target - f.p) * Math.min(1, dt * speed);
+
+  if (f.target === 0 && f.p < 0.004) {
+    f.p = 0;
+    f.base = null;
+    f.color = null;
+    // 渐出期间昼夜可能又推进了，收尾时按当前进度重画一次
+    if (dayNight) dayNight.refresh();
+    return;
+  }
+  if (f.target === 1 && f.p > 0.996) f.p = 1;
+
+  const e = f.p * f.p * (3 - 2 * f.p); // 平滑起停
+  scene.fog.near = f.base.near + (8 - f.base.near) * e;
+  scene.fog.far = f.base.far + (46 - f.base.far) * e;
+  if (f.color) scene.fog.color.copy(f.base.color).lerp(f.color, e);
+}
+
 // 本波已经过去多少秒（界面层用）
 let lastWaveStartTime = 0;
 let currentState = null;
@@ -3720,6 +3770,7 @@ export function syncScene(state, dt) {
   updatePropAnimations(dt);
   updateAdaptiveQuality(dt);
   if (dayNight) dayNight.update(dt);
+  updateEnvFogFade(dt);
   soldierRecoil = soldierRecoil > 0 ? Math.max(0, soldierRecoil - dt * 0.55) : 0;
   if (muzzleLight) muzzleLight.intensity = Math.max(0, muzzleLight.intensity - dt * 240);
   updateCamera(state, dt);
