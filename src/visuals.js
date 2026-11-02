@@ -367,7 +367,6 @@ const MAP_TYPE_SRC = {
   timeruins:  { 0: 'pirate' },
   blackhole:  { 0: 'cyber' },
 };
-const MAP_TYPE_OVERRIDE = MAP_TYPE_SRC[MAP_ID] || null;
 const animMixers = new Set(); // 所有活着的骨骼动画，每帧 update
 
 const MODEL_TARGET = {
@@ -561,16 +560,22 @@ function loadModels() {
 
   // 专属僵尸模型（骑士/蓝军装/便服）后台加载完，再把 5-7 号类型补上。
   // 这期间如果甲那边已经刷出了这些 type，会走 modelLib.zombies[type] 的空值兜底（回退普通僵尸）。
-  Promise.all(extraLoads)
+  // 每个额外模型单独兜底：某一个下载/解析失败不能把 Boss 和其他模型一起拖死。
+  // 以前直接 Promise.all(extraLoads)，任意一个 reject 都会跳过整段注册逻辑。
+  Promise.all(extraLoads.map((p) => p.catch(() => null)))
     .then((list) => {
-      if (!modelLib.loaded || !list[0]) return;
+      if (!modelLib.loaded) return;
       const raw = {};
       list.forEach((gltf, i) => {
         if (gltf) raw[extraKeys[i]] = grab(gltf, /walk/i);
       });
       ZOMBIE_LOOKS.forEach((look, i) => {
         if (!raw[look.src]) return;
-        modelLib.zombies[i] = prepareZombieType(raw[look.src], look);
+        try {
+          modelLib.zombies[i] = prepareZombieType(raw[look.src], look);
+        } catch (err) {
+          console.warn('[visuals] 专属僵尸模型不可用：', look.src, err);
+        }
       });
 
       // 按模型来源建索引：地图覆盖要用它（"这一格换成别的模型"）
@@ -614,9 +619,14 @@ function loadModels() {
       zombieMats = [];
       collectZombieMats();
       if (currentEra) applyEra(currentEra);
-      console.log('[visuals] 三种专属僵尸模型已就绪（僵尸骑士 / 蓝军装 / 便服）');
+      console.log(
+        '[visuals] 专属模型已就绪：',
+        Object.keys(raw).join(' / ') || '(none)'
+      );
     })
-    .catch(() => {});
+    .catch((err) => {
+      console.warn('[visuals] 专属模型初始化失败：', err);
+    });
 
   modelLoadState.per = per;
 }
@@ -1141,9 +1151,13 @@ export function initVisuals(container, events) {
       d.kind === 'airStrike' ? 1.15 :
       d.kind === 'barrage' ? 0.7 :
       d.kind === 'tank' ? 0.9 : 1;
+    // 坦克爆炸只缩小特效，伤害范围仍是 d.radius；3.0 的火球在屏幕上太抢眼
+    const radius = d.kind === 'tank'
+      ? Math.max(1.2, (d.radius || 3) * 0.8)
+      : (d.radius || 2.2);
 
     spawnImpact(d.x, d.z, {
-      radius: d.radius || 2.2,
+      radius,
       color: d.color || 0xffb060,
       power,
       dust: true,
@@ -3396,7 +3410,9 @@ function syncZombies(state, dt) {
       if (modelLib.loaded && modelLib.zombies.length) {
         // 原型下标 = z.type（0-4），约定见 docs/僵尸类型.md；越界兜底回普通
         // 地图覆盖：这张图的专属僵尸长什么样（只换模型，数值还是 type 说了算）
-        const overrideSrc = MAP_TYPE_OVERRIDE ? MAP_TYPE_OVERRIDE[z.type] : null;
+        // 地图换场后新刷的僵尸要用当前地图的皮肤，不能一直用开局那张图的
+        const mapOverride = MAP_TYPE_SRC[state.mapId] || null;
+        const overrideSrc = mapOverride ? mapOverride[z.type] : null;
         const proto =
           (overrideSrc && modelLib.bySrc && modelLib.bySrc[overrideSrc]) ||
           modelLib.zombies[z.type] ||

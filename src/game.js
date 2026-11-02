@@ -19,6 +19,7 @@ import {
   switchEra,
   switchMapLook,
   pickEraMap,
+  eraMaps,
   spawnCampfireFx,
   setWaterLevel,
   preloadGroundTexture,
@@ -394,7 +395,8 @@ const CONFIG = {
   },
   era: {
     count: 6,          // 六个时代
-    everyWaves: 4,     // 每 4 波进一个时代
+    everyWaves: 4,     // 每张地图打几波
+    mapsPerEra: 3,     // 每个时代打几张地图（打完 3 张才进下一个时代）
     names: ['中世纪', '二战', '现代', '后现代', '星际', '终幕'],
     // 槽位等级模型：最终值 = 基础值 × 时代倍率 × 等级倍率 × 欠级折扣
     attackPower: [1.00, 1.30, 1.70, 2.20, 2.80, 3.50],
@@ -403,7 +405,7 @@ const CONFIG = {
     hpPower: [1.00, 1.25, 1.55, 1.90, 2.30, 2.80],
     recommendedLevel: [1, 2, 3, 4, 4, 5],
     // 从该时代开局时的初始兵力：越晚的时代，起点越高，用来对冲该时代的僵尸强度
-    startSoldiers: [5, 15, 25, 40, 60, 85],
+    startSoldiers: [5, 20, 40, 65, 90, 120],
     underLevelStep: 0.15, // 每差 1 级 -15%
     underLevelMin: 0.55,  // 最多 -45%
   },
@@ -423,7 +425,7 @@ const CONFIG = {
   },
   // 洪水（点子池「洪水上涨」）：水位随波次上升，漫过脚踝后僵尸变慢
   flood: {
-    startWave: 5,      // 第几波开始涨
+    startWave: 13,     // 第几波开始涨（新的时代排程下对应二战开场）
     perWave: 0.06,     // 每波涨多少（0~1 的水位值）
     maxLevel: 0.9,     // 涨到这儿封顶，不会真把画面淹掉
     slowFrom: 0.55,    // 水位超过这个值才开始拖慢僵尸
@@ -431,7 +433,7 @@ const CONFIG = {
   },
   // 地面塌陷（点子池「地面塌陷」）：地面裂开坑洞，玩家和僵尸都过不去
   pit: {
-    startWave: 11,
+    startWave: 27,     // 新排程下对应现代时代
     interval: 11,      // 每隔多少秒尝试塌一个
     max: 3,            // 场上最多几个
     radius: 1.35,
@@ -464,7 +466,7 @@ const CONFIG = {
   },
   // 锁链路障（点子池「锁链路障」）：挡半条通道，僵尸必须绕过去
   chain: {
-    startWave: 6,      // 第几波开始出现
+    startWave: 14,     // 第几波开始出现（新排程下对应二战第二波）
     z: -6,             // 摆在半场偏下，给玩家留反应时间
     widthRatio: 0.52,  // 占通道宽度的比例，0.5 左右 = 挡半边
   },
@@ -515,6 +517,8 @@ const state = {
   era: 0,
   mapId: START_MAP,
   usedMaps: [START_MAP],
+  eraMaps: [START_MAP], // 当前时代随机选出的 3 张地图
+  mapIndex: 0,          // 当前在 eraMaps 里的第几张
   startEra: 0,          // 开局选择的时代，重新开始时沿用
   startMap: START_MAP,  // 开局选择的地图
 
@@ -821,6 +825,51 @@ window.addEventListener('pointercancel', () => {
 });
 
 /* ----------------------------------------------------------
+ * 时代 / 地图排程
+ * 每个时代随机抽 3 张地图，每张打 CONFIG.era.everyWaves 波，
+ * 三张打完才进下一个时代。
+ * ---------------------------------------------------------- */
+function wavesPerEra() {
+  return CONFIG.era.everyWaves * CONFIG.era.mapsPerEra;
+}
+
+function eraForWaveNumber(wave) {
+  return Math.min(
+    CONFIG.era.count - 1,
+    Math.floor((wave - 1) / wavesPerEra())
+  );
+}
+
+function mapIndexForWave(wave) {
+  const within = (wave - 1) % wavesPerEra();
+  return Math.floor(within / CONFIG.era.everyWaves);
+}
+
+// 从该时代的图池里随机抽 3 张；preferred 是开始页选中的地图，优先放在第一张
+function pickEraMapSet(era, preferred = null) {
+  const need = CONFIG.era.mapsPerEra;
+  const pool = eraMaps(era).filter((m) => m !== preferred);
+
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+
+  const picked = [];
+  if (preferred) picked.push(preferred);
+  for (const m of pool) {
+    if (picked.length >= need) break;
+    picked.push(m);
+  }
+
+  // 时代图池不足 3 张时循环补足，保证排程长度固定
+  while (picked.length < need) {
+    picked.push(picked[picked.length % Math.max(1, picked.length)] || START_MAP);
+  }
+  return picked.slice(0, need);
+}
+
+/* ----------------------------------------------------------
  * 开局 / 复活
  * ---------------------------------------------------------- */
 function resetState(opts = {}) {
@@ -834,13 +883,21 @@ function resetState(opts = {}) {
     0,
     Math.min(CONFIG.era.count - 1, Math.floor(opts.startingEra || 0))
   );
+  // 晚期时代开局只认该时代图池里的地图；?era=4 没带 ?map= 时不能落到 city
+  const eraPool = eraMaps(startEra);
+  const pickedMap =
+    opts.map && (startEra === 0 || eraPool.includes(opts.map))
+      ? opts.map
+      : null;
   const startMap =
-    opts.map ||
+    pickedMap ||
     (startEra > 0 ? pickEraMap(startEra, []) : START_MAP) ||
     START_MAP;
+  // 每个时代 3 张地图，开始页选中的那张排第一
+  const startMaps = pickEraMapSet(startEra, startMap);
   const startWave = state.testMode
     ? 1
-    : startEra * CONFIG.era.everyWaves + 1;
+    : startEra * wavesPerEra() + 1;
 
   state.time = state.testMode ? 0 : (startWave - 1) * CONFIG.wave.duration;
   state.wave = startWave;
@@ -851,10 +908,12 @@ function resetState(opts = {}) {
   state.peakSoldiers = state.soldiers;
   state.player.x = 0;
   state.era = startEra;
-  state.mapId = startMap;
-  state.usedMaps = [startMap];
+  state.eraMaps = startMaps;
+  state.mapIndex = 0;
+  state.mapId = startMaps[0] || startMap;
+  state.usedMaps = [state.mapId];
   state.startEra = startEra;
-  state.startMap = startMap;
+  state.startMap = state.mapId;
   state.weapon.lines = 1;
   state.weapon.pierce = false;
   state.weapon.pierceLevel = 0;
@@ -2567,62 +2626,70 @@ function updateCard(realDt) {
 /* ----------------------------------------------------------
  * 每帧更新
  * ---------------------------------------------------------- */
-// 终幕没有下一个时代：每 4 波只换一张终幕地图并补一只 Boss，时代保持不变。
-function rotateFinaleMap(wave) {
-  if (state.testMode) return;
-
-  const lastEra = CONFIG.era.count - 1;
-  if (state.era !== lastEra) return;
-
-  const block = CONFIG.era.everyWaves;
-  const firstRotate = lastEra * block + block + 1; // 第 25 波开始轮换
-  if (wave < firstRotate) return;
-  if ((wave - firstRotate) % block !== 0) return;
-
-  const map = pickEraMap(lastEra, state.usedMaps);
-  if (map && map !== state.mapId) {
-    state.mapId = map;
-    state.usedMaps.push(map);
-    // 只换地图：不重播时代配色、不折算技能
-    switchMapLook(map, { fade: true });
-    emit('skillNotice', { text: '战场转移 · 终幕', kind: 'era' });
-  }
-
-  // 每 4 波一个 Boss；场上已经有一只时 spawnEraBoss 会自己跳过
-  spawnEraBoss(lastEra);
-}
-
-// 每 4 波进一个时代：换配色和地图，场上实体全部保留
+// 每张地图打 4 波，每个时代打 3 张地图；三张打完才进下一个时代。
+// 每换一张地图补一只 Boss，和之前的「每 4 波一个 Boss」保持一致。
 function syncEraWithWave(wave) {
   // 测试模式的时代由左侧面板控制，波次不再自动换
   if (state.testMode) return;
 
-  const eraIndex = Math.min(
-    CONFIG.era.count - 1,
-    Math.floor((wave - 1) / CONFIG.era.everyWaves)
-  );
-  if (eraIndex === state.era) {
-    rotateFinaleMap(wave);
+  const eraIndex = eraForWaveNumber(wave);
+  const nextMapIndex = mapIndexForWave(wave);
+
+  if (eraIndex !== state.era) {
+    // 新时代：抽 3 张新地图，从第一张开始
+    state.era = eraIndex;
+    state.eraMaps = pickEraMapSet(eraIndex);
+    state.mapIndex = 0;
+
+    const map = state.eraMaps[0] || state.mapId || START_MAP;
+    state.mapId = map;
+    state.usedMaps.push(map);
+
+    // 旧时代没打完的技能次数折算成兵
+    convertExpiredSkills();
+    // 旧时代技能已经折算掉，记忆植入也不能再复刻它们
+    state.lastSkillId = null;
+    ensureSummonSlot();
+
+    // 只换时代配色和地图，场上僵尸、子弹、屏障全部保留
+    switchEra(eraIndex, map);
+    refreshSlotsForEra();
+
+    // 新地图开场：一只 Boss 压下来当分段节点
+    spawnEraBoss(eraIndex);
     return;
   }
 
-  const map = pickEraMap(eraIndex, state.usedMaps) || state.mapId || START_MAP;
+  if (nextMapIndex === state.mapIndex) return;
 
-  state.era = eraIndex;
-  state.mapId = map;
-  state.usedMaps.push(map);
+  // 同一时代内换到下一张地图。终幕没有下一个时代，
+  // 三张打完就重新抽一组，地图轮换继续。
+  if (eraIndex === CONFIG.era.count - 1 && nextMapIndex === 0) {
+    const nextSet = pickEraMapSet(eraIndex);
+    // 重新抽的一组如果第一张刚好还是当前地图，换一下顺序，保证每轮都有视觉变化
+    if (nextSet[0] === state.mapId && nextSet.length > 1) {
+      [nextSet[0], nextSet[1]] = [nextSet[1], nextSet[0]];
+    }
+    state.eraMaps = nextSet;
+  }
 
-  // 旧时代没打完的技能次数折算成兵
-  convertExpiredSkills();
-  // 旧时代技能已经折算掉，记忆植入也不能再复刻它们
-  state.lastSkillId = null;
-  ensureSummonSlot();
+  state.mapIndex = nextMapIndex;
+  const map = state.eraMaps[nextMapIndex] || state.eraMaps[0] || state.mapId;
 
-  // 只换时代配色和地图，场上僵尸、子弹、屏障全部保留
-  switchEra(eraIndex, map);
-  refreshSlotsForEra();
+  if (!map) return;
 
-  // 新时代开场：一只 Boss 压下来当分段节点
+  if (map !== state.mapId) {
+    state.mapId = map;
+    state.usedMaps.push(map);
+    // 只换地图：不重播时代配色、不折算技能
+    switchMapLook(map, { fade: true });
+    emit('skillNotice', {
+      text: `战场转移 · ${CONFIG.era.names[eraIndex] || ''}`,
+      kind: 'era',
+    });
+  }
+
+  // 每换一张地图一个 Boss；场上已经有一只时 spawnEraBoss 会自己跳过
   spawnEraBoss(eraIndex);
 }
 
@@ -3040,22 +3107,40 @@ function fireEnemyShot(z) {
 function updateEnemyShots(dt) {
   for (let i = state.enemyShots.length - 1; i >= 0; i--) {
     const s = state.enemyShots[i];
+    const prevX = s.x;
+    const prevZ = s.z;
     s.x += s.vx * dt;
     s.z += s.vz * dt;
     s.life += dt;
 
-    // 飞太久或飞出战场就丢掉
-    if (s.life > 4 || s.z > CONFIG.world.spawnZ + 30) {
+    // 扫掠碰撞：按这一帧走过的线段判，而不是只看终点。
+    // 远程僵尸在 z=-13 左右吐，玩家在 z=9，每帧飞 0.35 格，
+    // 只测终点偶尔会从士兵身边穿过去。
+    const sx = s.x - prevX;
+    const sz = s.z - prevZ;
+    const seg2 = sx * sx + sz * sz;
+    let t = 0;
+    if (seg2 > 0) {
+      t = Math.max(0, Math.min(1,
+        ((state.player.x - prevX) * sx + (state.player.z - prevZ) * sz) / seg2
+      ));
+    }
+    const nearX = prevX + sx * t;
+    const nearZ = prevZ + sz * t;
+    const dx = state.player.x - nearX;
+    const dz = state.player.z - nearZ;
+
+    if (dx * dx + dz * dz < 0.5 * 0.5) {
       state.enemyShots.splice(i, 1);
+      emit('enemyShotHit', { x: nearX, z: nearZ });
+      if (!state.testMode) damageArmy(s.damage, 'shot');
       continue;
     }
 
-    const dx = s.x - state.player.x;
-    const dz = s.z - state.player.z;
-    if (dx * dx + dz * dz < 0.45 * 0.45) {
+    // 飞太久或越过玩家身后的安全线就丢掉。
+    // 旧值是 spawnZ + 30 = z 4，酸液还没飞到 z=9 的玩家就消失了。
+    if (s.life > 4 || s.z > CONFIG.world.playerZ + 3) {
       state.enemyShots.splice(i, 1);
-      emit('enemyShotHit', { x: s.x, z: s.z });
-      if (!state.testMode) damageArmy(s.damage, 'shot');
     }
   }
 }
@@ -4575,7 +4660,8 @@ function spawnEraBoss(eraIndex) {
  * 玩家必须优先点掉它，否则会被源源不断的小怪拖死。
  * 具体召唤节奏和上限在 game-summoner.js 里，这里只做接线。
  * ---------------------------------------------------------- */
-const SUMMONER_START_WAVE = 9;
+// 新排程下对应现代时代开场（原来是第 9 波）
+const SUMMONER_START_WAVE = 25;
 
 function spawnSummoner() {
   const type = CONFIG.zombie.types.find((t) => t.summoner);
