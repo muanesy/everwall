@@ -88,8 +88,9 @@ const startEra = Math.max(
 );
 const MAP_NAMES = MAP_NAMES_ALL;
 
-/* 一波多少秒：和 game.js 的 CONFIG.wave.duration 保持一致（甲改了这个值要同步这里） */
-const WAVE_SECONDS = 15;
+/* 一波多少秒：兜底值。实际读 state.waveDuration（game.js 统一给），
+ * 这样改波次长度不会出现 UI 倒计时和真实刷怪对不上 */
+const WAVE_SECONDS = 12;
 
 /* 历史最好成绩：按地图分开记，存在本地。
  * 演示时能看到"这张图我打过多好"，也让结束页不只是三个数字。 */
@@ -181,7 +182,7 @@ export function updateUI(state) {
   }
 }
 
-/* 下一波倒计时：一波 15 秒（甲的 CONFIG.wave.duration，改了这里要同步）
+/* 下一波倒计时：长度取 state.waveDuration（game.js 的 CONFIG.wave.duration）
  * 只做提示，不影响任何玩法。 */
 function updateWaveCountdown(state) {
   if (!els.waveNext) return;
@@ -189,7 +190,8 @@ function updateWaveCountdown(state) {
     els.waveNext.textContent = '';
     return;
   }
-  const left = Math.max(0, Math.ceil(WAVE_SECONDS - getWaveElapsed()));
+  const waveSeconds = state.waveDuration || WAVE_SECONDS;
+  const left = Math.max(0, Math.ceil(waveSeconds - getWaveElapsed()));
   els.waveNext.textContent = left + 's';
 }
 
@@ -470,7 +472,7 @@ function buildDom() {
     </div>
     <div class="wave">
       第 <span data-wave>1</span> 波
-      <em class="wave__next" data-wave-next>15s</em>
+      <em class="wave__next" data-wave-next>12s</em>
     </div>
     <div class="score-box">
       <div class="score" data-score>0</div>

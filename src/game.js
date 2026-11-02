@@ -23,6 +23,7 @@ import {
   spawnCampfireFx,
   setWaterLevel,
   preloadGroundTexture,
+  setWaveClock,
 } from './visuals.js';
 import { pickZombieTypeForEra, eraWeaponProfile } from './game-era-rules.js';
 import { SUMMONER, createSummonerState, updateSummoner } from './game-summoner.js';
@@ -287,7 +288,7 @@ const CONFIG = {
   // 无人机蜂群：一波内陆续放出 10 架自杀式无人机，各自随机锁定一只僵尸
   droneSwarm: {
     count: 10,          // 一波总共 10 架
-    duration: 15,       // 持续一波，和 CONFIG.wave.duration 保持一致
+    duration: 12,       // 持续一波，和 CONFIG.wave.duration 保持一致
     speed: 13,          // 飞行速度
     damage: 65,         // 命中爆炸伤害
     aoeRadius: 2.2,     // 命中点的小范围
@@ -297,7 +298,7 @@ const CONFIG = {
   },
   carrierDrones: {
     count: 4,
-    life: 15,          // 持续一波，和 CONFIG.wave.duration 保持一致
+    life: 12,          // 持续一波，和 CONFIG.wave.duration 保持一致
     damage: 20,        // 每发小范围伤害
     interval: 0.45,
     range: 16,
@@ -361,7 +362,7 @@ const CONFIG = {
   },
   barrier: {
     speed: 6.5,            // 压下来的速度
-    spawnInterval: 2.4,
+    spawnInterval: 1.92,   // 从 2.4 缩到 1.92，保持每波约 6.25 排
     rowGap: 1.44,          // 横向间隔，铺满左半边
     staggerRange: 8,       // 同一批屏障在纵向错开的范围，避免排成一条直线
     positiveBase: 1,       // 普通屏障的基础加兵数
@@ -395,9 +396,11 @@ const CONFIG = {
     nightSpawnMul: 0.75, // 夜晚刷新间隔乘这个，越小越密（0.75 = 快 33%）
     maxSpeed: 7.5,
     speedCap: 9,       // 快鬼加速后也不会超过这个速度
-    spawnInterval: 0.35,
-    minSpawnInterval: 0.16,
-    intervalPerWave: 0.02,
+    // 一波从 15 秒缩到 12 秒，刷怪间隔同步 ×0.8，
+    // 保证每一波的僵尸数量不变，只是来得更密
+    spawnInterval: 0.28,
+    minSpawnInterval: 0.128,
+    intervalPerWave: 0.016,
     maxAlive: 120,
     aggroStartZ: 0,        // 进入中后段就开始缓慢吸附
     aggroRadius: 9,        // 吸附范围比原来更早
@@ -438,7 +441,7 @@ const CONFIG = {
     ],
   },
   wave: {
-    duration: 15,
+    duration: 12,       // 一波 12 秒：比 15 秒快 20%，整局节奏更紧
   },
   era: {
     count: 6,          // 六个时代
@@ -614,6 +617,7 @@ const state = {
   envZoneTick: 0,
   envSlowMul: 1,      // 恶劣天气期间僵尸移速乘子
   envWeatherUntil: 0,
+  waveDuration: CONFIG.wave.duration, // 界面层算下一波倒计时用，不要在 ui.js 另写一份
   timeScale: 1,
   // 槽位默认全部锁定，抽到对应卡才生效；level 0 = 未解锁，1-5 = 等级
   slots: { siege: false, support: false, closeDefense: false, command: false, summon: false },
@@ -1250,6 +1254,8 @@ function resetState(opts = {}) {
     : startEra * wavesPerEra() + 1;
 
   state.time = state.testMode ? 0 : (startWave - 1) * CONFIG.wave.duration;
+  // HUD 的下一波倒计时以此为起点；不重置会沿用上一局/默认的旧值
+  setWaveClock(state.time);
   state.wave = startWave;
   state.score = 0;
   state.soldiers = state.testMode
@@ -2053,7 +2059,7 @@ const SKILL_DESCS = {
   orbital: '横向轨道光柱，清掉离士兵最近的 2/3 僵尸（按数量，远的一批留着）；一局只能使用一次',
   blackHole: '半径 12 内僵尸被持续吸向中心 1.2 秒；结束时中心半径 3 内扣 12% 最大生命（Boss 减半）',
   wormhole: '全场僵尸一起送回出生点',
-  carrierDrones: '召唤 4 架大型舰载无人机，持续一波（15 秒），每 0.45 秒造成 20 点小范围伤害',
+  carrierDrones: '召唤 4 架大型舰载无人机，持续一波（12 秒），每 0.45 秒造成 20 点小范围伤害',
   timeDilation: '全场僵尸所有移动 ×0.4，持续 3 秒',
   finalJudgment: '全场处决：生命 ≤50% 的僵尸直接消失并计分；其余受 20% 最大生命伤害；Boss 改吃 30% 最大生命',
   cosmicCollapse: '半径 14 内僵尸吸向中心（走完 85% 距离）；按吸引前的距离结算：中心 6 内扣 35% 最大生命，6~14 扣 15%，Boss 减半',
@@ -4752,7 +4758,7 @@ function updateApcCharges(dt) {
   }
 }
 
-// 舰载无人机群：绕最密点转，持续 15 秒，自动射击最近僵尸
+// 舰载无人机群：绕最密点转，持续一波 12 秒，自动射击最近僵尸
 function spawnCarrierDrones() {
   const cfg = CONFIG.carrierDrones;
   const base = densestPoint() || { x: 0, z: -6 };

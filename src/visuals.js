@@ -3578,6 +3578,13 @@ export function getWaveElapsed() {
   return Math.max(0, currentState.time - lastWaveStartTime);
 }
 
+/* 开局/重开时把本波起点对齐到 state.time。
+ * 以前只在 waveStart 事件里记起点，新开一局或从中间时代开局时
+ * lastWaveStartTime 还是上一局的旧值，HUD 倒计时会显示 0s 或卡在满格。 */
+export function setWaveClock(time) {
+  lastWaveStartTime = Number.isFinite(time) ? time : 0;
+}
+
 /* 切换时代（只换配色，不改任何数值）。
  * 队长做"Boss 击败后换时代"时直接调这个：applyEraIndex(4) 就切到星际。 */
 export function applyEraIndex(index) {
