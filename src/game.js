@@ -385,8 +385,8 @@ const CONFIG = {
       // 放进随机池会一次刷出好几只、每只都在召孩子，直接把场上刷满
       { id: 14, name: '召唤者', hp: 2.2, speed: 0.72, touchLoss: 2, score: 8, baseWeight: 0, growth: 0, minWave: 999, summoner: true },
       // 时代 Boss：不参与随机抽签（minWave 999 + boss 标记双保险），
-      // 只由 spawnEraBoss() 在切换时代时单独刷一只
-      // hp 35 = 同波普通僵尸的 35 倍（第 5 波约 1820 血、第 21 波约 6300 血）
+      // 只由 spawnEraBoss() 在换地图时单独刷一只
+      // hp 35 = 同波普通僵尸的 35 倍（第 4 波约 1540 血、第 46 波约 13300 血）
       { id: 10, name: '时代Boss', hp: 35, speed: 0.5, touchLoss: 6, score: 40, baseWeight: 0, growth: 0, minWave: 999, boss: true },
     ],
   },
@@ -395,7 +395,7 @@ const CONFIG = {
   },
   era: {
     count: 6,          // 六个时代
-    everyWaves: 4,     // 每张地图打几波
+    everyWaves: 3,     // 每张地图打几波
     mapsPerEra: 3,     // 每个时代打几张地图（打完 3 张才进下一个时代）
     names: ['中世纪', '二战', '现代', '后现代', '星际', '终幕'],
     // 槽位等级模型：最终值 = 基础值 × 时代倍率 × 等级倍率 × 欠级折扣
@@ -425,7 +425,7 @@ const CONFIG = {
   },
   // 洪水（点子池「洪水上涨」）：水位随波次上升，漫过脚踝后僵尸变慢
   flood: {
-    startWave: 13,     // 第几波开始涨（新的时代排程下对应二战开场）
+    startWave: 10,     // 第几波开始涨（新的时代排程下对应二战开场）
     perWave: 0.06,     // 每波涨多少（0~1 的水位值）
     maxLevel: 0.9,     // 涨到这儿封顶，不会真把画面淹掉
     slowFrom: 0.55,    // 水位超过这个值才开始拖慢僵尸
@@ -433,7 +433,7 @@ const CONFIG = {
   },
   // 地面塌陷（点子池「地面塌陷」）：地面裂开坑洞，玩家和僵尸都过不去
   pit: {
-    startWave: 27,     // 新排程下对应现代时代
+    startWave: 21,     // 新排程下对应现代时代
     interval: 11,      // 每隔多少秒尝试塌一个
     max: 3,            // 场上最多几个
     radius: 1.35,
@@ -466,7 +466,7 @@ const CONFIG = {
   },
   // 锁链路障（点子池「锁链路障」）：挡半条通道，僵尸必须绕过去
   chain: {
-    startWave: 14,     // 第几波开始出现（新排程下对应二战第二波）
+    startWave: 11,     // 第几波开始出现（新排程下对应二战第二波）
     z: -6,             // 摆在半场偏下，给玩家留反应时间
     widthRatio: 0.52,  // 占通道宽度的比例，0.5 左右 = 挡半边
   },
@@ -2626,8 +2626,8 @@ function updateCard(realDt) {
 /* ----------------------------------------------------------
  * 每帧更新
  * ---------------------------------------------------------- */
-// 每张地图打 4 波，每个时代打 3 张地图；三张打完才进下一个时代。
-// 每换一张地图补一只 Boss，和之前的「每 4 波一个 Boss」保持一致。
+// 每张地图打 3 波，每个时代打 3 张地图；三张打完才进下一个时代。
+// 每换一张地图补一只 Boss，也就是每 3 波一个。
 function syncEraWithWave(wave) {
   // 测试模式的时代由左侧面板控制，波次不再自动换
   if (state.testMode) return;
@@ -4661,7 +4661,7 @@ function spawnEraBoss(eraIndex) {
  * 具体召唤节奏和上限在 game-summoner.js 里，这里只做接线。
  * ---------------------------------------------------------- */
 // 新排程下对应现代时代开场（原来是第 9 波）
-const SUMMONER_START_WAVE = 25;
+const SUMMONER_START_WAVE = 19;
 
 function spawnSummoner() {
   const type = CONFIG.zombie.types.find((t) => t.summoner);

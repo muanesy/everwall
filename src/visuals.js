@@ -3214,6 +3214,8 @@ function collectZombieMats() {
   if (zombieMats.length) return zombieMats;
   const seen = new Set();
   for (const proto of modelLib.zombies) {
+    // 专属模型是后台加载的，进游戏那一刻数组里可能还是 null
+    if (!proto) continue;
     proto.traverse((o) => {
       if (!o.isMesh && !o.isSkinnedMesh) return;
       const mats = Array.isArray(o.material) ? o.material : [o.material];
