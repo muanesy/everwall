@@ -9,8 +9,8 @@
  *   applyEraLook(era, { soldierMats, zombieMats, bulletMats });
  *
  * 设计要点：
- * 1. 六个时代对应队长定的六张地图（中世纪=丛林、二战=城市、现代=沙漠、
- *    后现代=雪地、星际=月球、终幕=熔岩），见 docs/点子池.md「时代与地图」。
+ * 1. 六个时代各自有一组地图（中世纪=城堡/村庄/修道院/沼泽、二战=城市/军事基地/…、
+ *    后现代=雪地/医院/隔离区/生化工厂/感染丛林…），见 docs/时代地图.md。
  * 2. 只改颜色，不改任何数值——伤害、速度、扣兵都是甲那边的事。
  * 3. tint 是「乘色」不是「赋色」：所有材质都先还原基准色再乘，
  *    否则来回切时代颜色会越乘越偏（这个坑在僵尸乘色上踩过一次）。
@@ -30,8 +30,8 @@ export const ERAS = [
   {
     id: 0,
     name: '中世纪',
-    map: 'jungle',                 // 默认地图，兼容旧代码
-    maps: ['jungle', 'castle', 'village', 'abbey', 'swamp'],   // 雨林、城堡攻城、村庄、修道院、沼泽
+    map: 'castle',                 // 默认地图，兼容旧代码
+    maps: ['castle', 'village', 'abbey', 'swamp'],   // 城堡攻城、村庄、修道院、沼泽
     soldierTint: [1.12, 0.95, 0.62],   // 土黄麻衣
     zombieTint: [1.05, 1.00, 0.88],    // 灰白麻布
     bulletTint: [1.0, 0.80, 0.45],     // 火药暖黄
@@ -67,7 +67,7 @@ export const ERAS = [
     id: 3,
     name: '后现代',
     map: 'snow',
-    maps: ['snow', 'lab', 'quarantine', 'biofactory'],         // 雪原、医院、隔离区、生化工厂
+    maps: ['snow', 'lab', 'quarantine', 'biofactory', 'jungle'], // 雪原、医院、隔离区、生化工厂、感染丛林
     soldierTint: [0.60, 0.78, 0.92],   // 冷灰战术
     zombieTint: [0.80, 0.92, 1.00],    // 白化感染体
     bulletTint: [0.80, 0.92, 1.0],     // 冷白

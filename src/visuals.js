@@ -61,7 +61,7 @@ const MAPS = {
     fill: { color: 0x4a7ab8, intensity: 60, pos: [16, 12, -18] },
   },
   jungle: {
-    name: '热带雨林（机制建议：洪水上涨）',
+    name: '感染丛林（机制建议：洪水上涨）',
     tex: 'b-map-jungle',    // brown_mud_rocks_01
     tint: 0xb2bfae,
     roughness: 0.75,
@@ -323,7 +323,7 @@ const ZOMBIE_LOOKS = [
   { src: 'female', scale: 1.1,  tint: [1.05, 1.06, 1.12], walkSpeed: 1.0, attackSpeed: 1.15, score: 5, emissive: 0.08 }, // 3 精英 灰白提亮
   { src: 'female', scale: 1.0,  tint: [0.70, 0.78, 0.74], walkSpeed: 1.0, attackSpeed: 1.2, score: 2 },    // 4 女僵尸 原色压暗
   // 5-7 是"地图专属僵尸"：同一套 Quaternius 角色包，不同年代的衣服一眼能认出来
-  { src: 'knight', scale: 1.05, tint: [0.86, 0.80, 0.72], walkSpeed: 0.9, attackSpeed: 0.9, score: 4 },    // 5 僵尸骑士 锈甲（中世纪·丛林）
+  { src: 'knight', scale: 1.05, tint: [0.86, 0.80, 0.72], walkSpeed: 0.9, attackSpeed: 0.9, score: 4 },    // 5 僵尸骑士 锈甲（中世纪）
   { src: 'blue',   scale: 1.0,  tint: [0.74, 0.82, 0.98], walkSpeed: 1.0, attackSpeed: 1.05, score: 4 },   // 6 蓝军装僵尸（二战·城市）
   { src: 'casual', scale: 0.95, tint: [0.82, 0.90, 0.86], walkSpeed: 1.15, attackSpeed: 1.35, score: 3 },  // 7 便服僵尸 走得快（现代·沙漠）
   { src: 'pirate', scale: 1.0,  tint: [0.95, 0.72, 0.66], walkSpeed: 1.05, attackSpeed: 1.1, score: 5 },   // 8 海盗僵尸（终幕·熔岩）
@@ -346,7 +346,7 @@ const ZOMBIE_LOOKS = [
  * 数值（血量/速度/扣兵）还是甲的 type 说了算，这里只换穿什么。
  * 键是 type，值是模型来源名（对应 ZOMBIE_LOOKS 的 src）。 */
 const MAP_TYPE_SRC = {
-  jungle: { 0: 'knight' },   // 丛林：中世纪的僵尸骑士
+  jungle: { 0: 'cyber' },    // 感染丛林：后现代的生化改造体
   city:   { 0: 'blue' },     // 城市废墟：二战蓝军装
   desert: { 0: 'casual' },   // 沙漠：便服暴徒
   snow:   { 0: 'cyber' },    // 雪地：后现代生化改造体

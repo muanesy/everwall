@@ -31,8 +31,9 @@ import { createChain, chainDetour, isBlockedByChain } from './game-chainbarricad
 import { initUI, updateUI } from './ui.js';
 
 // 起始地图：开始页传入的 ?map=，默认废墟街道
+// 无参数时默认和开始页保持一致：中世纪·城堡攻城
 const START_MAP =
-  new URLSearchParams(window.location.search).get('map') || 'city';
+  new URLSearchParams(window.location.search).get('map') || 'castle';
 
 /* ----------------------------------------------------------
  * 地图环境事件
@@ -1239,8 +1240,10 @@ function resetState(opts = {}) {
   );
   // 晚期时代开局只认该时代图池里的地图；?era=4 没带 ?map= 时不能落到 city
   const eraPool = eraMaps(startEra);
+  // 地图必须属于起始时代。以前 startEra === 0 时放行任意地图，
+  // 会出现「中世纪数值 + 星际场景」的搭配；现在开始页也双向绑定了时代。
   const pickedMap =
-    opts.map && (startEra === 0 || eraPool.includes(opts.map))
+    opts.map && eraPool.includes(opts.map)
       ? opts.map
       : null;
   const startMap =

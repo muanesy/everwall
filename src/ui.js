@@ -57,16 +57,16 @@ let testPanelCollapsed =
  * 所以网格加了固定高度 + 纵向滚动，并在标签上写明总数。
  * 时代归属和 visuals-era.js 的 ERAS[].maps 保持一致。 */
 const MAP_GROUPS = [
-  { era: '中世纪', ids: ['jungle', 'castle', 'village', 'abbey', 'swamp'] },
+  { era: '中世纪', ids: ['castle', 'village', 'abbey', 'swamp'] },
   { era: '二战', ids: ['city', 'base', 'trench', 'beach', 'warport'] },
   { era: '现代', ids: ['desert', 'harbor', 'highway', 'parking'] },
-  { era: '后现代', ids: ['snow', 'lab', 'quarantine', 'biofactory'] },
+  { era: '后现代', ids: ['snow', 'lab', 'quarantine', 'biofactory', 'jungle'] },
   { era: '星际', ids: ['moon', 'station', 'alienwaste', 'orbitalpad'] },
   { era: '终幕', ids: ['lava', 'voidtemple', 'timeruins', 'blackhole'] },
 ];
 
 const MAP_NAMES_ALL = {
-  city: '废墟街道', jungle: '热带雨林', desert: '沙漠', moon: '月球',
+  city: '废墟街道', jungle: '感染丛林', desert: '沙漠', moon: '月球',
   snow: '雪地', lava: '熔岩', base: '军事基地', lab: '废弃医院', harbor: '港口码头',
   castle: '城堡攻城', village: '中世纪村庄', abbey: '修道院', swamp: '沼泽',
   trench: '战壕', beach: '登陆海滩', warport: '军港',
@@ -81,11 +81,29 @@ const MAP_LIST = MAP_GROUPS.flatMap((g) =>
 );
 
 const START_PARAMS = new URLSearchParams(window.location.search);
-const currentMap = START_PARAMS.get('map') || 'city';
-const startEra = Math.max(
-  0,
-  Math.min(MAP_GROUPS.length - 1, Number(START_PARAMS.get('era')) || 0)
-);
+
+function eraIndexOfMap(mapId) {
+  return MAP_GROUPS.findIndex((g) => g.ids.includes(mapId));
+}
+
+// 起始时代和地图必须成对出现：
+// 显式 ?era 优先；只有 ?map 时按地图所属时代走；都没有就默认中世纪。
+const startEra = (() => {
+  const raw = START_PARAMS.get('era');
+  if (raw !== null && Number.isFinite(Number(raw))) {
+    return Math.max(0, Math.min(MAP_GROUPS.length - 1, Math.floor(Number(raw))));
+  }
+  const byMap = eraIndexOfMap(START_PARAMS.get('map') || '');
+  return byMap >= 0 ? byMap : 0;
+})();
+
+// 地图不属于该时代就退回该时代第一张，避免「星际数值配中世纪场景」
+const currentMap = (() => {
+  const raw = START_PARAMS.get('map');
+  return raw && MAP_GROUPS[startEra].ids.includes(raw)
+    ? raw
+    : MAP_GROUPS[startEra].ids[0];
+})();
 const MAP_NAMES = MAP_NAMES_ALL;
 
 /* 一波多少秒：兜底值。实际读 state.waveDuration（game.js 统一给），
@@ -774,8 +792,13 @@ function bindEvents() {
 
   els.startScreen.querySelectorAll('[data-map]').forEach((btn) => {
     btn.addEventListener('click', () => {
+      const map = btn.dataset.map;
+      const era = eraIndexOfMap(map);
       const params = new URLSearchParams(window.location.search);
-      params.set('map', btn.dataset.map);
+      // 地图和时代一起写：只改 map 的话，URL 里旧的 era 会优先，
+      // 跨时代选图会被当成无效选择再退回原时代。
+      if (era >= 0) params.set('era', String(era));
+      params.set('map', map);
       window.location.search = params.toString();
     });
   });
