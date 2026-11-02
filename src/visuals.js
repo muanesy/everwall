@@ -931,7 +931,7 @@ export function initVisuals(container, events) {
   events.addEventListener('slotStrike', (e) => {
     const d = e.detail;
     if (d.kind === 'siege') {
-      spawnMortar(d.fromX, d.fromZ, d.x, d.z, d.color || 0xffa64d);
+      spawnMortar(d.fromX, d.fromZ, d.x, d.z, d.color || 0xffa64d, d.flightTime || 0.5);
     } else if (d.kind === 'closeDefense') {
       spawnTracer(d.fromX, d.fromZ, d.x, d.z, d.color || 0xff6a4a);
     }
@@ -4538,7 +4538,7 @@ function spawnRing(x, z, color, maxLife) {
 }
 
 /* 攻城：从炮口抛一颗炮弹到落点 */
-function spawnMortar(fromX, fromZ, toX, toZ, color) {
+function spawnMortar(fromX, fromZ, toX, toZ, color, flightTime = 0.5) {
   const mesh = new THREE.Mesh(
     new THREE.SphereGeometry(0.16, 8, 8),
     new THREE.MeshBasicMaterial({ color })
@@ -4548,7 +4548,7 @@ function spawnMortar(fromX, fromZ, toX, toZ, color) {
   effects.push({
     mesh,
     life: 0,
-    maxLife: 0.5,
+    maxLife: flightTime,
     type: 'arc',
     from: { x: fromX, y: 1.2, z: fromZ },
     to: { x: toX, y: 0.3, z: toZ },

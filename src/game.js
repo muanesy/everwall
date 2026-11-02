@@ -74,6 +74,7 @@ const CONFIG = {
     // 时代倍率和欠级折扣在 CONFIG.era，结算时再乘。
     siege: {
       x: 4.5, z: 15, baseDamage: 30,
+      flightTime: 0.5, // 炮弹飞行 0.5 秒，落地才结算伤害
       levels: [
         { damageMul: 1.00, radius: 2.6, interval: 6.0 },
         { damageMul: 1.25, radius: 2.9, interval: 5.7 },
@@ -329,6 +330,7 @@ const state = {
   rollingLogs: [],   // { id, x, z, length, radius, speed, damage, spin, hit }
   knightCharges: [], // { id, x, z, speed, damage, hit }
   campfireZones: [], // { id, x, z, radius, remaining, dps }
+  siegeShots: [],    // { x, z, radius, damage, timeLeft } 炮弹落地后才结算
 
   barrierTimer: 0,
   zombieTimer: 0,
@@ -502,6 +504,7 @@ function resetState(opts = {}) {
   state.rollingLogs.length = 0;
   state.knightCharges.length = 0;
   state.campfireZones.length = 0;
+  state.siegeShots.length = 0;
 
   state.barrierTimer = 0.6;
   state.zombieTimer = 1.0;
@@ -536,6 +539,7 @@ function revive() {
   state.rollingLogs.length = 0;
   state.knightCharges.length = 0;
   state.campfireZones.length = 0;
+  state.siegeShots.length = 0;
   state.barrierTimer = 0.4;
   state.zombieTimer = 0.8;
 
@@ -1342,6 +1346,7 @@ function update(dt) {
   updateSlots(dt);
   updateBarriers(dt);
   updateZombies(dt);
+  updateSiegeShots(dt);
   updateRollingLogs(dt);
   updateKnightCharges(dt);
   updateCampfireZones(dt);
@@ -1759,7 +1764,14 @@ function updateSlots(dt) {
       state.slotTimers.siege = stats.interval;
       const target = densestPoint();
       if (target) {
-        damageZombiesInRadius(target.x, target.z, stats.radius, stats.damage);
+        // 先让炮弹飞过去，落地时再结算伤害
+        state.siegeShots.push({
+          x: target.x,
+          z: target.z,
+          radius: stats.radius,
+          damage: stats.damage,
+          timeLeft: cfg.flightTime,
+        });
         emit('slotStrike', {
           kind: 'siege',
           fromX: cfg.x,
@@ -1767,6 +1779,7 @@ function updateSlots(dt) {
           x: target.x,
           z: target.z,
           radius: stats.radius,
+          flightTime: cfg.flightTime,
           color: 0xffa64d,
         });
       }
@@ -1963,6 +1976,19 @@ function updateZombies(dt) {
       continue;
     }
 
+  }
+}
+
+// 攻城：炮弹飞行结束后，在落点结算伤害
+function updateSiegeShots(dt) {
+  for (let i = state.siegeShots.length - 1; i >= 0; i--) {
+    const shot = state.siegeShots[i];
+    shot.timeLeft -= dt;
+
+    if (shot.timeLeft <= 0) {
+      damageZombiesInRadius(shot.x, shot.z, shot.radius, shot.damage);
+      state.siegeShots.splice(i, 1);
+    }
   }
 }
 
