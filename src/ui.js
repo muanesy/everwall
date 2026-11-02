@@ -14,6 +14,11 @@ import { getModelLoadProgress } from './visuals.js';
 // 技能与槽位图标：内联 SVG，零图片资源（见 ui-skillicons.js）
 import { skillIconTag, slotIconTag } from './ui-skillicons.js';
 
+/* 构建标记：显示在开始页标题下方。
+ * 用途很具体——改了东西但"看起来还是老样子"时，先看这行字对不对，
+ * 一眼就能区分"代码没生效"和"浏览器给了缓存的旧 JS"。 */
+const BUILD_STAMP = 'v2026-11-02.2 · 26 地图 · 近景层';
+
 let els = null;
 let actions = null;
 let currentState = null;
@@ -386,6 +391,7 @@ function buildDom() {
     <div class="card">
       <p class="eyebrow">广告里的游戏</p>
       <h1>向僵尸开炮</h1>
+      <p class="build-stamp" data-build>${BUILD_STAMP}</p>
       <p class="sub">
         左右移动，自动开火。<br>
         打中左边压下来的 +1 屏障加兵，<br>

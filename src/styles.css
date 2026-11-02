@@ -198,6 +198,18 @@ canvas {
   color: #fff;
 }
 
+/* ---------- 构建标记 ----------
+ * 很小的灰字，只在开始页出现。它的作用是让"我到底看到的是哪一版"变成一眼可判的事，
+ * 不用去翻控制台或者 git 记录。 */
+
+.build-stamp {
+  margin: -4px 0 10px;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: rgba(143, 163, 184, 0.55);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---------- 地图选择 ---------- */
 
 .map-picker {
