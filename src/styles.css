@@ -215,6 +215,32 @@ canvas {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 6px;
+  /* 26 张图排下来是 9 行，会撑爆开始页。
+   * 固定高度 + 纵向滚动：布局不跳，所有图也都还能选到。
+   * max-height 取 7 行左右，正好露出"下面还有"的暗示。 */
+  max-height: 244px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+  scrollbar-width: thin;
+}
+
+/* 时代小标题：横跨整行，把同代地图框在一起 */
+.map-picker__era {
+  grid-column: 1 / -1;
+  margin: 4px 0 -2px;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: rgba(143, 163, 184, 0.6);
+}
+
+.map-picker__era:first-child {
+  margin-top: 0;
+}
+
+.map-picker__count {
+  color: rgba(143, 163, 184, 0.5);
+  font-variant-numeric: tabular-nums;
 }
 
 .map-chip {

@@ -18,20 +18,36 @@ let els = null;
 let actions = null;
 let currentState = null;
 
-const MAP_LIST = [
-  { id: 'city', name: '废墟街道' },
-  { id: 'jungle', name: '热带雨林' },
-  { id: 'desert', name: '沙漠' },
-  { id: 'moon', name: '月球' },
-  { id: 'snow', name: '雪地' },
-  { id: 'lava', name: '熔岩' },
-  { id: 'base', name: '军事基地' },
-  { id: 'lab', name: '废弃医院' },
-  { id: 'harbor', name: '港口码头' },
+/* 地图列表：按时代分组排，同时代的连在一起。
+ * 26 张（原 9 + 新 17）塞进 3 列网格会撑爆开始页，
+ * 所以网格加了固定高度 + 纵向滚动，并在标签上写明总数。
+ * 时代归属和 visuals-era.js 的 ERAS[].maps 保持一致。 */
+const MAP_GROUPS = [
+  { era: '中世纪', ids: ['jungle', 'castle', 'village', 'abbey', 'swamp'] },
+  { era: '二战', ids: ['city', 'base', 'trench', 'beach', 'warport'] },
+  { era: '现代', ids: ['desert', 'harbor', 'highway', 'parking'] },
+  { era: '后现代', ids: ['snow', 'lab', 'quarantine', 'biofactory'] },
+  { era: '星际', ids: ['moon', 'station', 'alienwaste', 'orbitalpad'] },
+  { era: '终幕', ids: ['lava', 'voidtemple', 'timeruins', 'blackhole'] },
 ];
 
+const MAP_NAMES_ALL = {
+  city: '废墟街道', jungle: '热带雨林', desert: '沙漠', moon: '月球',
+  snow: '雪地', lava: '熔岩', base: '军事基地', lab: '废弃医院', harbor: '港口码头',
+  castle: '城堡攻城', village: '中世纪村庄', abbey: '修道院', swamp: '沼泽',
+  trench: '战壕', beach: '登陆海滩', warport: '军港',
+  highway: '城市高架', parking: '地下停车场',
+  quarantine: '隔离区', biofactory: '生化工厂',
+  station: '空间站内部', alienwaste: '外星荒漠', orbitalpad: '轨道平台',
+  voidtemple: '虚空神殿', timeruins: '时间废墟', blackhole: '黑洞边缘',
+};
+
+const MAP_LIST = MAP_GROUPS.flatMap((g) =>
+  g.ids.map((id) => ({ id, name: MAP_NAMES_ALL[id] || id, era: g.era }))
+);
+
 const currentMap = new URLSearchParams(window.location.search).get('map') || 'city';
-const MAP_NAMES = Object.fromEntries(MAP_LIST.map((m) => [m.id, m.name]));
+const MAP_NAMES = MAP_NAMES_ALL;
 
 /* 一波多少秒：和 game.js 的 CONFIG.wave.duration 保持一致（甲改了这个值要同步这里） */
 const WAVE_SECONDS = 15;
@@ -345,12 +361,15 @@ function buildDom() {
         挡住右边的僵尸潮。
       </p>
       <div class="map-picker">
-        <p class="map-picker__label">地形</p>
+        <p class="map-picker__label">地形 <span class="map-picker__count">${MAP_LIST.length}</span></p>
         <div class="map-picker__grid">
-          ${MAP_LIST.map((m) => `
-            <button class="map-chip${m.id === currentMap ? ' is-active' : ''}" data-map="${m.id}">
-              ${m.name}
-            </button>
+          ${MAP_GROUPS.map((grp) => `
+            <p class="map-picker__era">${grp.era}</p>
+            ${grp.ids.map((id) => `
+              <button class="map-chip${id === currentMap ? ' is-active' : ''}" data-map="${id}">
+                ${MAP_NAMES_ALL[id] || id}
+              </button>
+            `).join('')}
           `).join('')}
         </div>
       </div>

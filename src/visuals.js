@@ -36,6 +36,8 @@ import { createDayNight, nightForWave } from './visuals-daynight.js';
 import { initBarrels, updateBarrels, resetBarrels, hitTestBarrel, spawnBarrelAt } from './visuals-barrels.js';
 // 槽位正式模型：六槽位 × 六时代 × 五等级，全程序化（对应 docs/美术需求-槽位与技能.md P1）
 import { buildSlotStructure, buildLevelDots, disposeSlotStructure } from './visuals-slots.js';
+// 17 张新增地图：复用现有贴图，靠背景物/雾/光区分（见 visuals-maps.js 顶部说明）
+import { NEW_MAPS, isNewMap } from './visuals-maps.js';
 
 /* ----------------------------------------------------------
  * 地图配置表
@@ -279,6 +281,27 @@ const modelLib = {
 // walkSpeed 只影响走路动画节奏——比颜色更能传达"笨重"和"快"。
 // score 只用来决定"死了飘不飘字"和飘多少，必须跟 game.js CONFIG.zombie.types[].score 对齐；
 // 甲改那边分数的话这里跟着改。
+/* 把 17 张新地图并进 MAPS。
+ * 它们带着自己的 tex（复用现有贴图）、tint、雾、灯光和 props 构建函数，
+ * 所以并进来之后 switchMapLook / 开始页选图 / 时代选图全都不用另外改。
+ * 这里放在 MAPS 定义之后、第一次使用之前，避免改动原有表的结构。 */
+for (const [id, m] of Object.entries(NEW_MAPS)) {
+  MAPS[id] = {
+    name: m.name,
+    tex: m.tex,
+    tint: m.tint,
+    roughness: m.roughness,
+    bg: m.bg,
+    fogNear: m.fogNear,
+    fogFar: m.fogFar,
+    hemi: m.hemi,
+    key: m.key,
+    fill: m.fill,
+    // 标记出来，buildProps 里分流到新地图的构建函数
+    isNew: true,
+  };
+}
+
 const ZOMBIE_LOOKS = [
   { src: 'male',   scale: 1.0,  tint: [0.80, 0.90, 0.84], walkSpeed: 1.0, attackSpeed: 1.0, score: 1 },   // 0 普通 灰绿
   { src: 'male',   scale: 1.25, tint: [0.88, 0.62, 0.58], walkSpeed: 0.85, attackSpeed: 0.75, score: 3 },  // 1 大块头 暗红灰（出拳慢而重）
@@ -318,6 +341,26 @@ const MAP_TYPE_SRC = {
   base:   { 0: 'blue' },     // 军事基地：装甲兵
   lab:    { 0: 'cyber' },    // 废弃医院：生化体
   harbor: { 0: 'pirate' },   // 港口码头：海盗
+
+  // ---- 17 张新地图：按时代气质选僵尸外观 ----
+  // 中世纪系穿锈甲，二战系军装，现代系便服/蓝甲，后现代系生化体，星际系蓝甲，终幕系海盗
+  castle:     { 0: 'knight' },
+  village:    { 0: 'knight' },
+  abbey:      { 0: 'knight' },
+  swamp:      { 0: 'knight' },
+  trench:     { 0: 'blue' },
+  beach:      { 0: 'blue' },
+  warport:    { 0: 'blue' },
+  highway:    { 0: 'casual' },
+  parking:    { 0: 'casual' },
+  quarantine: { 0: 'cyber' },
+  biofactory: { 0: 'cyber' },
+  station:    { 0: 'blue' },
+  alienwaste: { 0: 'blue' },
+  orbitalpad: { 0: 'blue' },
+  voidtemple: { 0: 'pirate' },
+  timeruins:  { 0: 'pirate' },
+  blackhole:  { 0: 'cyber' },
 };
 const MAP_TYPE_OVERRIDE = MAP_TYPE_SRC[MAP_ID] || null;
 const animMixers = new Set(); // 所有活着的骨骼动画，每帧 update
@@ -3942,6 +3985,14 @@ function updatePropAnimations(dt) {
         // 岩浆：亮度一涨一落
         a.obj.material.opacity = a.base + Math.sin(t * 1.3 + a.phase) * 0.22;
         break;
+      case 'pulse':
+        // 新地图里的发光件（舷窗/反应罐顶/晶体/符文环）：幅度比 breathe 小，
+        // 避免一片发光面来回闪得太扎眼
+        a.obj.material.opacity = Math.max(
+          0,
+          Math.min(1, a.base + Math.sin(t * 1.1 + a.phase) * 0.12)
+        );
+        break;
       default:
         break;
     }
@@ -3952,19 +4003,25 @@ function buildProps(mapId = MAP_ID) {
   const group = new THREE.Group();
   const rng = mulberry32(20261101);
 
-  const builder = {
-    city: buildCityProps,
-    jungle: buildJungleProps,
-    desert: buildDesertProps,
-    moon: buildMoonProps,
-    snow: buildSnowProps,
-    lava: buildLavaProps,
-    base: buildBaseProps,
-    lab: buildLabProps,
-    harbor: buildHarborProps,
-  }[mapId] || buildCityProps;
+  // 新地图（17 张）走自己的构建函数：零件工厂 + 配置组合，
+  // 不用在这里堆 17 个 props 函数
+  if (isNewMap(mapId) && NEW_MAPS[mapId].build) {
+    NEW_MAPS[mapId].build(group, rng, propAnim);
+  } else {
+    const builder = {
+      city: buildCityProps,
+      jungle: buildJungleProps,
+      desert: buildDesertProps,
+      moon: buildMoonProps,
+      snow: buildSnowProps,
+      lava: buildLavaProps,
+      base: buildBaseProps,
+      lab: buildLabProps,
+      harbor: buildHarborProps,
+    }[mapId] || buildCityProps;
 
-  builder(group, rng);
+    builder(group, rng);
+  }
 
   // 前景剪影：画面最下缘一条参差不齐的暗色带，纵深立刻出来了。
   // 只放在左右两侧（|x| > 4），中间留空，不然会挡住玩家和士兵。
@@ -3979,6 +4036,9 @@ function buildProps(mapId = MAP_ID) {
     lab:    { color: 0x121a16, count: 7 },
     harbor: { color: 0x101a20, count: 7 },
   }[mapId] || { color: 0x11151b, count: 7 };
+
+  // 新地图的剪影在各自的 build 里处理（每张的暗带色调不同），这里跳过
+  if (isNewMap(mapId)) return group;
 
   const silMat = mat(silhouette.color, { flat: true, rough: 1 });
   for (let i = 0; i < silhouette.count; i++) {
@@ -7016,6 +7076,27 @@ const AMBIENT_FX = {
   base:   { kind: 'sand',   count: 55,  color: [0.78, 0.82, 0.85], size: 0.045, speed: 4.5, area: [28, 20] },
   lab:    { kind: 'motes',  count: 60,  color: [0.55, 1.0, 0.78], size: 0.085, speed: 0.5, area: [22, 20] },
   harbor: { kind: 'fog',    count: 45,  color: [0.72, 0.82, 0.9], size: 0.22, speed: 0.35, area: [26, 22] },
+
+  // ---- 17 张新地图 ----
+  // 每张都选一个和它气质对得上的粒子：沼泽升雾、停车场落灰、
+  // 空间站飘微弱尘埃、黑洞边缘是冷蓝星点
+  castle:     { kind: 'ember',  count: 45,  color: [1.0, 0.72, 0.36], size: 0.09, speed: 2.2, area: [24, 20] },
+  village:    { kind: 'ember',  count: 38,  color: [1.0, 0.78, 0.42], size: 0.08, speed: 1.8, area: [24, 20] },
+  abbey:      { kind: 'motes',  count: 52,  color: [0.86, 0.9, 0.98], size: 0.07, speed: 0.3, area: [22, 20] },
+  swamp:      { kind: 'fog',    count: 60,  color: [0.55, 0.72, 0.55], size: 0.26, speed: 0.22, area: [26, 22] },
+  trench:     { kind: 'fog',    count: 50,  color: [0.68, 0.64, 0.52], size: 0.24, speed: 0.3, area: [26, 22] },
+  beach:      { kind: 'sand',   count: 70,  color: [0.9, 0.85, 0.7], size: 0.05, speed: 5.5, area: [30, 20] },
+  warport:    { kind: 'fog',    count: 48,  color: [0.7, 0.78, 0.86], size: 0.22, speed: 0.32, area: [26, 22] },
+  highway:    { kind: 'rain',   count: 80,  color: [0.66, 0.74, 0.86], size: 0.055, speed: 15, area: [26, 26] },
+  parking:    { kind: 'motes',  count: 66,  color: [0.7, 0.76, 0.84], size: 0.06, speed: 0.35, area: [22, 20] },
+  quarantine: { kind: 'motes',  count: 58,  color: [0.5, 0.95, 0.72], size: 0.08, speed: 0.4, area: [22, 20] },
+  biofactory: { kind: 'motes',  count: 56,  color: [0.6, 1.0, 0.7], size: 0.075, speed: 0.45, area: [22, 20] },
+  station:    { kind: 'motes',  count: 44,  color: [0.6, 0.82, 1.0], size: 0.055, speed: 0.25, area: [22, 20] },
+  alienwaste: { kind: 'sand',   count: 64,  color: [0.8, 0.68, 0.88], size: 0.05, speed: 5.0, area: [30, 20] },
+  orbitalpad: { kind: 'star',   count: 62,  color: [0.78, 0.9, 1.0], size: 0.14, speed: 0.22, area: [26, 24] },
+  voidtemple: { kind: 'ember',  count: 78,  color: [1.0, 0.42, 0.24], size: 0.12, speed: 3.0, area: [22, 18] },
+  timeruins:  { kind: 'motes',  count: 60,  color: [0.72, 0.68, 1.0], size: 0.07, speed: 0.3, area: [22, 20] },
+  blackhole:  { kind: 'star',   count: 74,  color: [0.7, 0.82, 1.0], size: 0.15, speed: 0.2, area: [26, 24] },
 };
 
 let ambientFx = null;   // { points, geo, pos, col, cfg, state }
