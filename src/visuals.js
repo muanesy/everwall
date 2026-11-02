@@ -926,6 +926,11 @@ export function initVisuals(container, events) {
     spawnRing(e.detail.x, e.detail.z, e.detail.color || 0xffffff, 0.7);
   });
 
+  events.addEventListener('slotUnlock', (e) => {
+    const v = slotVisuals.get(e.detail.id);
+    if (v) spawnRing(v.x, v.z, v.color, 0.6);
+  });
+
   events.addEventListener('barricadeHit', (e) => {
     spawnBurst(e.detail.x, 0.3, e.detail.z, 0x8a7a5a, 2, {
       speed: 1.0,
@@ -1358,6 +1363,7 @@ export function syncScene(state, dt) {
   // 僵尸
   syncZombies(state, dt);
   syncBarricade(state);
+  syncSlots(state);
   updateBossPresence(state);
   updateZombieHitFeedback(state);
 
@@ -3008,6 +3014,8 @@ const SLOT_DEFS = [
   { id: 'closeDefense', name: '近防', x: 5.5, z: 4.5, color: 0xff6a4a },
 ];
 
+const slotVisuals = new Map();
+
 function initSlots() {
   for (const s of SLOT_DEFS) {
     const pad = new THREE.Mesh(
@@ -3042,6 +3050,23 @@ function initSlots() {
     );
     post.position.set(s.x, 0.28, s.z);
     scene.add(post);
+
+    slotVisuals.set(s.id, {
+      pad,
+      ring,
+      post,
+      x: s.x,
+      z: s.z,
+      color: s.color,
+    });
+  }
+}
+
+function syncSlots(state) {
+  for (const [id, v] of slotVisuals) {
+    const on = !!(state.slots && state.slots[id]);
+    v.post.visible = on;
+    v.ring.material.opacity = on ? 0.8 : 0.16;
   }
 }
 

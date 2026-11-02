@@ -212,6 +212,8 @@ const state = {
     version: 0,
   },
   timeScale: 1,
+  // 槽位默认全部锁定，抽到对应卡才生效
+  slots: { siege: false, support: false, closeDefense: false, command: false },
   slotTimers: { siege: 3, support: 6, closeDefense: 0 },
   slowUntil: 0,
   slowMul: 1,
@@ -391,6 +393,11 @@ function resetState() {
   state.card.timeLeft = 0;
   state.timeScale = 1;
 
+  state.slots.siege = false;
+  state.slots.support = false;
+  state.slots.closeDefense = false;
+  state.slots.command = false;
+
   state.slotTimers.siege = 3;
   state.slotTimers.support = 6;
   state.slotTimers.closeDefense = 0;
@@ -528,6 +535,46 @@ const CARD_POOL = [
     can: () => state.barricade.unlocked &&
       state.barricade.level < CONFIG.barricade.levels.length,
     apply: () => upgradeBarricade(),
+  },
+  {
+    id: 'slotSiege',
+    name: '攻城槽',
+    desc: '解锁攻城：每 6 秒范围炮击',
+    can: () => !state.slots.siege,
+    apply: () => {
+      state.slots.siege = true;
+      emit('slotUnlock', { id: 'siege' });
+    },
+  },
+  {
+    id: 'slotClose',
+    name: '近防槽',
+    desc: '解锁近防：持续打身边的僵尸',
+    can: () => !state.slots.closeDefense,
+    apply: () => {
+      state.slots.closeDefense = true;
+      emit('slotUnlock', { id: 'closeDefense' });
+    },
+  },
+  {
+    id: 'slotSupport',
+    name: '支援槽',
+    desc: '解锁支援：每 10 秒回兵',
+    can: () => !state.slots.support,
+    apply: () => {
+      state.slots.support = true;
+      emit('slotUnlock', { id: 'support' });
+    },
+  },
+  {
+    id: 'slotCommand',
+    name: '指挥槽',
+    desc: '解锁指挥：全队射速 +5%',
+    can: () => !state.slots.command,
+    apply: () => {
+      state.slots.command = true;
+      emit('slotUnlock', { id: 'command' });
+    },
   },
   {
     id: 'damage',
@@ -907,7 +954,9 @@ function updateFiring(dt) {
     tier.fireInterval,
     CONFIG.player.baseFireInterval / Math.max(1, state.soldiers)
   );
-  const commandMul = 1 + CONFIG.slots.command.fireRate * (1 + state.era * 0.2);
+  const commandMul = state.slots.command
+    ? 1 + CONFIG.slots.command.fireRate * (1 + state.era * 0.2)
+    : 1;
   const buffMul = state.time < state.buffUntil ? state.buffMul : 1;
   const effInterval = baseInterval / (state.upgrades.fireRate * commandMul * buffMul);
   const totalRate = baseCount / effInterval; // 每秒多少发
@@ -1245,41 +1294,47 @@ function makeSpecialBarrier(kind, x, z, wave) {
 function updateSlots(dt) {
   const eraMul = 1 + state.era * 0.25;
 
-  const siege = CONFIG.slots.siege;
-  state.slotTimers.siege -= dt;
-  if (state.slotTimers.siege <= 0) {
-    state.slotTimers.siege = siege.interval;
-    const target = densestPoint();
-    if (target) {
-      damageZombiesInRadius(target.x, target.z, siege.radius, siege.damage * eraMul);
+  if (state.slots.siege) {
+    const siege = CONFIG.slots.siege;
+    state.slotTimers.siege -= dt;
+    if (state.slotTimers.siege <= 0) {
+      state.slotTimers.siege = siege.interval;
+      const target = densestPoint();
+      if (target) {
+        damageZombiesInRadius(target.x, target.z, siege.radius, siege.damage * eraMul);
+        emit('slotStrike', {
+          x: target.x,
+          z: target.z,
+          radius: siege.radius,
+          color: 0xffa64d,
+        });
+      }
+    }
+  }
+
+  if (state.slots.closeDefense) {
+    const close = CONFIG.slots.closeDefense;
+    state.slotTimers.closeDefense -= dt;
+    if (state.slotTimers.closeDefense <= 0) {
+      state.slotTimers.closeDefense = close.interval;
+      damageZombiesInRadius(close.x, close.z, close.radius, close.damage * eraMul);
       emit('slotStrike', {
-        x: target.x,
-        z: target.z,
-        radius: siege.radius,
-        color: 0xffa64d,
+        x: close.x,
+        z: close.z,
+        radius: close.radius,
+        color: 0xff6a4a,
       });
     }
   }
 
-  const close = CONFIG.slots.closeDefense;
-  state.slotTimers.closeDefense -= dt;
-  if (state.slotTimers.closeDefense <= 0) {
-    state.slotTimers.closeDefense = close.interval;
-    damageZombiesInRadius(close.x, close.z, close.radius, close.damage * eraMul);
-    emit('slotStrike', {
-      x: close.x,
-      z: close.z,
-      radius: close.radius,
-      color: 0xff6a4a,
-    });
-  }
-
-  const support = CONFIG.slots.support;
-  state.slotTimers.support -= dt;
-  if (state.slotTimers.support <= 0) {
-    state.slotTimers.support = support.interval;
-    applySoldiers(support.heal + Math.floor(state.era / 2));
-    emit('slotHeal', { x: support.x, z: support.z });
+  if (state.slots.support) {
+    const support = CONFIG.slots.support;
+    state.slotTimers.support -= dt;
+    if (state.slotTimers.support <= 0) {
+      state.slotTimers.support = support.interval;
+      applySoldiers(support.heal + Math.floor(state.era / 2));
+      emit('slotHeal', { x: support.x, z: support.z });
+    }
   }
 }
 
