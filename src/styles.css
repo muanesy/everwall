@@ -946,17 +946,6 @@ canvas {
   transition: transform 0.1s ease, background 0.15s ease, opacity 0.15s ease;
 }
 
-.skill-slot::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 10px;
-  bottom: 10px;
-  width: 3px;
-  border-radius: 3px;
-  background: var(--skill-color, #4ea1ff);
-}
-
 .skill-slot:hover {
   background: rgba(24, 34, 46, 0.92);
 }
