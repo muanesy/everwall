@@ -922,6 +922,9 @@ export function initVisuals(container, events) {
   // 洪水用的水面：默认藏在地下，甲调 setWaterLevel 才会漫上来
   initWater();
 
+  // 地图地面特效：雪地滑痕 / 熔岩余烬（切图时由 doSwitchMapLook 重建）
+  initMapGroundFx(MAP_ID);
+
   // 炸药桶：摆在两侧通道边（不压僵尸主路、不压士兵阵），模型全程序化生成。
   // 爆炸伤害归甲，这里只负责桶的样子、爆炸特效，以及给甲查命中用的 hitTestBarrel
   initBarrels({ scene, events });
@@ -1184,11 +1187,15 @@ export function initVisuals(container, events) {
     // kind 直接对应槽位 id，不需要甲额外加事件。
     const slotId = d.kind === 'tank' ? 'siege' : d.kind;
     triggerSlotFire(slotId, d);
+
+    // 场上的坦克支援用的是自己那套模型，炮塔单独后坐
+    if (d.kind === 'tank') triggerTankTurretKick(d.fromX, d.fromZ);
   });
 
   events.addEventListener('apcShot', (e) => {
     const d = e.detail;
     spawnTracer(d.fromX, d.fromZ, d.x, d.z, 0xffd27a, 0.9);
+    spawnApcMuzzleFlash(d.fromX, d.fromZ, 0xffc46a);
   });
 
   events.addEventListener('droneShot', (e) => {
@@ -1209,6 +1216,8 @@ export function initVisuals(container, events) {
 
   events.addEventListener('airStrikeBomb', (e) => {
     const d = e.detail;
+    // 每颗炸弹配一架轰炸机，delay 时刻正好飞到落点上空
+    spawnAirStrikeBomber(d.x, d.z, d.color || 0xffd27a, d.delay || 0);
     spawnSkyStrike(d.x, d.z, d.color || 0xffd27a, d.delay || 0);
   });
 
@@ -1321,6 +1330,8 @@ export function initVisuals(container, events) {
       spread: d.radius || 2.6,
       life: 0.8,
     });
+    // 落地后留一团低空毒雾，2~3 秒扩散淡出
+    spawnVirusFog(d.x, d.z);
   });
 
   events.addEventListener('slotHeal', (e) => {
@@ -1394,6 +1405,8 @@ export function initVisuals(container, events) {
       spawnRing(d.x, d.z, 0xffd27a, 0.5);
     } else if (d.type === 'friendlyLegion') {
       spawnRing(0, 8.5, 0x9c6bff, 0.8);
+      // 20 个友军铺在 z≈8.5 一条线上，召唤阵就盖这条前沿
+      spawnBioLegionSigil(0, 8.5, d.color || 0x9c6bff);
     } else if (d.type === 'execute') {
       spawnJudgmentFx(d.executed, d.chipped);
     } else if (d.type === 'sacrifice') {
@@ -1839,6 +1852,9 @@ function doSwitchMapLook(mapId) {
   }
   initAmbientFx(mapId);
 
+  // 地面特效跟着地图走：雪地滑痕 / 熔岩余烬，旧的一律拆掉重建
+  initMapGroundFx(mapId);
+
   // 当前地图变了：僵尸的地图氛围色、环境音跟着换
   MAP_ID = mapId;
   MAP_TINT = MAP_ZOMBIE_TINT[mapId] || MAP_ZOMBIE_TINT.city;
@@ -1930,6 +1946,12 @@ function updateQuakeCycle(dt, playing) {
 let waterMesh = null;
 let waterLevel = 0;
 
+// 水面的配套：一条水线（两条青白亮带）+ 岸边泡沫。
+// 只用固定数量的面片，不每帧新建对象；水面看不见时整组隐藏。
+let waterLineGroup = null;
+const waterFoamDrops = [];   // { mesh, mat, phase, life, maxLife, base }
+let waterFoamTimer = 0;
+
 export function setWaterLevel(level) {
   waterLevel = Math.max(0, Math.min(1, Number(level) || 0));
 }
@@ -1956,6 +1978,52 @@ function initWater() {
   waterMesh.position.set(0, -2.2, GROUND_Z);
   waterMesh.visible = false;
   scene.add(waterMesh);
+
+  // 水线：贴在水面上表面的两条细长青白亮带（加色混合，宽 0.22）。
+  // 水面涨到哪，这组就跟着升到哪；水面看不见时整组隐藏。
+  waterLineGroup = new THREE.Group();
+  waterLineGroup.visible = false;
+  for (let i = 0; i < 2; i++) {
+    const strip = new THREE.Mesh(
+      new THREE.PlaneGeometry(19.6, 0.22),
+      new THREE.MeshBasicMaterial({
+        color: 0xd8f4ff,
+        transparent: true,
+        opacity: i === 0 ? 0.5 : 0.28,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      })
+    );
+    strip.rotation.x = -Math.PI / 2;
+    strip.position.set(0, i === 0 ? 0 : 0.006, -25 - i * 2.2);
+    waterLineGroup.add(strip);
+  }
+
+  // 岸边泡沫：固定 12 团白色半透明小圆片，沿水线冒出来、渐隐、换个位置重来。
+  const foamGeo = new THREE.CircleGeometry(0.3, 8);
+  for (let i = 0; i < 12; i++) {
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xf2fbff,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const mesh = new THREE.Mesh(foamGeo, mat);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.set((Math.random() - 0.5) * 19, 0.02, -24 - Math.random() * 4);
+    mesh.visible = false;
+    waterLineGroup.add(mesh);
+    waterFoamDrops.push({
+      mesh, mat,
+      phase: Math.random() * Math.PI * 2,
+      life: 0,
+      maxLife: 1,
+      base: 0.7 + Math.random() * 0.6,
+    });
+  }
+  scene.add(waterLineGroup);
 }
 
 function updateWater(dt) {
@@ -1967,6 +2035,313 @@ function updateWater(dt) {
   // 水面轻轻起伏
   const t = performance.now() * 0.001;
   waterMesh.position.y += Math.sin(t * 1.3) * 0.008;
+
+  // 水线/岸边浪花跟水面走；雪地滑痕和熔岩余烬在这里一起分发，
+  // 不为它们单独加主循环入口（updateWater 每帧无条件跑）。
+  updateWaterShore(dt, t);
+  updateMapGroundFx(dt, t);
+}
+
+/* 水线 + 岸边泡沫：只在水面可见时更新，否则整组隐藏。
+ * 泡沫数量固定 12 团，轮流冒出来，不新建对象。 */
+function updateWaterShore(dt, t) {
+  if (!waterLineGroup) return;
+  if (!waterMesh.visible) {
+    waterLineGroup.visible = false;
+    return;
+  }
+  waterLineGroup.visible = true;
+  // 贴在水面上表面（略高一丁点，避免和水面同高打架）
+  waterLineGroup.position.y = waterMesh.position.y + 0.012;
+
+  waterFoamTimer += dt;
+  if (waterFoamTimer >= 0.25) {
+    waterFoamTimer = 0;
+    const dead = waterFoamDrops.find((d) => d.life <= 0);
+    if (dead) {
+      dead.mesh.position.set(
+        (Math.random() - 0.5) * 19,
+        0.02,
+        -24 - Math.random() * 4
+      );
+      dead.mesh.rotation.z = Math.random() * Math.PI * 2;
+      dead.phase = Math.random() * Math.PI * 2;
+      dead.base = 0.7 + Math.random() * 0.6;
+      dead.maxLife = 0.9 + Math.random() * 1.1;
+      dead.life = dead.maxLife;
+      dead.mesh.visible = true;
+    }
+  }
+
+  for (const d of waterFoamDrops) {
+    if (d.life <= 0) continue;
+    d.life -= dt;
+    if (d.life <= 0) {
+      d.mesh.visible = false;
+      d.mat.opacity = 0;
+      continue;
+    }
+    const k = d.life / d.maxLife;          // 1 → 0
+    d.mat.opacity = 0.42 * Math.sin(k * Math.PI);
+    d.mesh.scale.setScalar(d.base * (1 + (1 - k) * 0.5));
+    d.mesh.position.y = 0.04 + Math.sin(t * 2.2 + d.phase) * 0.02;
+  }
+}
+
+/* ----------------------------------------------------------
+ * 地图地面特效（纯视觉，不参与任何玩法结算）
+ *   雪地  → 玩家走过的短促滑痕（两条平行淡蓝白细面片，2~3 秒淡出）
+ *   熔岩类 → 贴地橙红余烬光斑 + 极少量上升火星
+ * 切图时按当前地图重建，旧的一律拆掉，换回普通地图不残留。
+ * 每帧由 updateWater 末尾分发（不另开主循环入口）。
+ * ---------------------------------------------------------- */
+let snowSkidFx = null;     // { group, marks[], accum, lastX, lastZ }
+let lavaEmberFx = null;    // { group, glows[], sparks }
+const SNOW_SKID_MAX = 9;
+// 焦土质感的地图：lava 本体 + 虚空神殿（地面配橙红符文/火盆）
+const LAVA_MAP_IDS = ['lava', 'voidtemple'];
+
+function initMapGroundFx(mapId = MAP_ID) {
+  if (!scene) return;
+  disposeMapGroundFx();
+  if (mapId === 'snow') buildSnowSkidFx();
+  else if (LAVA_MAP_IDS.includes(mapId)) buildLavaEmberFx();
+}
+
+function disposeMapGroundFx() {
+  for (const g of [snowSkidFx ? snowSkidFx.group : null, lavaEmberFx ? lavaEmberFx.group : null]) {
+    if (!g) continue;
+    scene.remove(g);
+    g.traverse((o) => {
+      if (!o.isMesh && !o.isPoints) return;
+      o.geometry?.dispose();
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      for (const mm of mats) {
+        if (mm) mm.dispose();
+      }
+    });
+  }
+  snowSkidFx = null;
+  lavaEmberFx = null;
+}
+
+/* 雪地滑痕：9 组固定池，每组两条平行细面片（各自一份材质，方便单独淡出） */
+function buildSnowSkidFx() {
+  const group = new THREE.Group();
+  scene.add(group);
+  const geo = new THREE.PlaneGeometry(1.5, 0.085);
+  const marks = [];
+  for (let i = 0; i < SNOW_SKID_MAX; i++) {
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xdcf0ff,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const mark = new THREE.Group();
+    mark.rotation.x = -Math.PI / 2;   // 铺平贴地
+    mark.visible = false;
+    for (let k = 0; k < 2; k++) {
+      const strip = new THREE.Mesh(geo, mat);
+      strip.position.set(0, k === 0 ? 0.13 : -0.13, 0);
+      mark.add(strip);
+    }
+    group.add(mark);
+    marks.push({ mark, mat, life: 0, maxLife: 0 });
+  }
+  snowSkidFx = { group, marks, accum: 0, lastX: null, lastZ: null };
+}
+
+// 在玩家走过的位置留一道滑痕（方向跟着位移走）
+function spawnSnowSkid(x, z, dx, dz) {
+  const fx = snowSkidFx;
+  if (!fx) return;
+  const len = Math.hypot(dx, dz);
+  if (len < 0.0001) return;
+  let slot = fx.marks.find((m) => m.life <= 0);
+  if (!slot) {
+    // 池子满了就抢最老的一组
+    slot = fx.marks.reduce((a, b) => (a.life < b.life ? a : b), fx.marks[0]);
+  }
+  const ang = Math.atan2(-dz, dx);   // 局部 +y 对应世界 -z
+  const s = Math.sin(ang);
+  const c = Math.cos(ang);
+  for (let k = 0; k < slot.mark.children.length; k++) {
+    const strip = slot.mark.children[k];
+    strip.rotation.z = ang;
+    const off = k === 0 ? 0.13 : -0.13;
+    strip.position.set(-s * off, c * off, 0);
+  }
+  slot.mark.position.set(x, 0.03, z);
+  slot.mark.visible = true;
+  slot.maxLife = 2.2 + Math.random() * 0.7;
+  slot.life = slot.maxLife;
+  slot.mat.opacity = 0.55;
+}
+
+function updateSnowSkid(dt, st, canSpawn) {
+  const fx = snowSkidFx;
+  if (!fx || !st || !st.player) return;
+
+  for (const m of fx.marks) {
+    if (m.life <= 0) continue;
+    m.life -= dt;
+    if (m.life <= 0) {
+      m.mark.visible = false;
+      m.mat.opacity = 0;
+      continue;
+    }
+    // 头 0.4 秒亮着，之后线性淡出
+    m.mat.opacity = 0.55 * Math.min(1, (m.life / m.maxLife) * 1.8);
+  }
+
+  const px = st.player.x;
+  const pz = st.player.z;
+  if (fx.lastX === null) {
+    fx.lastX = px;
+    fx.lastZ = pz;
+    return;
+  }
+  const dx = px - fx.lastX;
+  const dz = pz - fx.lastZ;
+  fx.lastX = px;
+  fx.lastZ = pz;
+  if (!canSpawn) {
+    fx.accum = 0;
+    return;
+  }
+  fx.accum += Math.hypot(dx, dz);
+  if (fx.accum < 0.9) return;        // 位移攒够一段才留痕，站着不磨蹭也留
+  fx.accum = 0;
+  spawnSnowSkid(px - dx * 0.5, pz - dz * 0.5, dx, dz);
+}
+
+/* 熔岩余烬：贴地光斑缓慢呼吸 + 少量上升火星（12 个槽位的固定粒子池） */
+function buildLavaEmberFx() {
+  const group = new THREE.Group();
+  scene.add(group);
+
+  const glows = [];
+  const glowGeo = new THREE.CircleGeometry(0.55, 12);
+  for (let i = 0; i < 4; i++) {
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xff6a22,
+      transparent: true,
+      opacity: 0.12,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const mesh = new THREE.Mesh(glowGeo, mat);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.set(
+      (Math.random() - 0.5) * 12,
+      0.025 + i * 0.004,
+      -14 + Math.random() * 18
+    );
+    const base = 0.7 + Math.random() * 0.8;
+    mesh.scale.setScalar(base);
+    group.add(mesh);
+    glows.push({
+      mesh, mat, base,
+      phase: Math.random() * Math.PI * 2,
+      speed: 0.35 + Math.random() * 0.4,
+    });
+  }
+
+  const n = 12;
+  const pos = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    pos[i * 3] = 999;          // 没在用的槽位挪到画面外
+    pos[i * 3 + 1] = -5;
+    pos[i * 3 + 2] = 999;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const points = new THREE.Points(
+    geo,
+    new THREE.PointsMaterial({
+      color: 0xff8a3a,
+      size: 0.08,
+      transparent: true,
+      opacity: 0.9,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      sizeAttenuation: true,
+    })
+  );
+  points.frustumCulled = false;
+  group.add(points);
+
+  lavaEmberFx = {
+    group, glows,
+    sparks: {
+      points, geo, pos,
+      life: new Float32Array(n),
+      vy: new Float32Array(n),
+      vx: new Float32Array(n),
+      vz: new Float32Array(n),
+    },
+    timer: 0,
+  };
+}
+
+function updateLavaEmber(dt, t) {
+  const fx = lavaEmberFx;
+  if (!fx) return;
+
+  for (const g of fx.glows) {
+    const k = 0.5 + 0.5 * Math.sin(t * g.speed + g.phase);
+    g.mat.opacity = 0.05 + k * 0.15;
+    g.mesh.scale.setScalar(g.base * (0.9 + k * 0.22));
+  }
+
+  const sp = fx.sparks;
+  const n = sp.life.length;
+  // 每秒 1~2 颗：间隔 0.75 秒补一颗，池子有上限
+  fx.timer += dt;
+  if (fx.timer >= 0.75) {
+    fx.timer = 0;
+    for (let i = 0; i < n; i++) {
+      if (sp.life[i] > 0) continue;
+      sp.life[i] = 1.2 + Math.random() * 0.8;
+      sp.pos[i * 3] = (Math.random() - 0.5) * 12;
+      sp.pos[i * 3 + 1] = 0.05;
+      sp.pos[i * 3 + 2] = -14 + Math.random() * 20;
+      sp.vx[i] = (Math.random() - 0.5) * 0.35;
+      sp.vz[i] = (Math.random() - 0.5) * 0.35;
+      sp.vy[i] = 0.4 + Math.random() * 0.5;
+      break;
+    }
+  }
+
+  let dirty = false;
+  for (let i = 0; i < n; i++) {
+    if (sp.life[i] <= 0) continue;
+    sp.life[i] -= dt;
+    if (sp.life[i] <= 0) {
+      sp.pos[i * 3] = 999;
+      sp.pos[i * 3 + 1] = -5;
+      sp.pos[i * 3 + 2] = 999;
+      dirty = true;
+      continue;
+    }
+    sp.pos[i * 3] += sp.vx[i] * dt;
+    sp.pos[i * 3 + 1] += sp.vy[i] * dt;
+    sp.pos[i * 3 + 2] += sp.vz[i] * dt;
+    dirty = true;
+  }
+  if (dirty) sp.geo.attributes.position.needsUpdate = true;
+}
+
+// 每帧分发：雪地滑痕只在局内且雪地图时生成，熔岩余烬只在熔岩类地图存在
+function updateMapGroundFx(dt, t) {
+  if (snowSkidFx && currentState) {
+    // 非局内只让旧痕淡完，不再新增
+    updateSnowSkid(dt, currentState, currentState.status === 'playing');
+  }
+  if (lavaEmberFx) updateLavaEmber(dt, t);
 }
 
 function updateQuake(dt) {
@@ -2757,6 +3132,32 @@ function spawnNapalmWallFx(x, z, width, depth, duration, color) {
   light.position.y = 1.2;
   group.add(light);
 
+  // 黑烟：火墙上方一串深灰烟团，各自随时间循环上升、变大、淡出。
+  // 固定 9 团，跟着这场火一起回收，不按帧生成，总量永远不超过 12。
+  const smokeGeo = new THREE.SphereGeometry(1, 8, 6);
+  const smoke = [];
+  for (let i = 0; i < 9; i++) {
+    const mesh = new THREE.Mesh(
+      smokeGeo,
+      new THREE.MeshBasicMaterial({
+        color: 0x2a2d31, transparent: true, opacity: 0, depthWrite: false,
+      })
+    );
+    const baseX = -width / 2 + (i / 8) * width + (Math.random() - 0.5) * 0.4;
+    const baseZ = (Math.random() - 0.5) * depth * 0.6;
+    mesh.position.set(baseX, 1.0, baseZ);
+    mesh.renderOrder = 2;
+    group.add(mesh);
+    smoke.push({
+      mesh,
+      baseX,
+      baseZ,
+      phase: Math.random(),
+      speed: 0.3 + Math.random() * 0.24,
+      sway: 0.28 + Math.random() * 0.4,
+    });
+  }
+
   scene.add(group);
   napalmFx.push({
     group,
@@ -2765,6 +3166,7 @@ function spawnNapalmWallFx(x, z, width, depth, duration, color) {
     emberSeeds: seeds,
     glow,
     light,
+    smoke,
     life: 0,
     maxLife: Math.max(0.5, duration),
   });
@@ -2803,6 +3205,20 @@ function updateNapalmFx(dt) {
 
     fx.glow.material.opacity = (0.6 + Math.sin(fx.life * 9) * 0.12) * fade;
     fx.light.intensity = (1.9 + Math.sin(fx.life * 15) * 0.4) * fade;
+
+    // 黑烟：每团按自己的速度循环 0~1，升到 4 米左右散掉，再从头开始
+    if (fx.smoke) {
+      for (const sm of fx.smoke) {
+        const u = (fx.life * sm.speed + sm.phase) % 1;
+        sm.mesh.position.set(
+          sm.baseX + Math.sin(fx.life * 1.3 + sm.phase * 6) * sm.sway,
+          1.0 + u * 3.1,
+          sm.baseZ
+        );
+        sm.mesh.scale.setScalar(0.55 + u * 1.15);
+        sm.mesh.material.opacity = Math.sin(Math.PI * u) * 0.34 * fade;
+      }
+    }
   }
 }
 
@@ -3915,6 +4331,25 @@ function syncRollingLogs(state) {
 
     entry.group.position.set(log.x, 0, log.z);
     entry.spinner.rotation.z = log.spin || 0;
+
+    // 尾部扬尘：按走过的距离撒，一小撮土 + 一粒木屑色，频率压住不抽干粒子池
+    const ud = entry.group.userData;
+    if (ud.logLastX != null) {
+      const moved = log.x - ud.logLastX;
+      if (moved > 0) {
+        ud.logDustAcc = (ud.logDustAcc || 0) + moved;
+        if (ud.logDustAcc > 0.85) {
+          ud.logDustAcc = 0;
+          spawnBurst(log.x - 0.7, 0.08, log.z + (Math.random() - 0.5) * 0.5, 0x6b5a44, 2, {
+            speed: 0.9, up: 0.8, spread: 0.35, life: 0.3, gravity: -3,
+          });
+          spawnBurst(log.x - 0.55, 0.2, log.z + (Math.random() - 0.5) * 0.5, 0xb07a3e, 1, {
+            speed: 1.2, up: 1.2, spread: 0.3, life: 0.32, gravity: -4,
+          });
+        }
+      }
+    }
+    ud.logLastX = log.x;
   }
 
   for (const [id, entry] of rollingLogMeshes) {
@@ -3995,6 +4430,21 @@ function syncKnightCharges(state) {
       knightChargeMeshes.set(k.id, mesh);
     }
     mesh.position.set(k.x, 0, k.z);
+
+    // 冲锋扬尘：按位移算间隔，一小撮 2~3 粒、life 短，500 粒池不会被抽干
+    if (mesh.userData.knightLastZ != null) {
+      const moved = mesh.userData.knightLastZ - k.z;   // 往 -z 冲，正值为前进
+      if (moved > 0) {
+        mesh.userData.knightDustAcc = (mesh.userData.knightDustAcc || 0) + moved;
+        if (mesh.userData.knightDustAcc > 1.1) {
+          mesh.userData.knightDustAcc = 0;
+          spawnBurst(k.x + (Math.random() - 0.5) * 0.3, 0.08, k.z + 0.55, 0x6b5a44, 3, {
+            speed: 0.9, up: 0.9, spread: 0.4, life: 0.28, gravity: -3,
+          });
+        }
+      }
+    }
+    mesh.userData.knightLastZ = k.z;
   }
 
   for (const [id, mesh] of knightChargeMeshes) {
@@ -4006,36 +4456,83 @@ function syncKnightCharges(state) {
   }
 }
 
-/* 坦克支援：左下方一辆坦克，打三发后撤退 */
+/* 坦克支援：左下方一辆坦克，打三发后撤退。
+ * 履带板单独成阵列（撤退时按里程滚动），炮塔是独立子组（开火时整组后坐）。 */
 function makeTankSupportMesh() {
   const group = new THREE.Group();
   const hullMat = new THREE.MeshStandardMaterial({ color: 0x6f7a58, roughness: 0.85 });
   const darkMat = new THREE.MeshStandardMaterial({ color: 0x2a2f28, roughness: 0.9 });
+  const trackMat = new THREE.MeshStandardMaterial({ color: 0x3a4038, roughness: 1 });
 
   const hull = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.5, 1.55), hullMat);
   hull.position.y = 0.45;
   group.add(hull);
 
+  // 两条履带：底板 + 齿板阵列。齿板位置在 syncTankSupport 里按走过的里程循环，
+  // 原地开火时不动，撤退时才看得出履带在转。
+  const treads = [];
+  const treadGeo = new THREE.BoxGeometry(0.27, 0.07, 0.2);
   for (const x of [-0.55, 0.55]) {
-    const track = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.38, 1.7), darkMat);
+    const track = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.38, 1.7), trackMat);
     track.position.set(x, 0.22, 0);
     group.add(track);
+    for (let i = 0; i < 8; i++) {
+      const plate = new THREE.Mesh(treadGeo, darkMat);
+      const baseZ = -0.78 + i * 0.22;
+      plate.position.set(x, 0.43, baseZ);
+      group.add(plate);
+      treads.push({ mesh: plate, baseZ });
+    }
   }
 
-  const turret = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.35, 0.7), hullMat);
+  // 炮塔独立成组：后坐时炮管跟着走，底盘不动
+  const turret = new THREE.Group();
   turret.position.set(0, 0.82, 0.05);
   group.add(turret);
 
+  const turretBox = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.35, 0.7), hullMat);
+  turret.add(turretBox);
+
   const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.16, 1.1), darkMat);
-  barrel.position.set(0, 0.9, -0.72);
+  barrel.position.set(0, 0.08, -0.72);
   barrel.rotation.x = -0.3;
-  group.add(barrel);
+  turret.add(barrel);
+
+  // 炮口制退器：后坐的位移有参照物才看得出来
+  const muzzle = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.16), darkMat);
+  muzzle.position.set(0, 0.16, -1.24);
+  turret.add(muzzle);
+
+  group.userData.turret = turret;
+  group.userData.turretBaseZ = 0.05;
+  group.userData.treads = treads;
+  group.userData.treadSpin = 0;
+  group.userData.recoilAt = -999;
+  group.userData.dustAt = 0;
+  group.userData.lastZ = null;
 
   return group;
 }
 
+/* 坦克开火：slotStrike 只给 (fromX, fromZ)，找最近的那辆让它后坐 */
+function triggerTankTurretKick(fromX, fromZ) {
+  let best = null;
+  let bestD = 4;
+  for (const [, mesh] of tankSupportMeshes) {
+    const dx = mesh.position.x - (fromX || 0);
+    const dz = mesh.position.z - (fromZ || 0);
+    const d = dx * dx + dz * dz;
+    if (d < bestD) {
+      bestD = d;
+      best = mesh;
+    }
+  }
+  if (best) best.userData.recoilAt = performance.now();
+}
+
 function syncTankSupport(state) {
   const alive = new Set();
+  const now = performance.now();
 
   for (const t of state.tankSupports || []) {
     alive.add(t.id);
@@ -4046,6 +4543,37 @@ function syncTankSupport(state) {
       tankSupportMeshes.set(t.id, mesh);
     }
     mesh.position.set(t.x, 0, t.z);
+
+    const ud = mesh.userData;
+
+    // 履带：按实际位移滚，齿板在 [-0.85, 0.85] 里循环
+    if (ud.lastZ != null) {
+      ud.treadSpin += (t.z - ud.lastZ) / 0.22;
+      for (const pl of ud.treads) {
+        const z = (((pl.baseZ + ud.treadSpin * 0.22 + 0.85) % 1.7) + 1.7) % 1.7 - 0.85;
+        pl.mesh.position.z = z;
+      }
+    }
+    ud.lastZ = t.z;
+
+    // 炮塔后坐：0.22 秒内沿 -z 弹出 0.12 再回位（sin 曲线，起落都不生硬）
+    const since = now - ud.recoilAt;
+    if (since < 220) {
+      const p = since / 220;
+      ud.turret.position.z = ud.turretBaseZ - Math.sin(Math.PI * p) * 0.12;
+      ud.turret.rotation.x = -Math.sin(Math.PI * p) * 0.05;
+    } else if (ud.turret.position.z !== ud.turretBaseZ) {
+      ud.turret.position.z = ud.turretBaseZ;
+      ud.turret.rotation.x = 0;
+    }
+
+    // 撤退扬尘：每 0.18 秒一小撮，跟着车尾走，不按帧喷
+    if (t.retreating && now - ud.dustAt > 180) {
+      ud.dustAt = now;
+      spawnBurst(t.x + (Math.random() - 0.5) * 0.5, 0.12, t.z - 0.85, 0x6f6350, 3, {
+        speed: 1.1, up: 1.2, spread: 0.5, life: 0.42, gravity: -3.5,
+      });
+    }
   }
 
   for (const [id, mesh] of tankSupportMeshes) {
@@ -4056,24 +4584,37 @@ function syncTankSupport(state) {
   }
 }
 
-/* 装甲车 */
+/* 装甲车：轮子是可以转的独立子对象（几何体先把轴向烘成 x，之后只转 rotation.x） */
 function makeApcMesh() {
   const group = new THREE.Group();
   const hullMat = new THREE.MeshStandardMaterial({ color: 0x7d8872, roughness: 0.8 });
   const darkMat = new THREE.MeshStandardMaterial({ color: 0x262b24, roughness: 0.95 });
+  const hubMat = new THREE.MeshStandardMaterial({ color: 0x9aa08c, roughness: 0.6, metalness: 0.4 });
 
   const hull = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.5, 1.7), hullMat);
   hull.position.y = 0.45;
   group.add(hull);
 
+  const wheelGeo = new THREE.CylinderGeometry(0.22, 0.22, 0.16, 10);
+  wheelGeo.rotateZ(Math.PI / 2);          // 轴转到 x 上，滚动就只需要 rotation.x
+  const lugGeo = new THREE.BoxGeometry(0.2, 0.08, 0.08);
+  const hubGeo = new THREE.SphereGeometry(0.07, 7, 5);
+  const wheels = [];
   for (const [x, z] of [[-0.45, -0.55], [0.45, -0.55], [-0.45, 0.55], [0.45, 0.55]]) {
-    const wheel = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.22, 0.22, 0.16, 10),
-      darkMat
-    );
-    wheel.rotation.z = Math.PI / 2;
+    const wheel = new THREE.Mesh(wheelGeo, darkMat);
     wheel.position.set(x, 0.22, z);
     group.add(wheel);
+
+    // 轮缘的三颗凸齿：纯圆柱转起来看不出来，凸出轮缘的齿才读得到"在滚"
+    for (let i = 0; i < 3; i++) {
+      const a = (i / 3) * Math.PI * 2;
+      const lug = new THREE.Mesh(lugGeo, hubMat);
+      lug.position.set(0, Math.cos(a) * 0.21, Math.sin(a) * 0.21);
+      wheel.add(lug);
+    }
+    const hub = new THREE.Mesh(hubGeo, hubMat);
+    wheel.add(hub);
+    wheels.push(wheel);
   }
 
   const turret = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.3, 0.55), hullMat);
@@ -4083,6 +4624,10 @@ function makeApcMesh() {
   const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.8), darkMat);
   barrel.position.set(0, 0.86, -0.6);
   group.add(barrel);
+
+  group.userData.wheels = wheels;
+  group.userData.wheelSpin = 0;
+  group.userData.lastZ = null;
 
   return group;
 }
@@ -4099,6 +4644,17 @@ function syncApcs(state) {
       apcMeshes.set(a.id, mesh);
     }
     mesh.position.set(a.x, 0, a.z);
+
+    // 轮子按这一帧走过的 z 距离转，走多快转多快，停车就不转
+    const ud = mesh.userData;
+    if (ud.lastZ != null) {
+      const dz = a.z - ud.lastZ;
+      if (Math.abs(dz) > 0.0001) {
+        ud.wheelSpin += dz / 0.22;
+        for (const w of ud.wheels) w.rotation.x = ud.wheelSpin;
+      }
+    }
+    ud.lastZ = a.z;
   }
 
   for (const [id, mesh] of apcMeshes) {
@@ -4108,6 +4664,27 @@ function syncApcs(state) {
       apcMeshes.delete(id);
     }
   }
+}
+
+/* 装甲车机枪口焰：一小团橙色火光 + 挂在它身上的短促点光，
+ * 点光跟着火球一起被 effects 回收，不会留在场上。曳光本体由 apcShot 另行绘制。 */
+function spawnApcMuzzleFlash(fromX, fromZ, color) {
+  if (!scene || !isFinite(fromX) || !isFinite(fromZ)) return;
+  const flash = new THREE.Mesh(
+    new THREE.SphereGeometry(0.1, 8, 6),
+    new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity: 0.9,
+      depthWrite: false, blending: THREE.AdditiveBlending,
+    })
+  );
+  flash.position.set(fromX, 0.86, fromZ - 0.75);
+  const light = new THREE.PointLight(color, 1.4, 3.0, 2);
+  flash.add(light);
+  scene.add(flash);
+  effects.push({
+    mesh: flash, life: 0, maxLife: 0.18,
+    type: 'fireball', baseScale: 0.55, baseY: 0.86,
+  });
 }
 
 /* 舰载无人机 */
@@ -4125,13 +4702,17 @@ function makeCarrierDroneMesh() {
   const body = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.16, 0.46), bodyMat);
   group.add(body);
 
+  // 四个旋翼改成独立子对象：桨叶是两片薄板，转起来才看得出在转（圆盘转了等于没转）
+  const rotorGeo = new THREE.BoxGeometry(0.34, 0.016, 0.055);
+  const rotors = [];
   for (const [x, z] of [[-0.22, -0.18], [0.22, -0.18], [-0.22, 0.18], [0.22, 0.18]]) {
-    const rotor = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.15, 0.15, 0.025, 10),
-      darkMat
-    );
-    rotor.position.set(x, 0.1, z);
+    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.06, 7), darkMat);
+    mast.position.set(x, 0.1, z);
+    group.add(mast);
+    const rotor = new THREE.Mesh(rotorGeo, darkMat);
+    rotor.position.set(x, 0.13, z);
     group.add(rotor);
+    rotors.push(rotor);
   }
 
   const glow = new THREE.Mesh(
@@ -4141,11 +4722,14 @@ function makeCarrierDroneMesh() {
   glow.position.y = -0.1;
   group.add(glow);
 
+  group.userData.rotors = rotors;
+
   return group;
 }
 
 function syncCarrierDrones(state) {
   const alive = new Set();
+  const now = performance.now() * 0.001;
 
   for (const d of state.carrierDrones || []) {
     alive.add(d.id);
@@ -4156,8 +4740,15 @@ function syncCarrierDrones(state) {
       scene.add(mesh);
       carrierDroneMeshes.set(d.id, mesh);
     }
-    mesh.position.set(d.x, 2.6, d.z);
-    mesh.rotation.y = d.phase + performance.now() * 0.001;
+    // 机身轻微上下浮，和旋翼的高频转动叠在一起才有"悬停"的感觉
+    mesh.position.set(d.x, 2.6 + Math.sin(now * 1.7 + d.id) * 0.1, d.z);
+    mesh.rotation.y = d.phase + now;
+
+    const rotors = mesh.userData.rotors || [];
+    for (let i = 0; i < rotors.length; i++) {
+      // 每个桨给不同相位：四桨同相会看起来像整体在闪
+      rotors[i].rotation.y = now * 26 + i * 1.6 + d.id * 0.4;
+    }
   }
 
   for (const [id, mesh] of carrierDroneMeshes) {
@@ -4172,6 +4763,7 @@ function syncCarrierDrones(state) {
 // 无人机蜂群：小型自杀机，贴着地面往目标飞，带一点倾斜
 function syncSwarmDrones(state) {
   const alive = new Set();
+  const now = performance.now() * 0.001;
 
   for (const d of state.swarmDrones || []) {
     alive.add(d.id);
@@ -4189,6 +4781,11 @@ function syncSwarmDrones(state) {
     entry.group.position.set(d.x, 1.45 + Math.sin(d.life * 6) * 0.1, d.z);
     entry.group.rotation.y = d.heading || 0;
     entry.group.rotation.z = Math.sin(d.life * 9) * 0.12;
+
+    const rotors = entry.group.userData.rotors || [];
+    for (let i = 0; i < rotors.length; i++) {
+      rotors[i].rotation.y = now * 30 + i * 1.6 + d.id * 0.5;
+    }
   }
 
   for (const [id, entry] of swarmDroneMeshes) {
@@ -4396,6 +4993,15 @@ function syncFriendlyZombies(state) {
         entry = { isModel: false, root: mesh };
       }
       friendlyZombieMeshes.set(f.id, entry);
+
+      // 病毒转化的僵尸是"刚变过来"的那一只：叠一圈绿色扩散环 + 一小簇绿闪做过渡。
+      // 只读 f.converted 做视觉叠加，不改 state、不延迟任何逻辑。
+      if (f.converted) {
+        spawnRing(f.x, f.z, 0x8fe36a, 0.5);
+        spawnBurst(f.x, 0.7, f.z, 0x9dff7a, 8, {
+          speed: 1.7, up: 1.8, spread: 0.3, life: 0.35, gravity: -4,
+        });
+      }
     }
 
     const root = entry.root;
@@ -5934,6 +6540,88 @@ function getCrateGeo() {
   return crateGeos;
 }
 
+/* 空投伞：箱子从天而降（crate 从 y=12、weapon 箱从 y=11 往下掉），
+ * 下落期间头顶挂一顶伞，落地瞬间伞面脱开上升淡出、箱子压一下再弹回。
+ * 伞面/伞绳几何共用，材质每个箱子独立——共用材质会让所有伞跟着一个箱子一起变透明
+ * （交接文档里那条坑）。落地进度不读 state 之外的东西，直接用箱子当前 y 推。 */
+let chuteAssets = null;
+
+function ensureChuteAssets() {
+  if (chuteAssets) return chuteAssets;
+  chuteAssets = {
+    canopy: new THREE.SphereGeometry(0.55, 12, 6, 0, Math.PI * 2, 0, Math.PI * 0.5),
+    rope: new THREE.BoxGeometry(0.015, 1, 0.015),
+  };
+  return chuteAssets;
+}
+
+function attachParachute(host) {
+  const assets = ensureChuteAssets();
+  const chute = new THREE.Group();
+  const chuteCanopyMat = new THREE.MeshBasicMaterial({
+    color: 0xe6e0c6, transparent: true, opacity: 0.92,
+    side: THREE.DoubleSide, depthWrite: false,
+  });
+  const chuteRopeMat = new THREE.MeshBasicMaterial({
+    color: 0xbdb69e, transparent: true, opacity: 0.8, depthWrite: false,
+  });
+
+  const canopy = new THREE.Mesh(assets.canopy, chuteCanopyMat);
+  canopy.position.y = 1.55;
+  chute.add(canopy);
+
+  // 四根伞绳：从伞面边缘斜拉到箱顶
+  for (const [rx, rz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+    const rope = new THREE.Mesh(assets.rope, chuteRopeMat);
+    rope.position.set(rx * 0.2, 1.0, rz * 0.2);
+    rope.rotation.z = -rx * 0.22;
+    rope.rotation.x = rz * 0.22;
+    chute.add(rope);
+  }
+
+  chute.visible = false;
+  host.add(chute);
+  return { chute, chuteCanopyMat, chuteRopeMat };
+}
+
+/* 每帧推进伞和落地回弹。同步函数没有 dt，这里统一用壁钟时间算进度。 */
+function updateParachute(entry, obj) {
+  const chute = entry.chute;
+  if (!chute) return;
+  const now = performance.now();
+
+  if (!obj.landed) {
+    if (!chute.visible) chute.visible = true;
+    entry.chuteLandAt = 0;
+    // 箱子在下落时会翻滚，伞取父级四元数的逆，伞面才保持水平
+    chute.quaternion.copy(entry.group.quaternion).invert();
+    chute.position.y = 0.62 + Math.sin(now * 0.004 + (entry.phase || 0)) * 0.04;
+    chute.scale.setScalar(1);
+    entry.chuteCanopyMat.opacity = 0.92;
+    entry.chuteRopeMat.opacity = 0.8;
+    entry.group.scale.set(1, 1, 1);
+    return;
+  }
+
+  if (!chute.visible) return;
+  if (!entry.chuteLandAt) entry.chuteLandAt = now;
+
+  // 伞：0.36 秒里往上飘一点、涨大一点、淡到看不见
+  const p = Math.min(1, (now - entry.chuteLandAt) / 360);
+  chute.quaternion.copy(entry.group.quaternion).invert();
+  chute.position.y = 0.62 + p * 1.1;
+  chute.scale.setScalar(1 + p * 0.18);
+  entry.chuteCanopyMat.opacity = (1 - p) * 0.92;
+  entry.chuteRopeMat.opacity = (1 - p) * 0.8;
+  if (p >= 1) chute.visible = false;
+
+  // 箱子下压再回弹，落地才有重量
+  const q = Math.min(1, (now - entry.chuteLandAt) / 280);
+  const squash = Math.sin(Math.PI * q) * 0.14;
+  entry.group.scale.set(1 + squash * 0.35, 1 - squash, 1 + squash * 0.35);
+  if (q >= 1) entry.group.scale.set(1, 1, 1);
+}
+
 function makeCrateMesh() {
   const g = new THREE.Group();
   const geo = getCrateGeo();
@@ -5973,7 +6661,14 @@ function makeCrateMesh() {
   flag.position.set(0.12, 0.82, 0);
   g.add(flag);
 
-  return { group: g, flag, woodMat, goldMat };
+  const chute = attachParachute(g);
+  return {
+    group: g, flag, woodMat, goldMat,
+    chute: chute.chute,
+    chuteCanopyMat: chute.chuteCanopyMat,
+    chuteRopeMat: chute.chuteRopeMat,
+    chuteLandAt: 0,
+  };
 }
 
 function syncCrates(state) {
@@ -6000,6 +6695,9 @@ function syncCrates(state) {
       entry.group.rotation.z *= 0.9;
     }
     entry.flag.rotation.y = Math.sin(performance.now() * 0.004 + entry.phase) * 0.5;
+
+    // 伞：下落期间挂在箱头，落到 0 的那帧脱开淡出 + 箱子回弹
+    updateParachute(entry, c);
   }
 
   // 被打碎的箱子：把场上多余的模型拆掉（材质是每个箱子独立的，要释放）
@@ -6009,6 +6707,8 @@ function syncCrates(state) {
     entry.woodMat.dispose();
     entry.goldMat.dispose();
     entry.flag.material.dispose();
+    if (entry.chuteCanopyMat) entry.chuteCanopyMat.dispose();
+    if (entry.chuteRopeMat) entry.chuteRopeMat.dispose();
     crateVisuals.delete(id);
   }
 }
@@ -6019,6 +6719,8 @@ function clearCrates() {
     entry.woodMat.dispose();
     entry.goldMat.dispose();
     entry.flag.material.dispose();
+    if (entry.chuteCanopyMat) entry.chuteCanopyMat.dispose();
+    if (entry.chuteRopeMat) entry.chuteRopeMat.dispose();
   }
   crateVisuals.clear();
 }
@@ -6462,7 +7164,15 @@ function makePickupMesh(tint) {
   ring.rotation.x = Math.PI / 2;
   g.add(ring);
 
-  return { group: g, ring, bodyMat, accentMat, ringMat, tint };
+  // 空投重武器箱同样是从 y=11 掉下来的，挂伞；落地后伞淡出、箱子回弹
+  const chute = attachParachute(g);
+  return {
+    group: g, ring, bodyMat, accentMat, ringMat, tint,
+    chute: chute.chute,
+    chuteCanopyMat: chute.chuteCanopyMat,
+    chuteRopeMat: chute.chuteRopeMat,
+    chuteLandAt: 0,
+  };
 }
 
 function syncPickups(state) {
@@ -6496,6 +7206,8 @@ function syncPickups(state) {
     const pulse = 1.1 + Math.sin(performance.now() * 0.005 + entry.phase) * 0.45;
     entry.accentMat.emissiveIntensity = pulse;
     entry.ringMat.opacity = 0.55 + Math.sin(performance.now() * 0.005 + entry.phase) * 0.2;
+
+    updateParachute(entry, b);
   }
 
   for (const [id, entry] of pickupVisuals) {
@@ -6504,6 +7216,8 @@ function syncPickups(state) {
     entry.bodyMat.dispose();
     entry.accentMat.dispose();
     entry.ringMat.dispose();
+    if (entry.chuteCanopyMat) entry.chuteCanopyMat.dispose();
+    if (entry.chuteRopeMat) entry.chuteRopeMat.dispose();
     pickupVisuals.delete(id);
   }
 }
@@ -6514,6 +7228,8 @@ function clearPickups() {
     entry.bodyMat.dispose();
     entry.accentMat.dispose();
     entry.ringMat.dispose();
+    if (entry.chuteCanopyMat) entry.chuteCanopyMat.dispose();
+    if (entry.chuteRopeMat) entry.chuteRopeMat.dispose();
   }
   pickupVisuals.clear();
 }
@@ -7167,6 +7883,168 @@ function spawnSkyStrike(x, z, color, delay = 0) {
     to: { x, y: 0.3, z },
     arc: 0,
   });
+}
+
+/* 空袭轰炸机：三颗炸弹各配一架，从屏幕一侧高空横穿过去。
+ *
+ * 落点必须正好压在 delay 时刻的 (x,z) 上方，所以借用 arc 分支的直线位移反算：
+ * 起点放在左侧 approach 外，终点按 approach 的比例推到落点右边，
+ * 使 t = delay/总时长 那一刻刚好走到目标上空；之后继续飞，飞出画面才回收。
+ * 高度 8.6，远高于士兵（1.5）和槽位，不会穿模。三架同时在场也不互斥。
+ */
+function spawnAirStrikeBomber(x, z, color, delay = 0) {
+  if (!scene || !isFinite(x) || !isFinite(z)) return;
+
+  // 位移对象必须是一个带材质的 Mesh：effects 的 arc 分支结束时读 mesh.material，
+  // Group 没有 material 会直接抛错，所以整架飞机挂在机身这个 Mesh 底下。
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: 0x3d4653, roughness: 0.85, metalness: 0.2,
+  });
+  const darkMat = new THREE.MeshStandardMaterial({ color: 0x1a1f26, roughness: 0.95 });
+
+  // 机身：机头朝 +x（飞行方向）
+  const plane = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.46, 0.6), bodyMat);
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.75, 7), bodyMat);
+  nose.rotation.z = -Math.PI / 2;
+  nose.position.x = 1.55;
+  plane.add(nose);
+
+  // 后掠主翼：两块薄板，绕 y 转到翼尖往后拖
+  for (const side of [-1, 1]) {
+    const wing = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.1, 1.35), bodyMat);
+    wing.position.set(-0.3, -0.02, side * 0.85);
+    wing.rotation.y = side * 0.42;
+    plane.add(wing);
+  }
+
+  // 平尾 + 双垂尾
+  const tail = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.09, 1.5), bodyMat);
+  tail.position.set(-1.15, 0.05, 0);
+  plane.add(tail);
+  for (const side of [-1, 1]) {
+    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.52, 0.08), darkMat);
+    fin.position.set(-1.12, 0.3, side * 0.34);
+    plane.add(fin);
+  }
+
+  // 两个发动机短舱，尾部挂一点加色亮斑，压成剪影时还认得出是飞机
+  for (const side of [-1, 1]) {
+    const pod = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.34, 0.34), darkMat);
+    pod.position.set(0.25, -0.28, side * 0.78);
+    plane.add(pod);
+    const jet = new THREE.Mesh(
+      new THREE.SphereGeometry(0.15, 8, 6),
+      new THREE.MeshBasicMaterial({
+        color, transparent: true, opacity: 0.7, depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      })
+    );
+    jet.position.set(-0.26, -0.28, side * 0.78);
+    jet.scale.set(1.7, 1, 1);
+    plane.add(jet);
+  }
+
+  const planeY = 8.6;
+  const approach = 9.5;                  // 起手位置在落点左侧多远
+  const after = 0.62;                    // 投弹后还要飞多久才出画
+  const wait = Math.max(0.05, delay);    // delay=0 时避免除零
+  const total = wait + after;
+  const startX = x - approach;
+  // 直线位移反解：delta * (wait/total) = approach，所以 delta = approach * total / wait
+  const endX = startX + approach * (total / wait);
+
+  plane.position.set(startX, planeY, z);
+  scene.add(plane);
+  effects.push({
+    mesh: plane, life: 0, maxLife: total, type: 'arc',
+    from: { x: startX, y: planeY, z },
+    to: { x: endX, y: planeY, z },
+    arc: 0,
+  });
+}
+
+/* 病毒炸弹落地后的毒雾：四层低空绿雾，靠 dust 分支自带扩散+淡出，
+ * 只错开起始时间，叠成"一直在冒"的持续感（最长约 3 秒，不常驻）。 */
+function spawnVirusFog(x, z) {
+  if (!scene || !isFinite(x) || !isFinite(z)) return;
+  const geo = new THREE.SphereGeometry(1.35, 10, 7);
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2 + Math.random() * 0.5;
+    const r = i === 0 ? 0 : 0.6 + Math.random() * 0.9;
+    const mesh = new THREE.Mesh(
+      geo,
+      new THREE.MeshBasicMaterial({
+        color: 0x4f9a52, transparent: true, opacity: 0.3, depthWrite: false,
+      })
+    );
+    mesh.position.set(
+      x + Math.cos(a) * r,
+      0.55 + Math.random() * 0.35,
+      z + Math.sin(a) * r
+    );
+    mesh.renderOrder = 3;
+    scene.add(mesh);
+    effects.push({
+      mesh, life: -i * 0.45, maxLife: 2.2 + Math.random() * 0.5, type: 'dust',
+    });
+  }
+}
+
+/* 生物人军团召唤阵：地面双层紫符文环 + 一排从地里升起的短光柱。
+ * 20 个友方僵尸铺在 x -7~7、z≈8.5 的一条线上（见 game.js spawnFriendlyLegion），
+ * 阵心放在这条线的中点，横向铺 7.6 才盖得住两头，纵向 2.0 留出前后余量。 */
+function spawnBioLegionSigil(x, z, color) {
+  if (!scene || !isFinite(x) || !isFinite(z)) return;
+
+  const ringGeoOuter = new THREE.RingGeometry(0.94, 1, 64);
+  const ringGeoInner = new THREE.RingGeometry(0.62, 0.7, 56);
+  const ringOuter = new THREE.Mesh(
+    ringGeoOuter,
+    new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity: 0.85, side: THREE.DoubleSide,
+      depthWrite: false, blending: THREE.AdditiveBlending,
+    })
+  );
+  ringOuter.rotation.x = -Math.PI / 2;
+  ringOuter.position.set(x, 0.05, z);
+  ringOuter.scale.set(7.6, 2.0, 1);
+  scene.add(ringOuter);
+  effects.push({ mesh: ringOuter, life: 0, maxLife: 1.5, type: 'fade' });
+
+  const ringInner = new THREE.Mesh(
+    ringGeoInner,
+    new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity: 0.7, side: THREE.DoubleSide,
+      depthWrite: false, blending: THREE.AdditiveBlending,
+    })
+  );
+  ringInner.rotation.x = -Math.PI / 2;
+  ringInner.position.set(x, 0.04, z);
+  ringInner.scale.set(6.4, 1.4, 1);
+  scene.add(ringInner);
+  effects.push({ mesh: ringInner, life: 0, maxLife: 1.2, type: 'fade' });
+
+  // 七根短光柱：从地下升到 0.55，露头后迅速消失
+  const spikeGeo = new THREE.ConeGeometry(0.1, 1.5, 5);
+  for (let i = 0; i < 7; i++) {
+    const sx = x - 6 + (i / 6) * 12;
+    const sz = z + (i % 2 ? 0.55 : -0.55);
+    const spike = new THREE.Mesh(
+      spikeGeo,
+      new THREE.MeshBasicMaterial({
+        color, transparent: true, opacity: 0.75, depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      })
+    );
+    spike.position.set(sx, -0.9, sz);
+    scene.add(spike);
+    effects.push({
+      mesh: spike, life: -i * 0.05, maxLife: 0.42, type: 'arc',
+      from: { x: sx, y: -0.75, z: sz },
+      to: { x: sx, y: 0.55, z: sz },
+      arc: 0,
+    });
+  }
 }
 
 /* 炮火覆盖：圆形范围 + 8 发炮弹错开落下 */
