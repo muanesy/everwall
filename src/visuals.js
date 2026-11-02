@@ -1123,7 +1123,19 @@ export function initVisuals(container, events) {
 
   events.addEventListener('barricadeRebuild', () => {
     const bx = barricadeGroup ? barricadeGroup.position.x : BARRICADE_X;
+
+    // 重建：先把破损段位强制归零，让墙立刻恢复完好外观，
+    // 再叠一层绿色光柱表示"修好了"
+    if (barricadeGroup) {
+      barricadeGroup.userData.damageStage = -1;
+      applyBarricadeDamage(1);
+    }
+
     spawnRing(bx, BARRICADE_Z, 0x5adf7a, 0.4);
+    spawnRing(bx, BARRICADE_Z, 0x9effc0, 0.7);
+    spawnBurst(bx, 0.4, BARRICADE_Z, 0x5adf7a, 14, {
+      speed: 2.2, up: 3.0, spread: 1.2, life: 0.6, gravity: -5,
+    });
   });
 
   events.addEventListener('armyHurt', (e) => {
@@ -5617,6 +5629,9 @@ function addBarPart(geo, mat, x, y, z, rotY = 0) {
 function buildBarricadeLook(eraId) {
   if (!barricadeGroup) return;
   clearBarricadeLook();
+  // 部件全换了新的，破损段位也要跟着归零——
+  // 否则重建后的墙会继续沿用上一条命的段位，一建好就是破的
+  barricadeGroup.userData.damageStage = -1;
 
   const W = BARRICADE_WIDTH;
   const std = (color, rough = 0.8, metal = 0.05, emissive = 0x000000, ei = 0) =>
@@ -5759,6 +5774,74 @@ function initBarricade() {
   scene.add(barricadeCountdown);
 }
 
+/* ----------------------------------------------------------
+ * 工事三段破损（美术需求 P1）
+ *
+ * 三个段位，按血量比切：
+ *   完好  >66%  —— 全部件在位、不歪
+ *   一段  33~66% —— 约 1/4 部件缺失，剩下的轻微歪斜
+ *   二段  <33%   —— 约一半部件缺失，缺口明显，剩下的明显歪斜、下沉
+ *
+ * 做法是**直接改已有部件**而不是重建模型：
+ * 重建会在每次挨打时闪一下，反而看不出"越来越破"的连续过程。
+ * 部件的原始位置在建的时候记在 userData 里，破损只改偏移，复原时能精确回去。
+ * ---------------------------------------------------------- */
+function applyBarricadeDamage(ratio) {
+  if (!barricadeParts.length) return;
+
+  let stage;
+  if (ratio > 0.66) stage = 0;
+  else if (ratio > 0.33) stage = 1;
+  else stage = 2;
+
+  // 段位没变就不动，避免每帧重算 60 次
+  if (barricadeGroup.userData.damageStage === stage) return;
+  barricadeGroup.userData.damageStage = stage;
+
+  const n = barricadeParts.length;
+  for (let i = 0; i < n; i++) {
+    const p = barricadeParts[i];
+    // 第一次进入时记住原始变换
+    if (!p.userData.home) {
+      p.userData.home = {
+        x: p.position.x, y: p.position.y, z: p.position.z,
+        rx: p.rotation.x, ry: p.rotation.y, rz: p.rotation.z,
+        visible: p.visible,
+      };
+    }
+    const h = p.userData.home;
+
+    if (stage === 0) {
+      p.visible = h.visible;
+      p.position.set(h.x, h.y, h.z);
+      p.rotation.set(h.rx, h.ry, h.rz);
+      continue;
+    }
+
+    // 用下标做确定性伪随机：同一段位每次都落在同一批部件上，
+    // 不能用 Math.random()，否则每帧跳一次、看着像在抽搐
+    const hash = (i * 2654435761) % 1000 / 1000;
+
+    if (stage === 1) {
+      p.visible = hash > 0.25;                 // 约 1/4 部件没了
+      p.position.set(h.x, h.y - (hash < 0.4 ? 0.06 : 0), h.z);
+      p.rotation.set(
+        h.rx + (hash - 0.5) * 0.24,
+        h.ry + (hash - 0.5) * 0.3,
+        h.rz + (hash - 0.5) * 0.22
+      );
+    } else {
+      p.visible = hash > 0.5;                  // 约一半部件没了
+      p.position.set(h.x + (hash - 0.5) * 0.1, h.y - 0.12, h.z);
+      p.rotation.set(
+        h.rx + (hash - 0.5) * 0.6,
+        h.ry + (hash - 0.5) * 0.7,
+        h.rz + (hash - 0.5) * 0.5
+      );
+    }
+  }
+}
+
 function syncBarricade(state) {
   const b = state.barricade;
   if (!b || !barricadeGroup) return;
@@ -5798,6 +5881,11 @@ function syncBarricade(state) {
     barricadeHpBar.fill.material.color.setHex(
       ratio > 0.5 ? 0x5adf7a : ratio > 0.25 ? 0xffc24a : 0xff5a44
     );
+
+    // 三段破损（美术需求 P1「工事额外 3 段破损」）：
+    // 不重建模型，直接按血量比改已有部件——隐藏一部分、把剩下的打歪。
+    // 重建模型的话每被打一下就闪一次，反而看不出"越来越破"这个连续过程。
+    applyBarricadeDamage(ratio);
   } else {
     const sec = Math.max(0, Math.ceil(b.cooldown));
     if (sec !== barricadeCountdownSec) {
