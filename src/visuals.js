@@ -3127,7 +3127,7 @@ function spawnScoreFloat(x, z, score, strong) {
   }
   const el = document.createElement('div');
   el.className = strong ? 'fx-float fx-float--elite' : 'fx-float';
-  el.textContent = `人数 +${score}`;
+  el.textContent = `分数 +${score}`;
   fxFloats.appendChild(el);
   floatFeed.push({ el, x, z, life: 0 });
 }

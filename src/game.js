@@ -235,7 +235,6 @@ events.addEventListener('barrelExploded', (e) => {
     if (zb.hp <= 0) {
       state.zombies.splice(i, 1);
       state.score += CONFIG.zombie.types[zb.type]?.score || 1;
-      awardKillBonus(zb.type);
       emit('zombieDie', { x: zb.x, z: zb.z, type: zb.type });
     }
   }
@@ -542,7 +541,6 @@ function updateBullets(dt) {
         if (z.hp <= 0) {
           state.zombies.splice(j, 1);
           state.score += CONFIG.zombie.types[z.type].score;
-          awardKillBonus(z.type);
           emit('zombieDie', { x: z.x, z: z.z, type: z.type });
         }
 
@@ -878,12 +876,6 @@ function damageArmy(amount, cause) {
     state.soldiers = 0;
     state.status = 'over';
   }
-}
-
-// 击杀掉落：大块头 +3 兵，精英 +5 兵
-function awardKillBonus(type) {
-  if (type === 1) applySoldiers(3);
-  else if (type === 3) applySoldiers(5);
 }
 
 // 屏障数值生效：正数加兵，负数扣兵
