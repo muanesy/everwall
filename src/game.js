@@ -465,9 +465,12 @@ const state = {
   buffMul: 1,
   // 电磁脉冲：冻结期间僵尸不移动、不啃墙
   freezeUntil: 0,
-  // 熵增：持续掉血的截止时间和每秒伤害
+  // 熵增：持续掉百分比血的截止时间、起始时刻、每秒比例和减速递增系数
   entropyUntil: 0,
-  entropyDps: 0,
+  entropyStart: 0,
+  entropyPct: 0,
+  entropyRamp: 0.88,
+  entropyMinMul: 0.18,
 
   // 路障：抽到卡才出现，挡在前排，有血量，碎了冷却后重建
   barricade: {
@@ -726,7 +729,10 @@ function resetState(opts = {}) {
   state.buffMul = 1;
   state.freezeUntil = 0;
   state.entropyUntil = 0;
-  state.entropyDps = 0;
+  state.entropyStart = 0;
+  state.entropyPct = 0;
+  state.entropyRamp = 0.88;
+  state.entropyMinMul = 0.18;
 
   state.bullets.length = 0;
   state.barriers.length = 0;
@@ -1256,7 +1262,7 @@ const SKILL_DEFS = [
     bossDamage: 0.30,   // Boss 不处决，改吃 30% 最大生命
     color: 0xffffff,
   },
-  { id: 'cosmicCollapse', name: '宇宙坍缩', era: 5, type: 'pull', damage: 80, radius: 6.0, pullRadius: 14, pullFactor: 0.85, color: 0x6a4dff },
+  { id: 'cosmicCollapse', name: '宇宙坍缩', era: 5, type: 'pull', radius: 6.0, pullRadius: 14, pullFactor: 0.85, innerCut: 0.35, outerCut: 0.15, bossCutMul: 0.5, color: 0x6a4dff },
   {
     id: 'sacrifice', name: '献祭', era: 5, type: 'sacrifice',
     soldiers: 20, requiresSoldiers: 20,
@@ -1270,7 +1276,15 @@ const SKILL_DEFS = [
     pause: 3,           // 随后几秒不刷怪
     color: 0xbfe9ff,
   },
-  { id: 'entropy', name: '熵增', era: 5, type: 'slow', duration: 5, mul: 0.5, dps: 8, color: 0x8a8f99 },
+  {
+    id: 'entropy', name: '熵增', era: 5, type: 'slow',
+    duration: 8,
+    mul: 0.5,          // 起始减速：所有移动 ×0.5
+    ramp: 0.88,        // 每秒再乘 0.88，越拖越慢
+    minMul: 0.18,      // 最慢到这里
+    dpsPct: 0.03,      // 每秒掉 3% 最大生命（8 秒共 24%），不致死
+    color: 0x8a8f99,
+  },
 ];
 
 // 一次性技能改成存次数后，每张卡给几次。强技能少给，功能技能多给。
@@ -1316,10 +1330,10 @@ const SKILL_DESCS = {
   carrierDrones: '召唤 4 架大型舰载无人机，持续一波（15 秒），每 0.45 秒造成 20 点小范围伤害',
   timeDilation: '全场僵尸所有移动 ×0.4，持续 3 秒',
   finalJudgment: '全场处决：生命 ≤50% 的僵尸直接消失并计分；其余受 20% 最大生命伤害；Boss 改吃 30% 最大生命',
-  cosmicCollapse: '半径 14 内僵尸吸向中心，中心半径 6 内 80 伤害',
+  cosmicCollapse: '半径 14 内僵尸吸向中心（走完 85% 距离）；按吸引前的距离结算：中心 6 内扣 35% 最大生命，6~14 扣 15%，Boss 减半',
   sacrifice: '消耗 20 兵（需多于 20），全场僵尸生命上限与当前生命一起砍半，Boss 砍到 75%；不致死、不直接计分',
   reboot: '全场僵尸不计分消失；士兵回补到本局峰值的 80%；随后 3 秒不刷怪',
-  entropy: '全场僵尸所有移动 ×0.5，每秒 8 伤害，持续 5 秒',
+  entropy: '持续 8 秒：全场移动 ×0.5 起、每秒再慢 12%（最低 ×0.18）；期间每秒掉 3% 最大生命（共 24%），不致死',
 };
 
 function densestPoint() {
@@ -1429,6 +1443,45 @@ function castJudgment(def) {
   }
 
   return { executed, chipped, line };
+}
+
+// 宇宙坍缩收尾：按"离中心多远"分档扣最大生命，Boss 按 bossCutMul 打折。
+// 和黑洞的固定 40 伤害分开：黑洞是聚怪 + 小伤害，坍缩是聚怪 + 比例压制。
+function collapseDamage(def, distBefore) {
+  const inner = def.radius ?? 6;
+  const outer = def.pullRadius ?? 14;
+  const bossMul = def.bossCutMul ?? 0.5;
+
+  for (let i = state.zombies.length - 1; i >= 0; i--) {
+    const zb = state.zombies[i];
+    const dist = distBefore.get(zb);
+    if (dist == null) continue;
+    const cut = dist <= inner ? def.innerCut : dist <= outer ? def.outerCut : 0;
+    if (!cut) continue;
+
+    const maxHp = Math.max(1, zb.maxHp || zb.hp);
+    damageZombieAt(i, maxHp * cut * (zb.boss ? bossMul : 1));
+  }
+}
+
+// 当前减速倍率：普通减速直接取 slowMul，熵增在它基础上每秒再乘一次 ramp
+function currentSlowMul() {
+  if (state.time >= state.slowUntil) return 1;
+  if (state.time >= state.entropyUntil || !state.entropyPct) return state.slowMul;
+
+  const elapsed = Math.max(0, state.time - state.entropyStart);
+  const ramped = state.slowMul * Math.pow(state.entropyRamp, elapsed);
+  return Math.max(state.entropyMinMul, ramped);
+}
+
+// 熵增的持续伤害：按最大生命百分比扣，至少留 1 血 —— 这张牌不负责杀人
+function applyEntropyDot(amount) {
+  if (amount <= 0) return;
+  for (const zb of state.zombies) {
+    const maxHp = Math.max(1, zb.maxHp || zb.hp);
+    const next = zb.hp - maxHp * amount;
+    zb.hp = next < 1 ? 1 : next;
+  }
 }
 
 // 普通僵尸在当前波次的血量。滚木用它算伤害：1.25 倍能秒普通，大块头是 2.5 倍血，秒不掉。
@@ -1583,9 +1636,14 @@ function castSkill(id) {
     case 'slow':
       state.slowUntil = state.time + def.duration;
       state.slowMul = def.mul;
-      if (def.dps) {
+      if (def.dpsPct) {
+        // 熵增：减速从 mul 起每秒再乘 ramp，掉血按最大生命百分比，
+        // 所以它不会随波次贬值（旧的每秒 8 点固定伤害到后期等于没有）
         state.entropyUntil = state.time + def.duration;
-        state.entropyDps = def.dps;
+        state.entropyStart = state.time;
+        state.entropyPct = def.dpsPct;
+        state.entropyRamp = def.ramp ?? 0.88;
+        state.entropyMinMul = def.minMul ?? 0.18;
       }
       // 保险：以后有减速带即时伤害的技能，范围按全屏算
       if (def.damage) damageZombiesInRadius(0, -6, 60, def.damage);
@@ -1610,9 +1668,13 @@ function castSkill(id) {
       upgradeBarricade();
       break;
     case 'pull': {
-      // 只吸 pullRadius 内的僵尸，按 pullFactor 拉向落点；吸到中心的才吃伤害
+      // 只吸 pullRadius 内的僵尸，按 pullFactor 拉向落点
       const pullR2 = (def.pullRadius || 12) ** 2;
       const factor = def.pullFactor ?? 0.85;
+      // 分档伤害要记"被吸之前"的距离：85% 拉完大家都贴在中心，
+      // 按拉完的位置算就只剩一档，两档设计会失效
+      const distBefore = def.innerCut ? new Map() : null;
+
       for (const zb of state.zombies) {
         const dx = target.x - zb.x;
         const dz = target.z - zb.z;
@@ -1620,12 +1682,21 @@ function castSkill(id) {
         if (d2 > pullR2) continue;
 
         const d = Math.sqrt(d2) || 1;
+        if (distBefore) distBefore.set(zb, d);
+
         const step = d * factor;
         zb.x += (dx / d) * step;
         zb.z += (dz / d) * step;
         zb.aggro = false;
       }
-      damageZombiesInRadius(target.x, target.z, def.radius, def.damage);
+
+      if (def.innerCut) {
+        // 宇宙坍缩：按吸引前的距离扣最大生命百分比，越挨着奇点越惨。
+        // 80 点固定伤害到后期连杂兵血皮都掉不了，改成比例后它负责把整片压到斩杀线
+        collapseDamage(def, distBefore);
+      } else {
+        damageZombiesInRadius(target.x, target.z, def.radius, def.damage);
+      }
       break;
     }
     case 'warp': {
@@ -2738,9 +2809,9 @@ function updateZombies(dt) {
   updateBarricade(dt);
   state.zombieTimer -= dt;
 
-  // 熵增：持续掉血，按秒结算，游戏慢放时也跟着变慢
-  if (state.time < state.entropyUntil && state.entropyDps > 0) {
-    damageZombiesInRadius(0, -6, 60, state.entropyDps * dt);
+  // 熵增：按最大生命百分比掉血，按秒结算，游戏慢放时也跟着变慢；不致死
+  if (state.time < state.entropyUntil && state.entropyPct > 0) {
+    applyEntropyDot(state.entropyPct * dt);
   }
 
   // 电磁脉冲：冻结期间所有僵尸原地不动，也不啃路障
@@ -2768,7 +2839,7 @@ function updateZombies(dt) {
   }
 
   // 移动：进入下半场且离士兵够近时，开始横向追人
-  const slowMul = state.time < state.slowUntil ? state.slowMul : 1;
+  const slowMul = currentSlowMul();
 
   for (const z of state.zombies) {
     if (frozen) continue;

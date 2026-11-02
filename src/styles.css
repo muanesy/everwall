@@ -378,12 +378,6 @@ canvas {
   100% { opacity: 0; }
 }
 
-/* 全屏闪光：审判白光、献祭血光、重启冷光、轨道轰炸共用 */
-@keyframes fx-flash-pop {
-  0% { opacity: 0.9; }
-  100% { opacity: 0; }
-}
-
 /* 时间类减速：蓝色边缘滤镜，持续到减速结束 */
 .fx-slow {
   position: fixed;
@@ -542,10 +536,6 @@ canvas {
   z-index: 9;
   opacity: 0;
   mix-blend-mode: screen;
-}
-
-.fx-flash.show {
-  animation: fx-flash-pop 0.45s ease-out forwards;
 }
 
 /* ---------- 血月全屏暗角 ----------

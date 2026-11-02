@@ -1035,7 +1035,6 @@ export function initVisuals(container, events) {
       airStrike:     { power: 1.15, dust: true },   // 空袭：一整排轰炸，最大的尘土
       precision:     { power: 0.8, dust: false },   // 精确打击：小而准，不起尘
       droneSwarm:    { power: 0.7, dust: true },    // 无人机蜂群：轻、密
-      finalJudgment: { power: 1.6, dust: true },    // 终焉审判：最重
       holyWater:     { power: 0.5, dust: false },
       napalm:        { power: 0.9, dust: true },
     };
@@ -1063,8 +1062,7 @@ export function initVisuals(container, events) {
         power: tune.power,
         dust: tune.dust,
       });
-      // 终焉审判额外给一次全屏白，和普通爆炸拉开量级
-      if (d.id === 'finalJudgment') spawnFlash(0xffffff, 0.72);
+      // 终焉审判已经走 execute 分支，这里不再重复给白闪
     } else if (d.type === 'pull') {
       // 黑洞 / 宇宙坍缩：不是炸开，是往里吸
       spawnImplosion(d.x, d.z, d.color || 0x6a4dff, d.radius || 4);
@@ -6239,15 +6237,6 @@ function spawnOrbitalBeamAt(z, color) {
  * 重启是一条从阵型扫向出生点的扫描线。三者一眼能分清。
  * ---------------------------------------------------------- */
 
-// 全屏闪光：颜色每次由调用方写，再重触发一次 CSS 动画
-function flashScreen(cssBackground) {
-  if (!fxFlash) return;
-  fxFlash.style.background = cssBackground;
-  fxFlash.classList.remove('show');
-  void fxFlash.offsetWidth; // 强制重排，连放两次也能重新播
-  fxFlash.classList.add('show');
-}
-
 // 名单太长时抽样，避免一次几百个粒子
 function thin(list, max) {
   if (list.length <= max) return list;
@@ -6282,9 +6271,7 @@ function spawnVerdictPillar(x, z, color = 0xffffff) {
 
 // 终焉审判：全屏白闪 + 被处决的僵尸头顶插下光柱 + 没到线的套一圈白环
 function spawnJudgmentFx(executed = [], chipped = []) {
-  flashScreen(
-    'radial-gradient(circle at 50% 42%, rgba(255,255,255,0.95), rgba(215,240,255,0.6) 58%, rgba(255,255,255,0) 100%)'
-  );
+  spawnFlash(0xffffff, 0.75);
   shake = Math.max(shake, 0.45);
 
   for (const p of thin(executed, 36)) {
@@ -6298,9 +6285,7 @@ function spawnJudgmentFx(executed = [], chipped = []) {
 
 // 献祭：红色血光 + 从阵型向外推的两圈血环 + 每只僵尸脚下冒血雾
 function spawnSacrificeFx(shaved = []) {
-  flashScreen(
-    'radial-gradient(circle at 50% 58%, rgba(255,70,55,0.45), rgba(150,0,0,0.42) 70%, rgba(110,0,0,0.1) 100%)'
-  );
+  spawnFlash(0xff2a1a, 0.55);
   spawnRing(0, 8.0, 0xff3a3a, 2.2);
   spawnRing(0, 8.0, 0xff9a7a, 1.5);
   shake = Math.max(shake, 0.4);
@@ -6317,9 +6302,7 @@ function spawnSacrificeFx(shaved = []) {
 
 // 重启：冷色闪白 + 一条扫描线从士兵阵型扫向出生点 + 场上留消散白环
 function spawnRebootFx(removed = []) {
-  flashScreen(
-    'linear-gradient(180deg, rgba(180,235,255,0.2), rgba(214,246,255,0.8) 55%, rgba(110,195,255,0.35))'
-  );
+  spawnFlash(0xbfe9ff, 0.7);
   shake = Math.max(shake, 0.5);
 
   // z 从士兵线（9）扫到出生点之前（-24），不依赖 CONFIG，画面层的固定取景范围
