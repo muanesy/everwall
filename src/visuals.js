@@ -1328,6 +1328,19 @@ export function initVisuals(container, events) {
     shake = Math.max(shake, 0.12);
   });
 
+  // 子弹打碎武器箱：在箱子位置炸一小圈，再走 weaponPickup 的换枪表现
+  events.addEventListener('pickupHit', (e) => {
+    const d = e.detail || {};
+    const x = Number(d.x);
+    const z = Number(d.z);
+    if (!isFinite(x) || !isFinite(z)) return;
+    spawnRing(x, z, 0x9ad0ff, 0.5);
+    spawnBurst(x, 0.5, z, 0x9ad0ff, 12, {
+      speed: 2.2, up: 1.8, spread: 0.45, life: 0.5, gravity: -6,
+    });
+    shake = Math.max(shake, 0.14);
+  });
+
   // 捡到武器：一圈武器色光爆 + 提示条，让"换枪了"这件事被看见
   events.addEventListener('weaponPickup', (e) => {
     const d = e.detail || {};

@@ -350,6 +350,8 @@ const CONFIG = {
     duration: 18,      // 换来的枪能用多少秒，到点自动换回时代武器
     reach: 1.05,       // 走到多近算捡到
     max: 2,
+    hitW: 0.72,        // 子弹命中的横向半宽（打中也能捡，不用非得走过去）
+    hitZ: 0.66,        // 子弹命中的纵向半宽
     weapons: [
       { kind: 'shotgun', name: '霰弹枪', bullets: 3, spread: 2.8,
         intervalMul: 1.45, damageMul: 0.55, tint: 0xffb04a,
@@ -2343,13 +2345,18 @@ function updateCrates(dt) {
 }
 
 // 子弹打箱子：打中就碎，奖励当场结算
-function hitCrate(bx, bz) {
+function hitCrate(bx, bz, prevZ = bz) {
+  // 纵向按"这一帧飞过的那一段"判定：20fps 时一帧能飞 1.4 格，
+  // 只测当前点会从箱子上跨过去
+  const zMin = Math.min(bz, prevZ) - CONFIG.crate.hitZ;
+  const zMax = Math.max(bz, prevZ) + CONFIG.crate.hitZ;
+
   for (let i = state.crates.length - 1; i >= 0; i--) {
     const c = state.crates[i];
     // 还在空中不能打，必须落地（和炸药桶一致）
     if (!c.landed) continue;
     if (Math.abs(bx - c.x) > CONFIG.crate.hitW) continue;
-    if (Math.abs(bz - c.z) > CONFIG.crate.hitZ) continue;
+    if (c.z < zMin || c.z > zMax) continue;
 
     state.crates.splice(i, 1);
     const r = c.reward;
@@ -2362,6 +2369,29 @@ function hitCrate(bx, bz) {
       x: c.x, z: c.z, id: c.id,
       kind: r.kind, amount: r.amount, label: r.label,
     });
+    return true;
+  }
+  return false;
+}
+
+// 子弹打武器箱：和走过去捡等价，直接换上那把枪。
+// 箱子落在玩家前面的弹道上，以前没有碰撞判定，子弹会从箱子里穿过去
+function hitPickup(bx, bz, prevZ = bz) {
+  const zMin = Math.min(bz, prevZ) - CONFIG.pickup.hitZ;
+  const zMax = Math.max(bz, prevZ) + CONFIG.pickup.hitZ;
+
+  for (let i = state.pickups.length - 1; i >= 0; i--) {
+    const b = state.pickups[i];
+    if (!b.landed) continue;
+    if (Math.abs(bx - b.x) > CONFIG.pickup.hitW) continue;
+    if (b.z < zMin || b.z > zMax) continue;
+
+    state.pickups.splice(i, 1);
+    emit('pickupHit', {
+      x: b.x, z: b.z, id: b.id,
+      kind: b.weapon.kind, name: b.weapon.name,
+    });
+    equipWeapon(b.weapon);
     return true;
   }
   return false;
@@ -2419,6 +2449,7 @@ function updateEnemyShots(dt) {
 function updateBullets(dt) {
   for (let i = state.bullets.length - 1; i >= 0; i--) {
     const b = state.bullets[i];
+    const prevZ = b.z; // 低帧率下一帧能飞 1.4 格，箱子判定要用扫掠区间，别让它穿过去
     b.x += (b.vx || 0) * dt;
     b.z += b.vz * dt;
 
@@ -2434,7 +2465,13 @@ function updateBullets(dt) {
     }
 
     // 打中补给箱：当场碎，奖励已经结算完
-    if (!state.testMode && hitCrate(b.x, b.z)) {
+    if (!state.testMode && hitCrate(b.x, b.z, prevZ)) {
+      state.bullets.splice(i, 1);
+      continue;
+    }
+
+    // 打中武器箱：直接换枪
+    if (!state.testMode && hitPickup(b.x, b.z, prevZ)) {
       state.bullets.splice(i, 1);
       continue;
     }
