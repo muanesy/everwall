@@ -241,6 +241,7 @@ let bossOnField = false; // 场上是否有 Boss
 let playerMesh = null;
 let playerShadow = null;
 let playerRing = null;     // 玩家脚下的指挥光环
+let buffRing = null;       // 基因爆发的绿色攻速光环
 let lastPlayerX = 0;
 let soldierMesh = null;
 let playerVisual = null; // 玩家的真模型（加载完成后替代蓝方块）
@@ -910,6 +911,24 @@ export function initVisuals(container, events) {
   playerRing.position.set(0, 0.04, 9);
   scene.add(playerRing);
 
+  // 基因爆发：只在增益生效时出现的大绿环。
+  // 原来释放后只有一个砸在天上的特效，玩家看不出射速翻倍到底有没有生效
+  buffRing = new THREE.Mesh(
+    new THREE.RingGeometry(1.5, 1.82, 40),
+    new THREE.MeshBasicMaterial({
+      color: 0x6dffb0,
+      transparent: true,
+      opacity: 0.4,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  buffRing.rotation.x = -Math.PI / 2;
+  buffRing.position.set(0, 0.05, 9);
+  buffRing.visible = false;
+  scene.add(buffRing);
+
   playerShadow = makeBlobShadow(0.7);
   playerShadow.position.set(0, 0.02, 9);
   scene.add(playerShadow);
@@ -1210,6 +1229,9 @@ export function initVisuals(container, events) {
       spawnBar(d.z, d.color || 0xffffff);
     } else if (d.type === 'heal') {
       spawnRing(d.x, d.z, d.color || 0x5adf7a, 0.7);
+    } else if (d.type === 'buff') {
+      // 增益光环由 syncScene 按 buffUntil 持续画，这里不再往僵尸堆里砸东西
+      spawnRing(d.x, d.z, d.color || 0x6dffb0, 1.1);
     } else if (d.id === 'arrowRain') {
       spawnArrowRain(d.x, d.z, d.radius || 4, d.color || 0xd9b36c);
     } else if (d.type === 'barrage') {
@@ -2973,6 +2995,19 @@ export function syncScene(state, dt) {
     playerRing.position.z = state.player.z;
     playerRing.rotation.z += dt * 0.8;
     playerRing.material.opacity = 0.42 + Math.sin(performance.now() * 0.003) * 0.14;
+  }
+
+  // 基因爆发光环：跟着玩家走，增益结束自动消失
+  if (buffRing) {
+    const buffActive = state.status === 'playing' && state.time < state.buffUntil;
+    buffRing.visible = buffActive;
+    if (buffActive) {
+      const now = performance.now();
+      buffRing.position.set(state.player.x, 0.05, state.player.z);
+      buffRing.rotation.z -= dt * 1.6;
+      buffRing.scale.setScalar(1 + Math.sin(now * 0.008) * 0.07);
+      buffRing.material.opacity = 0.3 + Math.sin(now * 0.01) * 0.12;
+    }
   }
 
   // 队长

@@ -1983,6 +1983,18 @@ function castSkill(id) {
     case 'buff':
       state.buffUntil = state.time + def.duration;
       state.buffMul = def.mul;
+      // 增益以玩家脚下为圆心播特效，而不是砸在僵尸堆里；
+      // 同时给一条提示，否则玩家只能靠数子弹判断它有没有生效
+      castExtra = {
+        x: state.player.x,
+        z: state.player.z,
+        duration: def.duration,
+        mul: def.mul,
+      };
+      emit('skillNotice', {
+        text: `${def.name}：全队射速 ×${def.mul}，持续 ${def.duration} 秒`,
+        kind: 'skill',
+      });
       break;
     case 'heal':
       applySoldiers(def.soldiers);
