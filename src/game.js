@@ -17,6 +17,7 @@ import {
   hitBarrel,
   spawnBarrel,
   switchEra,
+  switchMapLook,
   pickEraMap,
   spawnCampfireFx,
   setWaterLevel,
@@ -595,6 +596,7 @@ const state = {
   swarm: { until: 0, left: 0, timer: 0 }, // 蜂群的结束时间、还剩几架没放、下一架倒计时
   friendlyZombies: [], // 见 docs/接口约定.md；召唤槽兵种额外带 unitType/cost/role/scale
   summonNextPreferred: null, // 升级后下一只优先出的新兵种
+  blackHoles: [], // 黑洞：{ id, x, z, timeLeft, duration, radius, pullRadius, pullFactor, damagePct, bossPctMul }
   virusBombs: [],    // { id, x, z, timeLeft, radius, maxConvert }
   usedSkills: [],    // 一局只能用一次的技能 id，目前是轨道轰炸
   weaponBoostUntil: 0,
@@ -869,6 +871,7 @@ function resetState(opts = {}) {
   state.swarm.timer = 0;
   state.friendlyZombies.length = 0;
   state.summonNextPreferred = null;
+  state.blackHoles.length = 0;
   state.virusBombs.length = 0;
 
   state.barrierTimer = 0.6;
@@ -931,6 +934,7 @@ function revive() {
   state.swarm.timer = 0;
   state.friendlyZombies.length = 0;
   state.summonNextPreferred = null;
+  state.blackHoles.length = 0;
   state.virusBombs.length = 0;
   state.weaponBoostUntil = 0;
   state.weaponBoostDamage = 1;
@@ -1442,7 +1446,9 @@ const SKILL_DEFS = [
   { id: 'memory', name: '记忆植入', era: 3, type: 'upgradeSlot', color: 0xd0a0ff },
   // 4 星际
   { id: 'orbital', name: '轨道轰炸', era: 4, type: 'orbital', color: 0x7fe3ff },
-  { id: 'blackHole', name: '黑洞', era: 4, type: 'pull', damage: 40, radius: 4.0, pullRadius: 12, pullFactor: 0.85, color: 0x6a4dff },
+  // 黑洞：持续吸附 1.2 秒，结束时按最大生命百分比结算。
+  // 不用固定伤害，避免低波次直接清场、高波次又像没伤害。
+  { id: 'blackHole', name: '黑洞', era: 4, type: 'pull', duration: 1.2, damagePct: 0.12, bossPctMul: 0.5, radius: 3.0, pullRadius: 12, pullFactor: 0.85, color: 0x6a4dff },
   { id: 'wormhole', name: '虫洞', era: 4, type: 'warp', color: 0xb06bff },
   { id: 'carrierDrones', name: '舰载无人机群', era: 4, type: 'carrierDrones', color: 0x9fe3ff },
   { id: 'timeDilation', name: '时间膨胀', era: 4, type: 'slow', duration: 3, mul: 0.4, color: 0x8fb6ff },
@@ -1497,6 +1503,17 @@ const SKILL_CHARGES = {
   finalJudgment: 1, cosmicCollapse: 1, sacrifice: 1, reboot: 1, entropy: 2,
 };
 
+// 终幕卡池权重：越强的技能越难抽到。基础卡统一按 2 算。
+// 只影响抽到哪张，不影响抽到后给几次使用机会。
+const FINALE_CARD_WEIGHTS = {
+  finalJudgment: 1,
+  cosmicCollapse: 1.5,
+  sacrifice: 2,
+  reboot: 2,
+  entropy: 3,
+};
+const BASE_CARD_WEIGHT = 2;
+
 const SKILL_DESCS = {
   arrowRain: '圆形箭雨：半径 4 内 50 伤害（直径 8，约屏幕宽度一半）',
   rollingLog: '左侧随机出现，纵向 6 格，从左往右碾压；秒普通僵尸，不秒大块头',
@@ -1519,7 +1536,7 @@ const SKILL_DESCS = {
   timeSlow: '全场僵尸所有移动 ×0.5，持续 4 秒',
   memory: '路障 +1 级；未解锁则直接解锁 1 级',
   orbital: '横向轨道光柱，清掉离士兵最近的 2/3 僵尸（按数量，远的一批留着）；一局只能使用一次',
-  blackHole: '半径 12 内僵尸吸向中心，中心半径 4 内 40 伤害',
+  blackHole: '半径 12 内僵尸被持续吸向中心 1.2 秒；结束时中心半径 3 内扣 12% 最大生命（Boss 减半）',
   wormhole: '全场僵尸一起送回出生点',
   carrierDrones: '召唤 4 架大型舰载无人机，持续一波（15 秒），每 0.45 秒造成 20 点小范围伤害',
   timeDilation: '全场僵尸所有移动 ×0.4，持续 3 秒',
@@ -1690,7 +1707,7 @@ function castJudgment(def) {
 }
 
 // 宇宙坍缩收尾：按"离中心多远"分档扣最大生命，Boss 按 bossCutMul 打折。
-// 和黑洞的固定 40 伤害分开：黑洞是聚怪 + 小伤害，坍缩是聚怪 + 比例压制。
+// 和黑洞分开：黑洞是持续吸附 + 小幅百分比，坍缩是瞬拉 + 按距离分档的百分比压制。
 function collapseDamage(def, distBefore) {
   const inner = def.radius ?? 6;
   const outer = def.pullRadius ?? 14;
@@ -2009,6 +2026,29 @@ function castSkill(id) {
       upgradeBarricade();
       break;
     case 'pull': {
+      // 黑洞：不立刻结算，先开一个持续吸附场，时间到了再扣血。
+      // 宇宙坍缩还是走下面那套「一帧拉完 + 按吸引前距离分档」。
+      if (def.id === 'blackHole') {
+        state.blackHoles.push({
+          id: state.nextId++,
+          x: target.x,
+          z: target.z,
+          timeLeft: def.duration,
+          duration: def.duration,
+          radius: def.radius,
+          pullRadius: def.pullRadius,
+          pullFactor: def.pullFactor ?? 0.85,
+          damagePct: def.damagePct ?? 0.12,
+          bossPctMul: def.bossPctMul ?? 0.5,
+        });
+        castExtra = {
+          duration: def.duration,
+          radius: def.radius,
+          pullRadius: def.pullRadius,
+        };
+        break;
+      }
+
       // 只吸 pullRadius 内的僵尸，按 pullFactor 拉向落点
       const pullR2 = (def.pullRadius || 12) ** 2;
       const factor = def.pullFactor ?? 0.85;
@@ -2291,6 +2331,7 @@ function buildCardPool() {
   const base = CARD_POOL.map((c) => ({
     ...c,
     desc: typeof c.desc === 'function' ? c.desc() : c.desc,
+    weight: BASE_CARD_WEIGHT,
   }));
 
   const skills = SKILL_DEFS
@@ -2301,9 +2342,35 @@ function buildCardPool() {
       desc: `${SKILL_DESCS[s.id] || '一次性技能'}。获得 ${skillCharges(s)} 次使用机会`,
       can: () => skillCanAppear(s),
       apply: () => gainSkill(s.id),
+      weight: FINALE_CARD_WEIGHTS[s.id] ?? 2,
     }));
 
   return base.concat(skills);
+}
+
+// 按权重不放回抽 count 张，给终幕用
+function pickWeightedCards(pool, count) {
+  const items = pool.slice();
+  const picked = [];
+
+  while (picked.length < count && items.length) {
+    const total = items.reduce((sum, c) => sum + (c.weight || 1), 0);
+    let roll = Math.random() * total;
+    let idx = items.length - 1;
+
+    for (let i = 0; i < items.length; i++) {
+      roll -= items[i].weight || 1;
+      if (roll <= 0) {
+        idx = i;
+        break;
+      }
+    }
+
+    picked.push(items[idx]);
+    items.splice(idx, 1);
+  }
+
+  return picked;
 }
 
 function startCardDraw() {
@@ -2312,13 +2379,18 @@ function startCardDraw() {
   const pool = buildCardPool().filter((c) => c.can());
   if (!pool.length) return;
 
-  for (let i = pool.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [pool[i], pool[j]] = [pool[j], pool[i]];
+  if (state.era === CONFIG.era.count - 1) {
+    // 终幕之后没有下一个时代，抽卡会无限重复，改成按强度加权
+    state.card.choices = pickWeightedCards(pool, 3);
+  } else {
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+    state.card.choices = pool.slice(0, 3);
   }
 
   state.card.active = true;
-  state.card.choices = pool.slice(0, 3);
   state.card.timeLeft = CONFIG.card.duration;
   state.card.version += 1;
   state.timeScale = CONFIG.card.slowMo;
@@ -2357,6 +2429,31 @@ function updateCard(realDt) {
 /* ----------------------------------------------------------
  * 每帧更新
  * ---------------------------------------------------------- */
+// 终幕没有下一个时代：每 4 波只换一张终幕地图并补一只 Boss，时代保持不变。
+function rotateFinaleMap(wave) {
+  if (state.testMode) return;
+
+  const lastEra = CONFIG.era.count - 1;
+  if (state.era !== lastEra) return;
+
+  const block = CONFIG.era.everyWaves;
+  const firstRotate = lastEra * block + block + 1; // 第 25 波开始轮换
+  if (wave < firstRotate) return;
+  if ((wave - firstRotate) % block !== 0) return;
+
+  const map = pickEraMap(lastEra, state.usedMaps);
+  if (map && map !== state.mapId) {
+    state.mapId = map;
+    state.usedMaps.push(map);
+    // 只换地图：不重播时代配色、不折算技能
+    switchMapLook(map, { fade: true });
+    emit('skillNotice', { text: '战场转移 · 终幕', kind: 'era' });
+  }
+
+  // 每 4 波一个 Boss；场上已经有一只时 spawnEraBoss 会自己跳过
+  spawnEraBoss(lastEra);
+}
+
 // 每 4 波进一个时代：换配色和地图，场上实体全部保留
 function syncEraWithWave(wave) {
   // 测试模式的时代由左侧面板控制，波次不再自动换
@@ -2366,7 +2463,10 @@ function syncEraWithWave(wave) {
     CONFIG.era.count - 1,
     Math.floor((wave - 1) / CONFIG.era.everyWaves)
   );
-  if (eraIndex === state.era) return;
+  if (eraIndex === state.era) {
+    rotateFinaleMap(wave);
+    return;
+  }
 
   const map = pickEraMap(eraIndex, state.usedMaps) || state.mapId || START_MAP;
 
@@ -2447,6 +2547,7 @@ function update(dt) {
   updateVirusBombs(dt);
   updateNapalmWalls(dt);
   updateFriendlyZombies(dt);
+  updateBlackHoles(dt);
   updatePits(dt);
   updateZombies(dt);
   updateSummoners(dt);
@@ -3257,6 +3358,9 @@ function updateZombies(dt) {
   for (const z of state.zombies) {
     if (frozen) continue;
 
+    // 被黑洞吸住：只跟着黑洞移动，不自己前进、不横移、不啃墙
+    if (z.suckUntil && state.time < z.suckUntil) continue;
+
     // 友方僵尸拦住敌人：停下互殴，不再往前走
     const blocker = state.friendlyZombies.find(
       (f) => Math.abs(f.x - z.x) < 0.9 && Math.abs(f.z - z.z) < 0.9
@@ -3640,6 +3744,49 @@ function updateVirusBombs(dt) {
       count: converted,
     });
     state.virusBombs.splice(i, 1);
+  }
+}
+
+// 黑洞：持续吸附，结束时按最大生命百分比结算。
+// 吸附用指数逼近：rate 由「duration 内拉近 pullFactor」反推，
+// 每帧把距离乘以固定比例，不需要给每只僵尸记起点，新进圈的也会被吸。
+function updateBlackHoles(dt) {
+  for (let i = state.blackHoles.length - 1; i >= 0; i--) {
+    const h = state.blackHoles[i];
+    h.timeLeft -= dt;
+
+    const rate = -Math.log(Math.max(0.05, 1 - h.pullFactor)) / h.duration;
+    const step = 1 - Math.exp(-rate * dt);
+    const pullR2 = h.pullRadius * h.pullRadius;
+
+    for (const zb of state.zombies) {
+      const dx = h.x - zb.x;
+      const dz = h.z - zb.z;
+      if (dx * dx + dz * dz > pullR2) continue;
+
+      zb.x += dx * step;
+      zb.z += dz * step;
+      zb.aggro = false;
+      zb.suckUntil = state.time + 0.1; // 这一小段时间内不自己走，只跟着黑洞
+    }
+
+    if (h.timeLeft > 0) continue;
+
+    // 结算：中心半径内按最大生命扣百分比，Boss 减半
+    const r2 = h.radius * h.radius;
+    for (let j = state.zombies.length - 1; j >= 0; j--) {
+      const zb = state.zombies[j];
+      const dx = zb.x - h.x;
+      const dz = zb.z - h.z;
+      if (dx * dx + dz * dz > r2) continue;
+
+      const maxHp = Math.max(1, zb.maxHp || zb.hp);
+      const pct = h.damagePct * (zb.boss ? h.bossPctMul : 1);
+      damageZombieAt(j, maxHp * pct);
+    }
+
+    emit('blackHoleImpact', { x: h.x, z: h.z, radius: h.radius });
+    state.blackHoles.splice(i, 1);
   }
 }
 
@@ -4131,6 +4278,12 @@ function separateZombies() {
     for (let j = i + 1; j < list.length; j++) {
       const a = list[i];
       const b = list[j];
+
+      // 被黑洞吸住的僵尸不要互相推开，否则聚不成一团
+      if (
+        (a.suckUntil && state.time < a.suckUntil) ||
+        (b.suckUntil && state.time < b.suckUntil)
+      ) continue;
 
       if (Math.abs(a.z - b.z) > sep) continue;
 

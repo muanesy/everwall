@@ -759,6 +759,7 @@ const carrierDroneMeshes = new Map();
 const swarmDroneMeshes = new Map();
 const friendlyZombieMeshes = new Map();
 const virusBombMeshes = new Map();
+const blackHoleMeshes = new Map();
 const tankSupportMeshes = new Map(); // 坦克可以同时有多辆，key 是 t.id
 const effects = [];
 
@@ -1188,6 +1189,14 @@ export function initVisuals(container, events) {
   events.addEventListener('friendlySpit', (e) => {
     const d = e.detail;
     spawnTracer(d.fromX, d.fromZ, d.x, d.z, 0x8fe36a, 0.7);
+  });
+
+  // 黑洞结束：猛地一缩 + 紫环扩散
+  events.addEventListener('blackHoleImpact', (e) => {
+    const d = e.detail;
+    spawnImplosion(d.x, d.z, 0x8a5cff, d.radius || 3);
+    spawnRing(d.x, d.z, 0xc9a6ff, 0.7);
+    shake = Math.max(shake, 0.4);
   });
 
   events.addEventListener('friendlyDie', (e) => {
@@ -3037,6 +3046,7 @@ export function syncScene(state, dt) {
   syncCrates(state);
   syncChains(state);
   syncPits(state);
+  syncBlackHoles(state, dt);
   syncPickups(state);
   updateBossPresence(state);
   updateZombieHitFeedback(state);
@@ -6062,6 +6072,95 @@ function syncPits(state) {
     scene.remove(mesh);
     mesh.material.dispose();
     pitVisuals.delete(id);
+  }
+}
+
+/* ----------------------------------------------------------
+ * 黑洞：持续 1.2 秒的漩涡，不是一帧爆炸
+ * 盘面吸光、外圈紫环旋转，时长快结束时缩小，读起来像"合拢"
+ * ---------------------------------------------------------- */
+function makeBlackHoleMesh() {
+  const group = new THREE.Group();
+
+  const disc = new THREE.Mesh(
+    new THREE.CircleGeometry(1.05, 40),
+    new THREE.MeshBasicMaterial({
+      color: 0x030208,
+      transparent: true,
+      opacity: 0.92,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    })
+  );
+  disc.rotation.x = -Math.PI / 2;
+  disc.position.y = 0.055;
+  group.add(disc);
+
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(1.05, 1.4, 48),
+    new THREE.MeshBasicMaterial({
+      color: 0x8a5cff,
+      transparent: true,
+      opacity: 0.55,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.06;
+  group.add(ring);
+
+  const inner = new THREE.Mesh(
+    new THREE.RingGeometry(0.26, 0.46, 32),
+    new THREE.MeshBasicMaterial({
+      color: 0xc9a6ff,
+      transparent: true,
+      opacity: 0.7,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  inner.rotation.x = -Math.PI / 2;
+  inner.position.y = 0.065;
+  group.add(inner);
+
+  group.userData.ring = ring;
+  group.userData.inner = inner;
+  return group;
+}
+
+function syncBlackHoles(state, dt) {
+  if (!scene) return;
+  const alive = new Set();
+
+  for (const h of state.blackHoles || []) {
+    alive.add(h.id);
+    let mesh = blackHoleMeshes.get(h.id);
+    if (!mesh) {
+      mesh = makeBlackHoleMesh();
+      scene.add(mesh);
+      blackHoleMeshes.set(h.id, mesh);
+    }
+
+    mesh.position.set(h.x, 0, h.z);
+    const left = Math.max(0, Math.min(1, h.timeLeft / h.duration));
+    const pulse = 1 + Math.sin(performance.now() * 0.012) * 0.04;
+    // 最后 0.25 秒缩小，视觉上「合拢」再结算
+    const close = left < 0.2 ? 0.65 + (left / 0.2) * 0.35 : 1;
+    mesh.scale.setScalar(pulse * close);
+    mesh.userData.ring.rotation.z += dt * 3.2;
+    mesh.userData.inner.rotation.z -= dt * 5.0;
+    mesh.userData.ring.material.opacity = 0.35 + left * 0.3;
+    mesh.userData.inner.material.opacity = 0.4 + left * 0.35;
+  }
+
+  for (const [id, mesh] of blackHoleMeshes) {
+    if (alive.has(id)) continue;
+    scene.remove(mesh);
+    disposeMesh(mesh);
+    blackHoleMeshes.delete(id);
   }
 }
 
