@@ -267,6 +267,17 @@ canvas {
   font-variant-numeric: tabular-nums;
 }
 
+/* 起始时代：6 个时代排成 3×2，和地图选择区分开但不抢地方 */
+.era-picker {
+  margin-bottom: 12px;
+}
+
+.era-picker__grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
 .map-chip {
   padding: 8px 6px;
   border: 1px solid rgba(255, 255, 255, 0.12);

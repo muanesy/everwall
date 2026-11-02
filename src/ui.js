@@ -76,7 +76,12 @@ const MAP_LIST = MAP_GROUPS.flatMap((g) =>
   g.ids.map((id) => ({ id, name: MAP_NAMES_ALL[id] || id, era: g.era }))
 );
 
-const currentMap = new URLSearchParams(window.location.search).get('map') || 'city';
+const START_PARAMS = new URLSearchParams(window.location.search);
+const currentMap = START_PARAMS.get('map') || 'city';
+const startEra = Math.max(
+  0,
+  Math.min(MAP_GROUPS.length - 1, Number(START_PARAMS.get('era')) || 0)
+);
 const MAP_NAMES = MAP_NAMES_ALL;
 
 /* 一波多少秒：和 game.js 的 CONFIG.wave.duration 保持一致（甲改了这个值要同步这里） */
@@ -423,6 +428,16 @@ function buildDom() {
         打中左边压下来的 +1 屏障加兵，<br>
         挡住右边的僵尸潮。
       </p>
+      <div class="map-picker era-picker">
+        <p class="map-picker__label">起始时代 <span class="map-picker__count">从该时代对应波次开始</span></p>
+        <div class="era-picker__grid">
+          ${MAP_GROUPS.map((grp, i) => `
+            <button class="map-chip${i === startEra ? ' is-active' : ''}" data-start-era="${i}">
+              ${grp.era}
+            </button>
+          `).join('')}
+        </div>
+      </div>
       <div class="map-picker">
         <p class="map-picker__label">地形 <span class="map-picker__count">${MAP_LIST.length}</span></p>
         <div class="map-picker__grid">
@@ -634,14 +649,38 @@ function bindEvents() {
   els.testStartBtn.addEventListener('click', () => {
     initAudio(); // 音频必须由用户点击触发，这里是最早的手势
     playClick();
-    actions.start({ testMode: testModeEnabled });
+    actions.start({
+      testMode: testModeEnabled,
+      startingEra: startEra,
+      map: currentMap,
+    });
+  });
+
+  els.startScreen.querySelectorAll('[data-start-era]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const era = Number(btn.dataset.startEra);
+      const params = new URLSearchParams(window.location.search);
+      params.set('era', String(era));
+      // 选时代时顺手把地形切到该时代的第一张图，避免出现星际数值配中世纪场景
+      params.set('map', MAP_GROUPS[era].ids[0]);
+      window.location.search = params.toString();
+    });
   });
 
   els.startScreen.querySelectorAll('[data-map]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      window.location.search = `?map=${btn.dataset.map}`;
+      const params = new URLSearchParams(window.location.search);
+      params.set('map', btn.dataset.map);
+      window.location.search = params.toString();
     });
   });
+
+  // 起始时代选好后，地图列表滚到当前地图，避免选中的图藏在滚动区下面
+  const mapGrid = els.startScreen.querySelector('.map-picker__grid');
+  const activeMapBtn = mapGrid?.querySelector('.map-chip.is-active[data-map]');
+  if (mapGrid && activeMapBtn) {
+    mapGrid.scrollTop = Math.max(0, activeMapBtn.offsetTop - mapGrid.offsetTop - 8);
+  }
 
   // 测试面板：切时代、升级槽位、放技能、刷/清僵尸
   els.testEraBtns.forEach((btn, i) => {

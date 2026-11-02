@@ -713,12 +713,10 @@ function spawnModel(proto, faceDir) {
       mixer.addEventListener('finished', (ev) => {
         if (!attackAction || ev.action !== attackAction) return;
 
-        // 收拳：回到走路（站原地踏步），等下一拳再 reset 重播
-        if (walkAction) {
-          walkAction.reset();
-          walkAction.play();
-          walkAction.crossFadeFrom(attackAction, 0.2, false);
-        }
+        // 出拳之间不再切回走路：咬完保持收招姿势等下一拳。
+        // 以前每次都 reset 走路再 crossFade 回攻击，0.15 秒的空隙里
+        // 模型会在「走路」和「咬人」两个姿势之间来回闪，看起来就是抽搐。
+        // 真正离开防线时由 syncZombies 统一切回走路。
         if (eventsRef && vis.zombieId != null) {
           eventsRef.dispatchEvent(
             new CustomEvent('bossAttackDone', { detail: { id: vis.zombieId } })
@@ -1074,9 +1072,9 @@ export function initVisuals(container, events) {
     act.clampWhenFinished = true;
     act.reset();
     act.setEffectiveWeight(1);
-    // 顺序很关键：先 play 再 crossFade，否则淡入没有起点，权重会一直是 0
     act.play();
-    if (vis.walkAction) act.crossFadeFrom(vis.walkAction, 0.1, false);
+    // 只把走路淡出；出拳之间走路不再重新播放，避免两个动作各占一半权重
+    if (vis.walkAction) vis.walkAction.fadeOut(0.12);
     vis.attacking = true;
 
     // 拳头砸在防线上的反馈：脚下扬尘 + 一道红色冲击环 + 震屏
@@ -1241,6 +1239,9 @@ export function initVisuals(container, events) {
     } else if (d.type === 'buff') {
       // 增益光环由 syncScene 按 buffUntil 持续画，这里不再往僵尸堆里砸东西
       spawnRing(d.x, d.z, d.color || 0x6dffb0, 1.1);
+    } else if (d.type === 'memory') {
+      // 记忆回放：玩家脚下紫色圆环，复刻的技能会自己播自己的特效
+      spawnRing(d.x, d.z, d.color || 0xd0a0ff, 0.9);
     } else if (d.id === 'arrowRain') {
       spawnArrowRain(d.x, d.z, d.radius || 4, d.color || 0xd9b36c);
     } else if (d.type === 'barrage') {
@@ -3465,6 +3466,18 @@ function syncZombies(state, dt) {
       // Boss 整块跳过：它的拳头由玩法层的 bossAttack 事件单发驱动。
       // 如果让它走下面这套自动切换，那个 `else if` 会在出拳的下一帧
       // 把动作淡回走路 —— 出拳永远演不完，bossAttackDone 也就永远等不到
+      // Boss 离开防线（被虫洞/击退推回去）时，从收招姿势切回走路。
+      // 出拳之间不要切，不然每拳结尾都会闪回走路再闪回攻击。
+      if (isBossVis && vis.attacking && !z.attacking) {
+        vis.attacking = false;
+        if (vis.attackAction) vis.attackAction.fadeOut(0.3);
+        if (vis.walkAction) {
+          vis.walkAction.reset();
+          vis.walkAction.play();
+          vis.walkAction.fadeIn(0.3);
+        }
+      }
+
       if (vis.attackAction && !isBossVis) {
         const wantAttack = z.z >= ZOMBIE_ATK_Z;
         if (wantAttack && !vis.attacking) {

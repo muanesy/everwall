@@ -202,10 +202,10 @@ const CONFIG = {
     // 底部三大槽位在 z=15，坦克摆在它们后面（屏幕更下方），不再挡在士兵阵型前
     x: -5.5, z: 16.0,  // 底部槽位后方；再叫一辆就摆在它右边 spacing 格处
     spacing: 2.4,      // 第二辆在第一辆右边这么多格
-    shots: 6,          // 每辆坦克一轮打 6 发（比原来多 2 发）
-    shotInterval: 0.7,
+    shots: 5,          // 每辆坦克一轮打 5 发
+    shotInterval: 1.2, // 发射间隔放慢，别像机关枪
     damage: 60,
-    radius: 3.9,       // 爆炸范围 3.0 → 3.9，清一片而不是只扫一条
+    radius: 3.0,       // 爆炸范围收回 3.0，3.9 太大
     flightTime: 0.32,  // 炮弹飞行时间 0.5 → 0.32，落点更快
     retreatDelay: 0.9, // 打完多久开始撤
     holdTime: 4,       // 打完最后一发后多停留 4 秒再撤退
@@ -399,6 +399,8 @@ const CONFIG = {
     commandPower: [1.00, 1.20, 1.40, 1.70, 2.00, 2.40],
     hpPower: [1.00, 1.25, 1.55, 1.90, 2.30, 2.80],
     recommendedLevel: [1, 2, 3, 4, 4, 5],
+    // 从该时代开局时的初始兵力：越晚的时代，起点越高，用来对冲该时代的僵尸强度
+    startSoldiers: [5, 15, 25, 40, 60, 85],
     underLevelStep: 0.15, // 每差 1 级 -15%
     underLevelMin: 0.55,  // 最多 -45%
   },
@@ -411,10 +413,10 @@ const CONFIG = {
     // 打到防线后的连续攻击：Boss 不再"碰一下就消失"，而是站在线上反复出拳。
     // 每一拳扣 20 兵，且必须等上一拳的动作演完才打下一拳（节奏由动画驱动）
     attackLoss: 20,      // 每拳扣多少兵
-    attackAnim: 1.2,     // 一拳的动作要播多久。Boss 的出拳片段原始长度是 4.8 秒，
-                         // 直接播会变成"举着拳头晃半天"，所以按这个秒数做时间缩放
-    attackFallback: 1.6, // 拿不到动画结束回调时的兜底间隔（模型没加载也能按这个节奏打）
-    attackGap: 0.15,     // 一拳演完到下一拳之间的最短停顿
+    attackAnim: 1.6,     // 一拳的动作要播多久。Boss 的出拳片段原始长度是 4.8 秒，
+                         // 1.2 秒（4 倍速）看起来像抽搐，放慢到 3 倍速更清楚
+    attackFallback: 2.0, // 拿不到动画结束回调时的兜底间隔（模型没加载也能按这个节奏打）
+    attackGap: 0.3,      // 一拳演完到下一拳之间的最短停顿
   },
   // 洪水（点子池「洪水上涨」）：水位随波次上升，漫过脚踝后僵尸变慢
   flood: {
@@ -509,6 +511,8 @@ const state = {
   era: 0,
   mapId: START_MAP,
   usedMaps: [START_MAP],
+  startEra: 0,          // 开局选择的时代，重新开始时沿用
+  startMap: START_MAP,  // 开局选择的地图
 
   // 测试模式：主界面开关打开后进入，左侧面板控制槽位和技能
   testMode: false,
@@ -553,6 +557,7 @@ const state = {
   // 一次性技能栏：抽到卡后存次数，点左侧图标使用
   skillBag: [],        // [{ id, charges }]
   skillBagVersion: 0,  // UI 重建用
+  lastSkillId: null,   // 本局上一次成功释放的一次性技能，记忆植入用来复刻
   skillUseCd: 0,
   slowUntil: 0,
   slowMul: 1,
@@ -801,15 +806,34 @@ window.addEventListener('pointercancel', () => {
 function resetState(opts = {}) {
   state.status = 'playing';
   state.testMode = !!opts.testMode;
-  state.time = 0;
-  state.wave = 1;
+
+  // 从指定时代开局：时代对应的波次一起跳过去，僵尸血量、Boss、卡池
+  // 全部沿用现有的按波次规则，不需要再单独做一套僵尸数值。
+  const startEra = Math.max(
+    0,
+    Math.min(CONFIG.era.count - 1, Math.floor(opts.startingEra || 0))
+  );
+  const startMap =
+    opts.map ||
+    (startEra > 0 ? pickEraMap(startEra, []) : START_MAP) ||
+    START_MAP;
+  const startWave = state.testMode
+    ? 1
+    : startEra * CONFIG.era.everyWaves + 1;
+
+  state.time = state.testMode ? 0 : (startWave - 1) * CONFIG.wave.duration;
+  state.wave = startWave;
   state.score = 0;
-  state.soldiers = state.testMode ? 120 : 5;
+  state.soldiers = state.testMode
+    ? 120
+    : CONFIG.era.startSoldiers[startEra];
   state.peakSoldiers = state.soldiers;
   state.player.x = 0;
-  state.era = 0;
-  state.mapId = START_MAP;
-  state.usedMaps = [START_MAP];
+  state.era = startEra;
+  state.mapId = startMap;
+  state.usedMaps = [startMap];
+  state.startEra = startEra;
+  state.startMap = startMap;
   state.weapon.lines = 1;
   state.weapon.pierce = false;
   state.weapon.timers = [0];
@@ -833,6 +857,7 @@ function resetState(opts = {}) {
   state.slotLevels = { siege: 0, support: 0, closeDefense: 0, command: 0, summon: 0 };
   state.skillBag = [];
   state.skillBagVersion += 1;
+  state.lastSkillId = null;
   state.skillUseCd = 0;
   state.usedSkills = [];
   state.weaponBoostUntil = 0;
@@ -901,10 +926,10 @@ function resetState(opts = {}) {
 
   // 开局用的地图也要预载贴图：玩家在开始页已经选好图了，
   // 这里如果还没加载完，会先出现灰地面。预载是幂等的，重复调没代价。
-  preloadGroundTexture(`b-map-${START_MAP}`);
+  preloadGroundTexture(`b-map-${state.mapId}`);
 
-  // 把画面拉回第一个时代和起始地图，静默切换，不弹提示
-  switchEra(0, START_MAP, { fade: false, silent: true });
+  // 把画面切到开局时代和地图，静默切换，不弹提示
+  switchEra(state.era, state.mapId, { fade: false, silent: true });
 }
 
 function startGame(opts = {}) {
@@ -1443,7 +1468,7 @@ const SKILL_DEFS = [
   { id: 'bioLegion', name: '生物人军团', era: 3, type: 'friendlyLegion', color: 0x9c6bff },
   { id: 'geneBurst', name: '基因爆发', era: 3, type: 'buff', duration: 5, mul: 2, color: 0x6dffb0 },
   { id: 'timeSlow', name: '时间减速', era: 3, type: 'slow', duration: 4, mul: 0.5, color: 0x8fb6ff },
-  { id: 'memory', name: '记忆植入', era: 3, type: 'upgradeSlot', color: 0xd0a0ff },
+  { id: 'memory', name: '记忆植入', era: 3, type: 'memory', color: 0xd0a0ff },
   // 4 星际
   { id: 'orbital', name: '轨道轰炸', era: 4, type: 'orbital', color: 0x7fe3ff },
   // 黑洞：持续吸附 1.2 秒，结束时按最大生命百分比结算。
@@ -1524,7 +1549,7 @@ const SKILL_DESCS = {
   barrage: '半径 5 的大范围连续轰炸：3 秒 6 波，每波 25 伤害',
   napalm: '最密处拉一道宽 8、纵深 1.8 的火墙，持续 4 秒，每秒 12 伤害并减速',
   paratroopers: '立刻 +10 兵',
-  tank: '左下出现坦克，打 4 发范围炮（每发 60、半径 3.9）后撤退；场上已有坦克时，新的一辆出现在它右边',
+  tank: '底部槽位后方出现坦克，打 5 发范围炮（每发 60、半径 3.0、间隔 1.2 秒）后撤退；场上已有坦克时，新的一辆出现在它右边',
   precision: '最密处半径 2.2 内 110 伤害',
   droneSwarm: '一波内陆续放出 10 架无人机，从屏幕下方起飞、各自随机锁定僵尸，命中造成 65 点小范围伤害',
   emp: '全场僵尸原地停顿 2 秒',
@@ -1534,7 +1559,7 @@ const SKILL_DESCS = {
   bioLegion: '瞬间生成 20 名己方僵尸，向前对冲',
   geneBurst: '全队射速 ×2，持续 5 秒',
   timeSlow: '全场僵尸所有移动 ×0.5，持续 4 秒',
-  memory: '路障 +1 级；未解锁则直接解锁 1 级',
+  memory: '复刻本局上一次用过的技能，不消耗它的次数；没有可复刻的技能时，给技能栏里次数最少的一个 +1 次',
   orbital: '横向轨道光柱，清掉离士兵最近的 2/3 僵尸（按数量，远的一批留着）；一局只能使用一次',
   blackHole: '半径 12 内僵尸被持续吸向中心 1.2 秒；结束时中心半径 3 内扣 12% 最大生命（Boss 减半）',
   wormhole: '全场僵尸一起送回出生点',
@@ -2016,6 +2041,48 @@ function castSkill(id) {
     case 'heal':
       applySoldiers(def.soldiers);
       break;
+    case 'memory': {
+      // 复刻上一个用过的普通技能。一局只能拿一次/用一次的技能（轨道轰炸、
+      // 重启、献祭、审判、坍缩）不复刻，否则会被记忆植入绕开限制。
+      const lastId = state.lastSkillId;
+      const lastDef = lastId ? skillDef(lastId) : null;
+      const replayable =
+        lastDef && lastId !== 'memory' && skillCharges(lastDef) > 1;
+
+      if (replayable && castSkill(lastId)) {
+        castExtra = {
+          x: state.player.x,
+          z: state.player.z,
+          replayId: lastId,
+          replayName: lastDef.name,
+        };
+        emit('skillNotice', {
+          text: `记忆植入：复刻 ${lastDef.name}`,
+          kind: 'skill',
+        });
+        break;
+      }
+
+      // 没有可复刻的技能：给技能栏里次数最少的另一个技能 +1 次
+      let target = null;
+      for (const s of state.skillBag) {
+        if (s.id === 'memory') continue;
+        const d = skillDef(s.id);
+        const max = d && d.id === 'orbital' ? 1 : SKILL_MAX_CHARGES;
+        if (s.charges >= max) continue;
+        if (!target || s.charges < target.charges) target = s;
+      }
+      if (!target) return false;
+
+      target.charges += 1;
+      state.skillBagVersion += 1;
+      castExtra = { x: state.player.x, z: state.player.z };
+      emit('skillNotice', {
+        text: `记忆植入：${skillDef(target.id)?.name || target.id} +1 次`,
+        kind: 'skill',
+      });
+      break;
+    }
     case 'upgradeSlot':
       if (
         state.barricade.unlocked &&
@@ -2163,12 +2230,8 @@ function castSkill(id) {
   return true;
 }
 
-// 一次性技能也有出现条件：路障满级就不用再出记忆植入
+// 一次性技能也有出现条件
 function skillCanAppear(def) {
-  if (def.id === 'memory') {
-    return !state.barricade.unlocked ||
-      state.barricade.level < CONFIG.barricade.levels.length;
-  }
   if (def.id === 'orbital') {
     // 一局只能拿一次、用一次
     return !state.usedSkills.includes('orbital') &&
@@ -2285,6 +2348,9 @@ function useSkill(id) {
   }
 
   if (id === 'orbital') state.usedSkills.push('orbital');
+
+  // 记下这次用的技能，记忆植入复刻用；记忆植入自己不算
+  if (id !== 'memory') state.lastSkillId = id;
 
   entry.charges -= 1;
   if (entry.charges <= 0) {
@@ -2476,6 +2542,8 @@ function syncEraWithWave(wave) {
 
   // 旧时代没打完的技能次数折算成兵
   convertExpiredSkills();
+  // 旧时代技能已经折算掉，记忆植入也不能再复刻它们
+  state.lastSkillId = null;
   ensureSummonSlot();
 
   // 只换时代配色和地图，场上僵尸、子弹、屏障全部保留
@@ -3532,7 +3600,10 @@ function updateZombies(dt) {
 
       if (!z.attacking) {
         z.attacking = true;
-        z.attackAnimating = false;
+        // 先等一小段再出第一拳：画面层要在下一帧才建出 Boss 模型，
+        // 这一帧直接派 bossAttack 会找不到动作，第一拳就白打且没有动画
+        z.attackAnimating = true;
+        z.attackAnimUntil = state.time + 0.25;
         z.attackCount = 0;
         emit('bossReachLine', { id: z.id, x: z.x, z: z.z });
       }
@@ -4782,7 +4853,11 @@ function applySoldiers(delta, opts = {}) {
  * ---------------------------------------------------------- */
 initUI(state, {
   start: (opts) => startGame(opts),
-  restart: () => startGame({ testMode: state.testMode }),
+  restart: () => startGame({
+    testMode: state.testMode,
+    startingEra: state.startEra,
+    map: state.startMap,
+  }),
   revive: revive,
   chooseCard,
   castSkill,
