@@ -37,7 +37,7 @@ import { initBarrels, updateBarrels, resetBarrels, hitTestBarrel, spawnBarrelAt 
 // 槽位正式模型：六槽位 × 六时代 × 五等级，全程序化（对应 docs/美术需求-槽位与技能.md P1）
 import { buildSlotStructure, buildLevelDots, disposeSlotStructure } from './visuals-slots.js';
 // 17 张新增地图：复用现有贴图，靠背景物/雾/光区分（见 visuals-maps.js 顶部说明）
-import { NEW_MAPS, isNewMap } from './visuals-maps.js';
+import { NEW_MAPS, isNewMap, buildFlank } from './visuals-maps.js';
 
 /* ----------------------------------------------------------
  * 地图配置表
@@ -4136,6 +4136,17 @@ function buildProps(mapId = MAP_ID) {
     builder(group, rng);
   }
 
+  /* 近景两侧大件：所有地图（原有 9 张 + 新 17 张）都铺一层。
+   *
+   * 原有地图的 props 大多摆在中远景（z −20 ~ −44），那里 1 个单位只占几个像素，
+   * 二十米高的楼在屏幕上也就一百多像素，看着仍然像"远处几个方块"。
+   * 这一层贴近相机（z −10 ~ +8），并且**故意让它被画面左右边缘裁掉一部分**——
+   * 只露出半面的墙、只露出屋顶的房子，才像真实场景里的框景。
+   *
+   * 放这里而不是放进每张图自己的构建函数：26 张图各写一遍会散，
+   * 而且原有 9 张图的构建函数是早先写的，不该为了这一层去改它们。 */
+  buildFlank(group, { viewHalfX: viewHalfXAt }, rng, mapId);
+
   // 前景剪影：画面最下缘一条参差不齐的暗色带，纵深立刻出来了。
   // 只放在左右两侧（|x| > 4），中间留空，不然会挡住玩家和士兵。
   const silhouette = {
@@ -4169,7 +4180,10 @@ function buildProps(mapId = MAP_ID) {
     group.add(block);
   }
 
-  scene.add(group);
+  // 这个 return 之前漏了：只有新地图那条分支有 `if (isNewMap) return group`，
+  // 原有 9 张图走到这里直接把函数结束，返回 undefined。
+  // 后果是 propsGroup 拿不到引用 → 切图时旧背景物删不掉、一层层叠上去。
+  return group;
 }
 
 function buildCityProps(g, rng) {

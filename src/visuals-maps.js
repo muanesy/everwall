@@ -1476,3 +1476,235 @@ export const NEW_MAP_ERA = {
 export function isNewMap(mapId) {
   return Object.prototype.hasOwnProperty.call(NEW_MAPS, mapId);
 }
+
+/* ==========================================================================
+ * 近景两侧大件（flank）
+ *
+ * 为什么单独加这一层：
+ * 之前的道具大多摆在中远景（z −20 ~ −44），那里 1 个单位只占几个像素，
+ * 一栋 20 米高的楼在屏幕上也就一百多像素，看起来仍然像"远处几个方块"。
+ *
+ * 这一层摆在中近景（z −8 ~ +8），贴近相机，**故意让它被画面左右边缘裁掉一部分**：
+ * 只露出一半的墙、只露出屋顶的房子，才是真实的第一人称框景，
+ * 也是让人一眼觉得"这地方有东西"的关键。全部露出反而像贴图。
+ * ========================================================================== */
+
+/* ---- 零件配方：每个都堆出轮廓，不用单个方块 ---- */
+
+function fxWall(g, rng, a, b) {
+  const w = 1.6 + rng() * 1.4;
+  const h = 2.2 + rng() * 2.2;
+  const body = box(w, h, 0.7, a, { rough: 0.95 });
+  g.add(body);
+  // 顶部压一圈稍宽的墙檐，边界立刻清楚
+  put(g, box(w * 1.12, 0.18, 0.86, b, { rough: 1 }), 0, h + 0.09, 0);
+  // 扶壁
+  const nb = 2 + Math.floor(rng() * 2);
+  for (let i = 0; i < nb; i++) {
+    const px = (-0.5 + (i + 0.5) / nb) * w;
+    put(g, box(w * 0.13, h * 0.7, 0.95, b, { rough: 1 }), px, h * 0.35, 0);
+  }
+  // 墙上的裂口
+  put(g, box(w * 0.18, h * 0.22, 0.76, 0x0a0d10, { rough: 1 }), w * 0.2, h * 0.62, 0);
+}
+
+function fxHouse(g, rng, a, b) {
+  const w = 2.0 + rng() * 1.6;
+  const d = 1.8 + rng() * 1.2;
+  const h = 1.8 + rng() * 1.6;
+  g.add(box(w, h, d, a, { rough: 0.9 }));
+  // 坡屋顶：用旋转 45° 的扁盒子冒充双坡，俯视下轮廓对
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(w * 1.16, 0.5, d * 1.14), mat(b, { rough: 1 }));
+  roof.position.y = h + 0.16;
+  roof.rotation.z = 0.06;
+  g.add(roof);
+  put(g, box(0.22, 0.9, 0.22, b, { rough: 1 }), w * 0.3, h + 0.55, -d * 0.2);   // 烟囱
+  // 一排窗，暖光
+  const winMat = mat(0xffb866, { emissive: 0.7, rough: 0.6 });
+  const nc = 2 + Math.floor(rng() * 2);
+  for (let i = 0; i < nc; i++) {
+    const win = new THREE.Mesh(new THREE.PlaneGeometry(0.26, 0.34), winMat);
+    win.position.set((-0.5 + (i + 0.5) / nc) * w, h * 0.58, d / 2 + 0.01);
+    g.add(win);
+  }
+  // 门
+  put(g, box(0.3, 0.7, 0.06, 0x1a120c, { rough: 1 }), -w * 0.22, 0.35, d / 2 + 0.02);
+}
+
+function fxTree(g, rng, a, b) {
+  const h = 2.0 + rng() * 2.4;
+  const trunk = cyl(0.11, 0.17, h, a, 7, { rough: 1 });
+  g.add(trunk);
+  // 两三条斜枝
+  const nBr = 2 + Math.floor(rng() * 2);
+  for (let i = 0; i < nBr; i++) {
+    const br = cyl(0.04, 0.07, h * 0.42, a, 5, { rough: 1 });
+    br.position.set(0, h * 0.6, 0);
+    br.rotation.z = (rng() - 0.5) * 1.5;
+    br.rotation.x = (rng() - 0.5) * 1.1;
+    g.add(br);
+  }
+  // 3~5 个大小不一的圆冠
+  const nc = 3 + Math.floor(rng() * 3);
+  for (let i = 0; i < nc; i++) {
+    const r = 0.42 + rng() * 0.5;
+    const crown = new THREE.Mesh(new THREE.IcosahedronGeometry(r, 0), mat(b, { rough: 1, flat: true }));
+    crown.position.set((rng() - 0.5) * 0.9, h + (rng() - 0.4) * 0.8, (rng() - 0.5) * 0.9);
+    crown.rotation.set(rng() * 3, rng() * 3, rng() * 3);
+    g.add(crown);
+  }
+}
+
+function fxRock(g, rng, a) {
+  const n = 2 + Math.floor(rng() * 3);
+  for (let i = 0; i < n; i++) {
+    const r = 0.5 + rng() * 1.1;
+    const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(r, 0), mat(a, { rough: 1, flat: true }));
+    rock.position.set((rng() - 0.5) * 1.6, r * 0.75, (rng() - 0.5) * 1.4);
+    rock.rotation.set(rng() * 3, rng() * 3, rng() * 3);
+    rock.scale.y = 0.7 + rng() * 0.5;
+    g.add(rock);
+  }
+}
+
+function fxTank(g, rng, a, b) {
+  const r = 0.55 + rng() * 0.35;
+  const h = 2.0 + rng() * 1.6;
+  const body = cyl(r, r, h, a, 12, { rough: 0.6, metal: 0.4 });
+  g.add(body);
+  // 三道箍
+  for (let i = 1; i <= 3; i++) {
+    const ring = cyl(r * 1.06, r * 1.06, 0.1, b, 12, { rough: 0.8 });
+    ring.position.y = (h * i) / 4;
+    g.add(ring);
+  }
+  put(g, cyl(r * 0.5, r * 0.5, 0.18, b, 10, { rough: 0.5 }), 0, h + 0.09, 0);  // 顶盖
+  // 顶部发光口
+  const glow = new THREE.Mesh(new THREE.SphereGeometry(r * 0.34, 8, 6), mat(0x66e0ff, { emissive: 1.2, rough: 0.3 }));
+  glow.position.y = h + 0.24;
+  g.add(glow);
+  // 侧面管道
+  put(g, cyl(0.08, 0.08, 1.5, b, 6, { rough: 0.7, metal: 0.5 }), r + 0.1, 0.75, 0).rotation.z = Math.PI / 2;
+}
+
+function fxPillar(g, rng, a, b) {
+  const h = 2.6 + rng() * 2.6;
+  g.add(cyl(0.26, 0.32, h, a, 8, { rough: 0.9 }));
+  put(g, cyl(0.42, 0.34, 0.2, b, 8, { rough: 0.9 }), 0, 0.1, 0);        // 柱础
+  put(g, cyl(0.4, 0.4, 0.18, b, 8, { rough: 0.9 }), 0, h - 0.05, 0);   // 柱头
+  // 断柱：顶部缺一块
+  if (rng() < 0.5) {
+    const chip = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 0.3), mat(0x0d1014, { rough: 1 }));
+    chip.position.set(0.2, h - 0.2, 0.1);
+    g.add(chip);
+  }
+}
+
+function fxStall(g, rng, a, b) {
+  const w = 1.5 + rng() * 0.8;
+  g.add(box(w, 0.9, 1.1, a, { rough: 0.95 }));
+  // 四根杆 + 斜顶棚
+  for (const sx of [-0.42, 0.42]) {
+    for (const sz of [-0.4, 0.4]) {
+      put(g, cyl(0.05, 0.05, 1.2, b, 5, { rough: 0.9 }), sx * w, 1.5, sz * 1.1);
+    }
+  }
+  const cloth = new THREE.Mesh(new THREE.BoxGeometry(w * 1.1, 0.08, 1.5), mat(b, { rough: 0.85 }));
+  cloth.position.y = 2.05;
+  cloth.rotation.z = 0.1;
+  g.add(cloth);
+}
+
+function fxCrate(g, rng, a, b) {
+  const n = 2 + Math.floor(rng() * 3);
+  let stackY = 0;
+  for (let i = 0; i < n; i++) {
+    const s = 0.6 + rng() * 0.4;
+    const c = box(s, s, s, a, { rough: 0.9 });
+    c.position.set((rng() - 0.5) * 0.5, stackY + s / 2, (rng() - 0.5) * 0.5);
+    c.rotation.y = rng() * 0.6;
+    g.add(c);
+    // 木箱的十字加强条
+    put(g, box(s * 1.02, 0.07, 0.07, b, { rough: 1 }), 0, 0, 0);
+    stackY += s * 0.95;
+  }
+}
+
+const FLANK_KINDS = {
+  wall: fxWall, house: fxHouse, tree: fxTree, rock: fxRock,
+  tank: fxTank, pillar: fxPillar, stall: fxStall, crate: fxCrate,
+};
+
+/* 每张地图的近景件：按气质挑。a 是主体色，b 是配色（檐口/箍/棚布） */
+const FLANK_CONF = {
+  // 原有 9 张
+  city:       { kind: 'house',  a: 0x2c333c, b: 0x141920 },
+  jungle:     { kind: 'tree',   a: 0x3b2f1f, b: 0x1d3a1c },
+  desert:     { kind: 'rock',   a: 0x7a5f3c },
+  moon:       { kind: 'rock',   a: 0x6a6e78 },
+  snow:       { kind: 'tree',   a: 0x2b3038, b: 0x8fa4b4 },
+  lava:       { kind: 'rock',   a: 0x3a1e16 },
+  base:       { kind: 'wall',   a: 0x3a4148, b: 0x1c2228 },
+  lab:        { kind: 'pillar', a: 0x6e7a80, b: 0x39434a },
+  harbor:     { kind: 'crate',  a: 0x4a5560, b: 0x2a323a },
+  // 17 张新图
+  castle:     { kind: 'wall',   a: 0x6b6255, b: 0x3c372f },
+  village:    { kind: 'house',  a: 0x6a5a44, b: 0x3a2f22 },
+  abbey:      { kind: 'pillar', a: 0x8a8478, b: 0x4c473e },
+  swamp:      { kind: 'tree',   a: 0x3a3428, b: 0x2c3f26 },
+  trench:     { kind: 'crate',  a: 0x5c5140, b: 0x332c22 },
+  beach:      { kind: 'rock',   a: 0x8a7a5e },
+  warport:    { kind: 'crate',  a: 0x3f4a54, b: 0x232b32 },
+  highway:    { kind: 'pillar', a: 0x4a4f56, b: 0x24282e },
+  parking:    { kind: 'pillar', a: 0x5a6068, b: 0x2c3138 },
+  quarantine: { kind: 'tank',   a: 0x8a9a94, b: 0x47544f },
+  biofactory: { kind: 'tank',   a: 0x5c6a58, b: 0x2e372c },
+  station:    { kind: 'wall',   a: 0x7a848e, b: 0x3e464e },
+  alienwaste: { kind: 'rock',   a: 0x6a5a76 },
+  orbitalpad: { kind: 'tank',   a: 0x5e6870, b: 0x303840 },
+  voidtemple: { kind: 'pillar', a: 0x4a3a4a, b: 0x8a4a3a },
+  timeruins:  { kind: 'pillar', a: 0x6a6470, b: 0x3a3644 },
+  blackhole:  { kind: 'rock',   a: 0x4a4e58 },
+};
+
+/**
+ * 给一张地图铺近景两侧大件。
+ * @param {THREE.Group} g  目标组
+ * @param {{viewHalfX:Function}} ctx
+ * @param {Function} rng
+ * @param {string} mapId
+ */
+export function buildFlank(g, ctx, rng, mapId) {
+  const conf = FLANK_CONF[mapId] || FLANK_CONF.city;
+  const recipe = FLANK_KINDS[conf.kind] || fxRock;
+
+  // 两段纵深：贴近相机的（1~8）和稍远一点的（−10~0）。
+  // 近段被画面边缘裁掉一部分，是"框景"的主要来源。
+  const bands = [
+    { z0: 1.0, z1: 8.0, count: 3, hMul: 1.0 },
+    { z0: -10.0, z1: 0.0, count: 3, hMul: 1.35 },
+  ];
+
+  for (const band of bands) {
+    for (const side of [-1, 1]) {
+      for (let i = 0; i < band.count; i++) {
+        const t = (i + 0.5) / band.count;
+        const z = band.z0 + (band.z1 - band.z0) * t + (rng() - 0.5) * 1.2;
+        const half = ctx.viewHalfX(z);
+        // 允许略微超出画面边缘（×1.05）：露出半个身子才像框景
+        const maxX = half * 1.05;
+        const minX = ARENA_HALF_X + 0.25;
+        if (maxX <= minX) continue;
+        const x = side * (minX + rng() * (maxX - minX));
+
+        const piece = new THREE.Group();
+        recipe(piece, rng, conf.a, conf.b);
+        piece.position.set(x, 0, z);
+        // 让物件侧向战场，朝向不做严格限制，转角就够
+        piece.rotation.y = Math.atan2(-x, 0) + (rng() - 0.5) * 0.5;
+        piece.scale.setScalar(band.hMul * (0.9 + rng() * 0.35));
+        g.add(piece);
+      }
+    }
+  }
+}
