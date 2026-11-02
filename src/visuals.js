@@ -660,6 +660,8 @@ let eventsRef = null;
 const zombieMeshes = new Map();
 const barrierMeshes = new Map();
 const bulletMeshes = new Map();
+const rollingLogMeshes = new Map();
+const knightChargeMeshes = new Map();
 const effects = [];
 
 // 战斗特效升级件（对象在 initVisuals 里创建）：
@@ -948,6 +950,8 @@ export function initVisuals(container, events) {
       spawnRing(d.x, d.z, d.color || 0x5adf7a, 0.7);
     } else if (d.id === 'arrowRain') {
       spawnArrowRain(d.x, d.z, d.radius || 4, d.color || 0xd9b36c);
+    } else if (d.type === 'rollingLog' || d.type === 'knightCharge') {
+      // 持续移动的实体由 syncRollingLogs / syncKnightCharges 负责画
     } else {
       spawnSkyStrike(d.x, d.z, d.color || 0xffffff);
     }
@@ -1994,6 +1998,9 @@ export function syncScene(state, dt) {
 
   // 子弹
   syncBullets(state);
+  // 滚木和骑士冲锋：持续移动的实体，按 state 里的数组同步
+  syncRollingLogs(state);
+  syncKnightCharges(state);
 
   updateEffects(dt);
   updateParticleFx(dt);
@@ -2537,6 +2544,161 @@ function syncBullets(state) {  const alive = new Set();
       scene.remove(mesh);
       disposeMesh(mesh);
       bulletMeshes.delete(id);
+    }
+  }
+}
+
+/* 滚木：一根沿 z 轴躺着的圆柱，从左往右滚，绕自身轴旋转 */
+function makeRollingLogEntry(log) {
+  const group = new THREE.Group();
+  const spinner = new THREE.Group();
+  spinner.position.y = log.radius;
+
+  const wood = new THREE.MeshStandardMaterial({ color: 0x8a5a2b, roughness: 0.95 });
+  const bark = new THREE.MeshStandardMaterial({ color: 0x4a2f14, roughness: 1 });
+
+  const geo = new THREE.CylinderGeometry(log.radius, log.radius, log.length, 10, 1);
+  geo.rotateX(Math.PI / 2); // 圆柱轴从 Y 转到 Z，躺成纵向
+  const body = new THREE.Mesh(geo, wood);
+  spinner.add(body);
+
+  // 端面铁箍
+  for (const z of [-log.length / 2 + 0.06, log.length / 2 - 0.06]) {
+    const band = new THREE.Mesh(
+      new THREE.TorusGeometry(log.radius * 1.01, 0.055, 6, 16),
+      bark
+    );
+    band.position.z = z;
+    spinner.add(band);
+  }
+
+  // 两个凸起的节疤，转动时能看出滚木在滚
+  for (const [z, y] of [[-log.length * 0.18, 0], [log.length * 0.2, Math.PI]]) {
+    const knot = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.16, 0.5), bark);
+    knot.position.set(Math.cos(y) * log.radius * 0.98, Math.sin(y) * log.radius * 0.98, z);
+    spinner.add(knot);
+  }
+
+  group.add(spinner);
+
+  const shadow = new THREE.Mesh(
+    new THREE.PlaneGeometry(log.radius * 2.4, log.length),
+    new THREE.MeshBasicMaterial({
+      color: 0x000000,
+      transparent: true,
+      opacity: 0.18,
+      depthWrite: false,
+    })
+  );
+  shadow.rotation.x = -Math.PI / 2;
+  shadow.position.y = 0.02;
+  group.add(shadow);
+
+  return { group, spinner };
+}
+
+function syncRollingLogs(state) {
+  const alive = new Set();
+
+  for (const log of state.rollingLogs || []) {
+    alive.add(log.id);
+
+    let entry = rollingLogMeshes.get(log.id);
+    if (!entry) {
+      entry = makeRollingLogEntry(log);
+      scene.add(entry.group);
+      rollingLogMeshes.set(log.id, entry);
+    }
+
+    entry.group.position.set(log.x, 0, log.z);
+    entry.spinner.rotation.z = log.spin || 0;
+  }
+
+  for (const [id, entry] of rollingLogMeshes) {
+    if (!alive.has(id)) {
+      scene.remove(entry.group);
+      disposeMesh(entry.group);
+      rollingLogMeshes.delete(id);
+    }
+  }
+}
+
+/* 骑士：骑马 + 骑手 + 长枪的简单几何组合，朝 -z（屏幕上方）冲 */
+function makeKnightEntry() {
+  const group = new THREE.Group();
+
+  const steel = new THREE.MeshStandardMaterial({
+    color: 0xc9d4e0,
+    roughness: 0.45,
+    metalness: 0.45,
+  });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x343a44, roughness: 0.9 });
+  const cloth = new THREE.MeshStandardMaterial({ color: 0x7c2a22, roughness: 0.95 });
+
+  const add = (geo, mat, x, y, z) => {
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(x, y, z);
+    group.add(mesh);
+    return mesh;
+  };
+
+  // 马
+  add(new THREE.BoxGeometry(0.55, 0.42, 1.1), cloth, 0, 0.55, 0);
+  add(new THREE.BoxGeometry(0.22, 0.45, 0.28), dark, 0, 0.82, -0.5);
+  add(new THREE.BoxGeometry(0.22, 0.22, 0.42), dark, 0, 1.02, -0.68);
+  for (const [lx, lz] of [[-0.2, -0.35], [0.2, -0.35], [-0.2, 0.35], [0.2, 0.35]]) {
+    add(new THREE.BoxGeometry(0.1, 0.5, 0.1), dark, lx, 0.25, lz);
+  }
+
+  // 骑手
+  add(new THREE.BoxGeometry(0.32, 0.5, 0.32), steel, 0, 1.0, 0.02);
+  add(new THREE.ConeGeometry(0.18, 0.32, 6), steel, 0, 1.42, 0.02);
+
+  // 长枪，指向前方
+  const lance = add(new THREE.CylinderGeometry(0.045, 0.045, 2.0, 6), steel, 0.32, 1.05, -0.75);
+  lance.rotation.x = Math.PI / 2;
+  const tip = add(new THREE.ConeGeometry(0.09, 0.25, 6), steel, 0.32, 1.05, -1.78);
+  tip.rotation.x = -Math.PI / 2;
+
+  // 盾
+  add(new THREE.BoxGeometry(0.08, 0.42, 0.34), steel, -0.28, 1.05, 0);
+
+  const shadow = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.9, 1.4),
+    new THREE.MeshBasicMaterial({
+      color: 0x000000,
+      transparent: true,
+      opacity: 0.22,
+      depthWrite: false,
+    })
+  );
+  shadow.rotation.x = -Math.PI / 2;
+  shadow.position.y = 0.02;
+  group.add(shadow);
+
+  return group;
+}
+
+function syncKnightCharges(state) {
+  const alive = new Set();
+
+  for (const k of state.knightCharges || []) {
+    alive.add(k.id);
+
+    let mesh = knightChargeMeshes.get(k.id);
+    if (!mesh) {
+      mesh = makeKnightEntry();
+      scene.add(mesh);
+      knightChargeMeshes.set(k.id, mesh);
+    }
+    mesh.position.set(k.x, 0, k.z);
+  }
+
+  for (const [id, mesh] of knightChargeMeshes) {
+    if (!alive.has(id)) {
+      scene.remove(mesh);
+      disposeMesh(mesh);
+      knightChargeMeshes.delete(id);
     }
   }
 }

@@ -118,6 +118,22 @@ const CONFIG = {
     damagePerWave: 4,    // 每波增加的伤害
     spawnInterval: 12,   // 每隔多少秒尝试补一个桶
   },
+  rollingLog: {
+    length: 6.0,       // 纵向长度，整根都要在屏幕内
+    radius: 0.55,      // 横向粗细
+    speed: 11,         // 从左往右的速度
+    damageMul: 1.25,   // 普通僵尸当前血量 ×1.25：秒普通，不秒大块头
+    zMargin: 0.6,      // 离屏幕上下边缘留的余量
+  },
+  knightCharge: {
+    count: 3,          // 一次冲几个骑士
+    minGap: 1.6,       // 两个骑士之间的最小横向距离
+    speed: 20,         // 向上冲的速度
+    damage: 50,        // 每个骑士对同一只僵尸只结算一次
+    hitRadius: 0.75,   // 横向命中半径
+    hitDepth: 1.1,     // 纵向命中厚度
+    spawnZ: 9.8,       // 屏幕下方出生
+  },
   barricade: {
     xMin: -0.4,          // 路障左边界，避开左边屏障通道
     z: 0,                // 路障所在纵深，接近屏幕中央
@@ -303,6 +319,8 @@ const state = {
   bullets: [],  // { id, x, z, vz, damage }
   barriers: [], // { id, x, z, hp, speed }
   zombies: [],  // { id, x, z, hp, speed, type }
+  rollingLogs: [],   // { id, x, z, length, radius, speed, damage, spin, hit }
+  knightCharges: [], // { id, x, z, speed, damage, hit }
 
   barrierTimer: 0,
   zombieTimer: 0,
@@ -473,6 +491,8 @@ function resetState(opts = {}) {
   state.bullets.length = 0;
   state.barriers.length = 0;
   state.zombies.length = 0;
+  state.rollingLogs.length = 0;
+  state.knightCharges.length = 0;
 
   state.barrierTimer = 0.6;
   state.zombieTimer = 1.0;
@@ -504,6 +524,8 @@ function revive() {
   state.bullets.length = 0;
   state.barriers.length = 0;
   state.zombies.length = 0;
+  state.rollingLogs.length = 0;
+  state.knightCharges.length = 0;
   state.barrierTimer = 0.4;
   state.zombieTimer = 0.8;
 
@@ -891,9 +913,9 @@ const SKILL_DEFS = [
   // 半径 4 = 屏幕半宽，直径 8 刚好是屏幕宽度的一半
   // 50 伤害：中世纪 1-4 波普通僵尸最高 44 血，保证能秒杀
   { id: 'arrowRain', name: '箭雨', era: 0, type: 'aoe', damage: 50, radius: 4.0, color: 0xd9b36c },
-  { id: 'rollingLog', name: '滚木', era: 0, type: 'line', damage: 60, radius: 2.0, color: 0x9c6b3f },
+  { id: 'rollingLog', name: '滚木', era: 0, type: 'rollingLog', color: 0x9c6b3f },
   { id: 'holyWater', name: '圣水', era: 0, type: 'heal', soldiers: 20, color: 0x8fe3b0 },
-  { id: 'knightCharge', name: '骑士冲锋', era: 0, type: 'aoe', damage: 50, radius: 3.0, color: 0xc9d4e0 },
+  { id: 'knightCharge', name: '骑士冲锋', era: 0, type: 'knightCharge', color: 0xc9d4e0 },
   { id: 'campfire', name: '篝火', era: 0, type: 'aoe', damage: 30, radius: 3.5, color: 0xff9a4d },
   // 1 二战
   { id: 'airStrike', name: '空袭', era: 1, type: 'aoe', damage: 90, radius: 4.0, color: 0xffd27a },
@@ -929,9 +951,9 @@ const SKILL_DEFS = [
 
 const SKILL_DESCS = {
   arrowRain: '圆形箭雨：半径 4 内 50 伤害（直径 8，约屏幕宽度一半）',
-  rollingLog: '横排滚木：半宽 2 的整条横线 60 伤害',
+  rollingLog: '左侧随机出现，纵向 6 格，从左往右碾压；秒普通僵尸，不秒大块头',
   holyWater: '立刻 +20 兵',
-  knightCharge: '最密处半径 3 内 50 伤害',
+  knightCharge: '右下随机冲 3 个骑士，向上贯穿，每个骑士对每只僵尸 50 伤害',
   campfire: '最密处半径 3.5 内 30 伤害',
   airStrike: '最密处半径 4 内 90 伤害',
   barrage: '横排炮火：半宽 3 的整条横线 70 伤害',
@@ -1015,6 +1037,58 @@ function clearZombies() {
   }
 }
 
+// 普通僵尸在当前波次的血量。滚木用它算伤害：1.25 倍能秒普通，大块头是 2.5 倍血，秒不掉。
+function currentNormalHp() {
+  return CONFIG.zombie.baseHp + (state.wave - 1) * CONFIG.zombie.hpPerWave;
+}
+
+// 滚木：从屏幕左边随机纵向位置出现，整根保持在屏幕内，从左往右滚
+function spawnRollingLog() {
+  const cfg = CONFIG.rollingLog;
+  const half = cfg.length / 2;
+  const zMin = CONFIG.world.screenTopZ + half + cfg.zMargin;
+  const zMax = CONFIG.world.playerZ - half - cfg.zMargin;
+  const z = zMin + Math.random() * Math.max(0, zMax - zMin);
+
+  state.rollingLogs.push({
+    id: state.nextId++,
+    x: -CONFIG.world.halfWidth + cfg.radius + 0.05,
+    z,
+    length: cfg.length,
+    radius: cfg.radius,
+    speed: cfg.speed,
+    damage: Math.max(1, Math.round(currentNormalHp() * cfg.damageMul)),
+    spin: 0,
+    hit: new Set(),
+  });
+}
+
+// 骑士冲锋：从屏幕下方右半边随机位置冲 3 个骑士，横向留出最小间距
+function spawnKnightCharge() {
+  const cfg = CONFIG.knightCharge;
+  const [minX, maxX] = CONFIG.world.rightZone;
+  const span = maxX - minX;
+  const slot = span / (cfg.count + 1);
+  const jitter = Math.max(0, (slot - cfg.minGap) / 2);
+
+  for (let i = 0; i < cfg.count; i++) {
+    const base = minX + slot * (i + 1);
+    const x = Math.min(
+      maxX - cfg.hitRadius,
+      Math.max(minX + cfg.hitRadius, base + (Math.random() * 2 - 1) * jitter)
+    );
+
+    state.knightCharges.push({
+      id: state.nextId++,
+      x,
+      z: cfg.spawnZ,
+      speed: cfg.speed,
+      damage: cfg.damage,
+      hit: new Set(),
+    });
+  }
+}
+
 function castSkill(id) {
   const def = SKILL_DEFS.find((s) => s.id === id);
   if (!def) return false;
@@ -1036,6 +1110,12 @@ function castSkill(id) {
       break;
     case 'line':
       damageZombiesInLine(target.z, def.radius, def.damage);
+      break;
+    case 'rollingLog':
+      spawnRollingLog();
+      break;
+    case 'knightCharge':
+      spawnKnightCharge();
       break;
     case 'slow':
       state.slowUntil = state.time + def.duration;
@@ -1237,6 +1317,8 @@ function update(dt) {
   updateSlots(dt);
   updateBarriers(dt);
   updateZombies(dt);
+  updateRollingLogs(dt);
+  updateKnightCharges(dt);
 }
 
 // 前排人数：1+2+...+r >= 士兵数，r 就是前排宽度
@@ -1854,6 +1936,52 @@ function updateZombies(dt) {
       continue;
     }
 
+  }
+}
+
+// 滚木：横向移动，经过的僵尸每只只吃一次伤害
+function updateRollingLogs(dt) {
+  for (let i = state.rollingLogs.length - 1; i >= 0; i--) {
+    const log = state.rollingLogs[i];
+    log.x += log.speed * dt;
+    log.spin += (log.speed / log.radius) * dt;
+
+    for (let j = state.zombies.length - 1; j >= 0; j--) {
+      const zb = state.zombies[j];
+      if (log.hit.has(zb.id)) continue;
+      if (Math.abs(zb.z - log.z) > log.length / 2 + 0.2) continue;
+      if (Math.abs(zb.x - log.x) > log.radius + 0.3) continue;
+
+      log.hit.add(zb.id);
+      damageZombieAt(j, log.damage);
+    }
+
+    // 整根滚木离开右边界就移除，不让它半截露在屏幕外
+    if (log.x + log.radius >= CONFIG.world.halfWidth) {
+      state.rollingLogs.splice(i, 1);
+    }
+  }
+}
+
+// 骑士冲锋：向上贯穿，每个骑士对每只僵尸只结算一次
+function updateKnightCharges(dt) {
+  const endZ = CONFIG.world.spawnZ - 2;
+
+  for (let i = state.knightCharges.length - 1; i >= 0; i--) {
+    const k = state.knightCharges[i];
+    k.z -= k.speed * dt;
+
+    for (let j = state.zombies.length - 1; j >= 0; j--) {
+      const zb = state.zombies[j];
+      if (k.hit.has(zb.id)) continue;
+      if (Math.abs(zb.x - k.x) > CONFIG.knightCharge.hitRadius) continue;
+      if (Math.abs(zb.z - k.z) > CONFIG.knightCharge.hitDepth) continue;
+
+      k.hit.add(zb.id);
+      damageZombieAt(j, k.damage);
+    }
+
+    if (k.z < endZ) state.knightCharges.splice(i, 1);
   }
 }
 
