@@ -654,6 +654,9 @@ function despawnModel(vis) {
 let camBaseX = 0;
 let shake = 0;
 
+// 事件总线：陨石/火区这类"视觉演完要通知甲结算"的东西要靠它派发
+let eventsRef = null;
+
 const zombieMeshes = new Map();
 const barrierMeshes = new Map();
 const bulletMeshes = new Map();
@@ -699,6 +702,7 @@ const dummy = new THREE.Object3D();
  * ---------------------------------------------------------- */
 export function initVisuals(container, events) {
   containerEl = container;
+  eventsRef = events || null;
 
   renderer = new THREE.WebGLRenderer({ antialias: true });
   maxPixelRatio = Math.min(window.devicePixelRatio, 2);
@@ -1030,10 +1034,22 @@ export function initVisuals(container, events) {
     shake = Math.max(shake, 0.16);
   });
 
-  // 炸药桶爆炸：甲那边派发这个事件结算伤害，这里负责声音和余震
-  events.addEventListener('barrelExploded', () => {
+  // 炸药桶爆炸：甲那边派发这个事件结算伤害，这里负责声音、余震和地面火区
+  events.addEventListener('barrelExploded', (e) => {
     playBarrelExplode();
     shake = Math.max(shake, 0.45);
+
+    // 桶里装的是油，炸完地上留一片还在烧的火（视觉自己做闭环，
+    // 持续灼烧伤害由甲监听 fireZoneSpawned 或轮询 getFireZones() 决定）
+    const d = e.detail || {};
+    igniteFireZone(d.x ?? 0, d.z ?? 0, Math.min(2.8, (d.radius || 3.2) * 0.78));
+  });
+
+  // 甲想主动砸陨石，派个 'meteor' 事件就行，不用 import 函数
+  events.addEventListener('meteor', (e) => {
+    const d = e.detail || {};
+    if (isFinite(d.x) && isFinite(d.z)) triggerMeteor(d.x, d.z);
+    else triggerMeteorRandom();
   });
 }
 
@@ -1279,6 +1295,529 @@ function updateQuake(dt) {
   }
 }
 
+/* ----------------------------------------------------------
+ * 陨石（纯视觉，伤害结算归甲）
+ *
+ * 三段演出，全部程序化，零外部素材：
+ *   1. 预警圈：地面亮一圈红环，越接近落点闪得越急，内圈同时往里收
+ *   2. 火石：从画面外斜着砸下来，拖着火星尾迹，边落边翻滚
+ *   3. 砸地：白闪一下 + 震屏 + 冲击环 + 泥土飞溅 + 留一个黑坑
+ *
+ * 落地时派发 'meteorImpact'，detail = { x, z, radius }，
+ * 甲按这个半径自己结算伤害（这里一点血都不扣）。
+ *
+ * 用法：
+ *   triggerMeteor(x, z);      指定落点
+ *   triggerMeteorRandom();    在战场里随机挑一个落点（不会砸在玩家脚下）
+ * 甲也可以直接派事件：events.dispatchEvent(new CustomEvent('meteor', { detail: { x, z } }))
+ * ---------------------------------------------------------- */
+const meteors = [];        // 正在预警/坠落中的陨石
+const craters = [];        // 砸出来的坑（贴地，慢慢淡出）
+const METEOR_WARN = 1.1;   // 预警时长（秒）
+const METEOR_FALL = 0.42;  // 坠落时长
+const METEOR_WARN_R = 2.6; // 预警圈半径 = 默认伤害半径
+const METEOR_TOP_Y = 15;   // 火石出现的空中高度
+const CRATER_MAX = 6;
+const CRATER_LIFE = 10;
+let craterTex = null;
+
+function ensureCraterTex() {
+  if (craterTex) return craterTex;
+
+  const size = 192;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const c = size / 2;
+
+  // 坑底：中间最黑，边上稍微透一点，看着像被烧穿的土
+  const g = ctx.createRadialGradient(c, c, size * 0.04, c, c, size * 0.5);
+  g.addColorStop(0, 'rgba(12,8,5,0.96)');
+  g.addColorStop(0.42, 'rgba(26,17,11,0.86)');
+  g.addColorStop(0.72, 'rgba(48,33,21,0.55)');
+  g.addColorStop(1, 'rgba(60,45,30,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(c, c, size * 0.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 坑沿：一圈浅色的翻出来的土
+  ctx.strokeStyle = 'rgba(150,124,88,0.62)';
+  ctx.lineWidth = size * 0.05;
+  ctx.beginPath();
+  ctx.arc(c, c, size * 0.36, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // 放射状的裂纹，别让坑看着像一个规整的圆
+  for (let i = 0; i < 14; i++) {
+    const a = (i / 14) * Math.PI * 2 + Math.random() * 0.28;
+    const r0 = size * (0.3 + Math.random() * 0.06);
+    const r1 = size * (0.4 + Math.random() * 0.09);
+    ctx.strokeStyle = `rgba(20,14,9,${0.4 + Math.random() * 0.35})`;
+    ctx.lineWidth = size * (0.012 + Math.random() * 0.018);
+    ctx.beginPath();
+    ctx.moveTo(c + Math.cos(a) * r0, c + Math.sin(a) * r0);
+    ctx.lineTo(c + Math.cos(a) * r1, c + Math.sin(a) * r1);
+    ctx.stroke();
+  }
+
+  craterTex = new THREE.CanvasTexture(canvas);
+  craterTex.colorSpace = THREE.SRGBColorSpace;
+  return craterTex;
+}
+
+function spawnCrater(x, z, scale = 1) {
+  if (!scene) return;
+  const s = METEOR_WARN_R * 2.1 * scale;
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(s, s),
+    new THREE.MeshBasicMaterial({
+      map: ensureCraterTex(),
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -4,
+      polygonOffsetUnits: -4,
+    })
+  );
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.rotation.z = Math.random() * Math.PI * 2;
+  mesh.position.set(x, 0.028, z);
+  mesh.renderOrder = 1;
+  scene.add(mesh);
+  craters.push({ mesh, life: 0 });
+
+  while (craters.length > CRATER_MAX) {
+    const old = craters.shift();
+    scene.remove(old.mesh);
+    old.mesh.geometry.dispose();
+    old.mesh.material.dispose();
+  }
+}
+
+function updateCraters(dt) {
+  if (!craters.length) return;
+  const fadeFrom = CRATER_LIFE - 3.5;
+
+  for (let i = craters.length - 1; i >= 0; i--) {
+    const c = craters[i];
+    c.life += dt;
+
+    if (c.life >= CRATER_LIFE) {
+      scene.remove(c.mesh);
+      c.mesh.geometry.dispose();
+      c.mesh.material.dispose();
+      craters.splice(i, 1);
+      continue;
+    }
+    if (c.life > fadeFrom) {
+      c.mesh.material.opacity = 0.9 * (1 - (c.life - fadeFrom) / 3.5);
+    }
+  }
+}
+
+function newMeteor(x, z) {
+  const group = new THREE.Group();
+
+  // 预警圈：外圈标范围，内圈往里收做倒计时
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(METEOR_WARN_R - 0.13, METEOR_WARN_R, 48),
+    new THREE.MeshBasicMaterial({
+      color: 0xff4a24,
+      transparent: true,
+      opacity: 0.8,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.set(x, 0.055, z);
+  group.add(ring);
+
+  const inner = new THREE.Mesh(
+    new THREE.RingGeometry(0.9, 1, 32),
+    new THREE.MeshBasicMaterial({
+      color: 0xff8a4a,
+      transparent: true,
+      opacity: 0.5,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    })
+  );
+  inner.rotation.x = -Math.PI / 2;
+  inner.position.set(x, 0.058, z);
+  inner.scale.setScalar(METEOR_WARN_R * 0.92);
+  group.add(inner);
+
+  // 火石本体 + 一层半透明的热壳，远看是一团带边的火球
+  const rock = new THREE.Mesh(
+    new THREE.IcosahedronGeometry(0.62, 1),
+    new THREE.MeshStandardMaterial({
+      color: 0x2a1c12,
+      emissive: 0xff5a1c,
+      emissiveIntensity: 1.5,
+      roughness: 0.95,
+      metalness: 0.05,
+      flatShading: true,
+    })
+  );
+  rock.position.set(x, METEOR_TOP_Y, z);
+  rock.visible = false;
+  group.add(rock);
+
+  const shell = new THREE.Mesh(
+    new THREE.SphereGeometry(0.95, 12, 10),
+    new THREE.MeshBasicMaterial({
+      color: 0xff7a2e,
+      transparent: true,
+      opacity: 0.4,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  shell.position.copy(rock.position);
+  shell.visible = false;
+  group.add(shell);
+
+  scene.add(group);
+
+  return {
+    x, z, group, ring, inner, rock, shell,
+    time: 0,
+    dropped: false,
+    spinX: 3 + Math.random() * 4,
+    spinZ: 2 + Math.random() * 3,
+  };
+}
+
+function impactMeteor(m) {
+  const { x, z } = m;
+
+  shake = Math.max(shake, 0.92);
+
+  // 冲击环两道，一快一慢，砸下来的分量靠这个撑住
+  spawnRing(x, z, 0xffd0a0, 0.34);
+  spawnRing(x, z, 0xff6a24, 0.62);
+
+  spawnBurst(x, 0.5, z, 0xff8a34, 30, {
+    speed: 6.4, up: 5.4, spread: 0.85, life: 0.62, gravity: -9,
+  });
+  spawnBurst(x, 0.3, z, 0x6b5540, 26, {
+    speed: 4.8, up: 3.4, spread: 1.35, life: 1.15, gravity: -3.6,
+  });
+
+  spawnCrater(x, z, 1);
+
+  if (eventsRef) {
+    try {
+      eventsRef.dispatchEvent(new CustomEvent('meteorImpact', {
+        detail: { x, z, radius: METEOR_WARN_R },
+      }));
+    } catch (err) {
+      // 事件系统出问题不能影响画面
+    }
+  }
+}
+
+/* 砸一颗陨石。同屏最多 3 颗，多了直接忽略（别把画面糊满、也省粒子） */
+export function triggerMeteor(x, z) {
+  if (!scene) return false;
+  if (meteors.length >= 3) return false;
+
+  const px = Math.max(-9, Math.min(9, Number(x) || 0));
+  const pz = Math.max(-26, Math.min(4, Number(z) || 0));
+
+  // 落点太近就先清掉同位置那颗旧的，避免两个预警圈叠在一起
+  meteors.push(newMeteor(px, pz));
+  return true;
+}
+
+/* 随机落点：避开玩家脚下 3 米，主要落在僵尸推进的那片区域 */
+export function triggerMeteorRandom() {
+  const p = currentState ? currentState.player : { x: 0, z: 9 };
+  let x = 0;
+  let z = 0;
+
+  for (let i = 0; i < 6; i++) {
+    x = (Math.random() - 0.5) * 16;
+    z = -3 - Math.random() * 19;
+    if (Math.hypot(x - p.x, z - p.z) > 3) break;
+  }
+  return triggerMeteor(x, z);
+}
+
+function updateMeteors(dt) {
+  for (let i = meteors.length - 1; i >= 0; i--) {
+    const m = meteors[i];
+    m.time += dt;
+
+    if (m.time < METEOR_WARN) {
+      // —— 预警段：外圈闪得越来越急，内圈一路收到落点
+      const t = m.time / METEOR_WARN;
+      m.ring.material.opacity = 0.55 + 0.35 * Math.sin(m.time * (9 + t * 30));
+      m.inner.scale.setScalar(Math.max(0.18, METEOR_WARN_R * 0.92 * (1 - t * 0.84)));
+      m.inner.material.opacity = 0.45 + 0.45 * t;
+      continue;
+    }
+
+    // —— 坠落段：预警圈收掉，火石加速下落
+    if (!m.dropped) {
+      m.dropped = true;
+      m.ring.visible = false;
+      m.inner.visible = false;
+      m.rock.visible = true;
+      m.shell.visible = true;
+    }
+
+    const t = Math.min(1, (m.time - METEOR_WARN) / METEOR_FALL);
+    const e = t * t; // 加速下坠，越接近地面越快
+    const y = METEOR_TOP_Y - (METEOR_TOP_Y - 0.4) * e;
+    m.rock.position.y = y;
+    m.shell.position.y = y;
+    m.rock.rotation.x += dt * m.spinX;
+    m.rock.rotation.z += dt * m.spinZ;
+
+    // 尾迹：每帧借三颗粒子，够连成一条火线
+    spawnBurst(m.x, y, m.z, 0xff7a2e, 3, {
+      speed: 0.5, up: 0.5, spread: 0.55, life: 0.45, gravity: -1.5,
+    });
+
+    if (t >= 1) {
+      impactMeteor(m);
+      scene.remove(m.group);
+      disposeMesh(m.group);
+      meteors.splice(i, 1);
+    }
+  }
+}
+
+/* ----------------------------------------------------------
+ * 油桶火区（纯视觉，持续灼烧伤害归甲）
+ *
+ * 炸药桶炸完，地面留一片还在烧的油：贴地火光 + 不停往上蹿的火苗 + 黑烟。
+ * 火区自己烧 4.5 秒后灭掉，不需要甲来管。
+ *
+ * 甲要做持续伤害，两种接法任选：
+ *   a. 监听 'fireZoneSpawned'（detail = { x, z, radius, duration }）自己计时
+ *   b. 每帧调 getFireZones() 拿当前活着的火区（带 remaining 剩余秒数）
+ * ---------------------------------------------------------- */
+const fireZones = [];
+const FIRE_LIFE = 4.5;
+const FIRE_RADIUS = 2.4;
+let fireTex = null;
+
+function ensureFireTex() {
+  if (fireTex) return fireTex;
+
+  const size = 192;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const c = size / 2;
+
+  // 中心白热 → 橙 → 暗红 → 透明，边缘故意做不规则
+  const g = ctx.createRadialGradient(c, c, size * 0.03, c, c, size * 0.5);
+  g.addColorStop(0, 'rgba(255,240,196,0.92)');
+  g.addColorStop(0.2, 'rgba(255,166,60,0.78)');
+  g.addColorStop(0.52, 'rgba(226,88,24,0.42)');
+  g.addColorStop(0.78, 'rgba(140,36,8,0.16)');
+  g.addColorStop(1, 'rgba(80,16,4,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(c, c, size * 0.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 从边上啃几块缺口，火焰轮廓就不会是个完美的圆
+  ctx.globalCompositeOperation = 'destination-out';
+  for (let i = 0; i < 18; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const d = size * (0.34 + Math.random() * 0.18);
+    const r = size * (0.05 + Math.random() * 0.12);
+    ctx.beginPath();
+    ctx.arc(c + Math.cos(a) * d, c + Math.sin(a) * d, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+
+  fireTex = new THREE.CanvasTexture(canvas);
+  fireTex.colorSpace = THREE.SRGBColorSpace;
+  return fireTex;
+}
+
+/* 点一片火。同一处 1.5 米内再点一次不新建，直接把旧火续满 */
+export function igniteFireZone(x, z, radius = FIRE_RADIUS) {
+  if (!scene || !isFinite(x) || !isFinite(z)) return null;
+
+  const r = Math.max(0.8, Math.min(3.4, Number(radius) || FIRE_RADIUS));
+
+  for (const f of fireZones) {
+    if (Math.hypot(f.x - x, f.z - z) < 1.5) {
+      f.life = 0;
+      f.radius = Math.max(f.radius, r);
+      f.glow.scale.set(f.radius * 2.3, f.radius * 2.3, 1);
+      return f;
+    }
+  }
+
+  // 烧黑的地面：先铺一层暗底，火光叠在上面才有"地上真有东西在烧"的层次
+  const char = new THREE.Mesh(
+    new THREE.CircleGeometry(r * 0.92, 28),
+    new THREE.MeshBasicMaterial({
+      color: 0x140d08,
+      transparent: true,
+      opacity: 0.62,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -3,
+      polygonOffsetUnits: -3,
+    })
+  );
+  char.rotation.x = -Math.PI / 2;
+  char.position.set(x, 0.03, z);
+  char.renderOrder = 1;
+  scene.add(char);
+
+  // 火光本体：加色混合，压在地面上方一点点
+  const glow = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({
+      map: ensureFireTex(),
+      transparent: true,
+      opacity: 0.85,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  glow.rotation.x = -Math.PI / 2;
+  glow.rotation.z = Math.random() * Math.PI * 2;
+  glow.scale.set(r * 2.3, r * 2.3, 1);
+  glow.position.set(x, 0.052, z);
+  glow.renderOrder = 2;
+  scene.add(glow);
+
+  const zone = {
+    x, z, radius: r,
+    life: 0,
+    char, glow,
+    phase: Math.random() * Math.PI * 2,
+    acc: 0,
+  };
+  fireZones.push(zone);
+
+  if (eventsRef) {
+    try {
+      eventsRef.dispatchEvent(new CustomEvent('fireZoneSpawned', {
+        detail: { x, z, radius: r, duration: FIRE_LIFE },
+      }));
+    } catch (err) {
+      // 同上，事件异常不影响画面
+    }
+  }
+  return zone;
+}
+
+/* 甲查当前火区：remaining 是还能烧几秒 */
+export function getFireZones() {
+  return fireZones.map((f) => ({
+    x: f.x,
+    z: f.z,
+    radius: f.radius,
+    remaining: Math.max(0, FIRE_LIFE - f.life),
+    maxLife: FIRE_LIFE,
+  }));
+}
+
+function updateFireZones(dt) {
+  for (let i = fireZones.length - 1; i >= 0; i--) {
+    const f = fireZones[i];
+    f.life += dt;
+
+    if (f.life >= FIRE_LIFE) {
+      scene.remove(f.char);
+      scene.remove(f.glow);
+      f.char.geometry.dispose();
+      f.char.material.dispose();
+      f.glow.geometry.dispose();
+      f.glow.material.dispose(); // 贴图共享，别 dispose
+      fireZones.splice(i, 1);
+      continue;
+    }
+
+    const t = f.life / FIRE_LIFE;
+    // 最后 0.7 秒慢慢收掉，不要突然消失
+    const fade = t < 0.85 ? 1 : Math.max(0, 1 - (t - 0.85) / 0.15);
+
+    // 两个不同频率的正弦叠一起，火光才像在跳，不像在呼吸
+    const flicker =
+      0.82 +
+      Math.sin(f.life * 13 + f.phase) * 0.13 +
+      Math.sin(f.life * 29 + f.phase * 2.1) * 0.09;
+
+    f.glow.material.opacity = Math.max(0, Math.min(1, 1.05 * fade * flicker));
+    f.glow.scale.set(
+      f.radius * 2.3 * (0.96 + flicker * 0.08),
+      f.radius * 2.3 * (0.96 + flicker * 0.08),
+      1
+    );
+    f.char.material.opacity = 0.62 * fade;
+
+    // 火苗：按面积给发射速率，大火区蹿得更猛
+    f.acc += dt * (30 + f.radius * 10) * fade;
+    while (f.acc >= 1) {
+      f.acc -= 1;
+      const a = Math.random() * Math.PI * 2;
+      const rr = Math.sqrt(Math.random()) * f.radius * 0.82;
+      const px = f.x + Math.cos(a) * rr;
+      const pz = f.z + Math.sin(a) * rr;
+      const hot = Math.random() < 0.28;
+      spawnBurst(px, 0.12, pz, hot ? 0xffd98a : 0xff6a22, 1, {
+        speed: 0.45,
+        up: 2.3,
+        spread: 0.16,
+        life: hot ? 0.34 : 0.5,
+        gravity: 1.7,
+      });
+      // 偶尔冒一口黑烟，火区才有厚度
+      if (Math.random() < 0.1) {
+        spawnBurst(px, 0.5, pz, 0x3a2e26, 1, {
+          speed: 0.3,
+          up: 1.1,
+          spread: 0.3,
+          life: 1.2,
+          gravity: 0.6,
+        });
+      }
+    }
+  }
+}
+
+// 重开一局：陨石、火区、弹坑全部清掉，别把上一局的火留到新局里
+function clearHazards() {
+  for (const m of meteors) {
+    scene.remove(m.group);
+    disposeMesh(m.group);
+  }
+  meteors.length = 0;
+
+  for (const f of fireZones) {
+    scene.remove(f.char);
+    scene.remove(f.glow);
+    f.char.geometry.dispose();
+    f.char.material.dispose();
+    f.glow.geometry.dispose();
+    f.glow.material.dispose();
+  }
+  fireZones.length = 0;
+
+  for (const c of craters) {
+    scene.remove(c.mesh);
+    c.mesh.geometry.dispose();
+    c.mesh.material.dispose();
+  }
+  craters.length = 0;
+}
+
 // 本波已经过去多少秒（界面层用）
 let lastWaveStartTime = 0;
 let currentState = null;
@@ -1342,6 +1881,7 @@ export function syncScene(state, dt) {
   // 重开一局：波次回到 1 而上一帧还在后面的波次，说明是新的一局
   if (lastWave > 1 && state.wave === 1) {
     resetBarrels();                      // 桶全部复原
+    clearHazards();                      // 陨石坑、地上的火一起清掉
     if (dayNight) dayNight.setNight(false, true); // 立刻回到白天，不要跨局慢慢过渡
     soldierTierIndex = -1;               // 兵种档位重算（不弹晋升提示）
     tierAnnounced = false;
@@ -1393,6 +1933,9 @@ export function syncScene(state, dt) {
 
   updateEffects(dt);
   updateParticleFx(dt);
+  updateMeteors(dt);
+  updateFireZones(dt);
+  updateCraters(dt);
   updateFloats(dt);
   updateBlood(dt);
   updateToast(dt);
