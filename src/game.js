@@ -501,6 +501,7 @@ const SKILL_USE_CD = 0.3;      // 两次使用之间的冷却，防连点
  * ---------------------------------------------------------- */
 const state = {
   status: 'menu', // menu | playing | over
+  paused: false,
   time: 0,
   wave: 1,
   score: 0,
@@ -767,6 +768,13 @@ events.addEventListener('bossAttackDone', (e) => {
  * 输入：键盘 + 触摸拖动
  * ---------------------------------------------------------- */
 window.addEventListener('keydown', (e) => {
+  // Esc 开关暂停；暂停期间不响应移动和选卡
+  if (e.key === 'Escape' && state.status === 'playing') {
+    if (!e.repeat) setPaused(!state.paused);
+    return;
+  }
+  if (state.paused) return;
+
   if (state.card.active && (e.key === '1' || e.key === '2' || e.key === '3')) {
     chooseCard(Number(e.key) - 1);
     return;
@@ -783,6 +791,14 @@ window.addEventListener('keyup', (e) => {
 });
 
 window.addEventListener('pointerdown', (e) => {
+  // 只有点在游戏画布上才算"拖动战场"。
+  // 技能栏、抽卡、暂停菜单、测试面板都在画布外，点它们不能带着士兵跑。
+  if (!e.target || typeof e.target.closest !== 'function' ||
+      !e.target.closest('#game-container')) {
+    input.pointerActive = false;
+    return;
+  }
+
   input.pointerActive = true;
   input.pointerRatio = (e.clientX / window.innerWidth) * 2 - 1;
 });
@@ -805,6 +821,7 @@ window.addEventListener('pointercancel', () => {
  * ---------------------------------------------------------- */
 function resetState(opts = {}) {
   state.status = 'playing';
+  state.paused = false;
   state.testMode = !!opts.testMode;
 
   // 从指定时代开局：时代对应的波次一起跳过去，僵尸血量、Boss、卡池
@@ -934,6 +951,34 @@ function resetState(opts = {}) {
 
 function startGame(opts = {}) {
   resetState(opts);
+}
+
+// 暂停：主循环跳过 update，画面冻结在最后一帧
+function setPaused(paused) {
+  if (state.status !== 'playing') {
+    state.paused = false;
+    return;
+  }
+
+  state.paused = !!paused;
+  if (state.paused) {
+    input.left = false;
+    input.right = false;
+    input.pointerActive = false;
+  }
+}
+
+// 从暂停菜单返回开始页。整局状态等下一次开始游戏时再重置
+function returnToMenu() {
+  state.paused = false;
+  state.status = 'menu';
+  state.card.active = false;
+  state.card.choices = [];
+  state.timeScale = 1;
+  state.skillUseCd = 0;
+  input.left = false;
+  input.right = false;
+  input.pointerActive = false;
 }
 
 function revive() {
@@ -4858,6 +4903,8 @@ initUI(state, {
     startingEra: state.startEra,
     map: state.startMap,
   }),
+  setPaused,
+  returnToMenu,
   revive: revive,
   chooseCard,
   castSkill,
@@ -4883,10 +4930,15 @@ function loop(now) {
   lastTime = now;
 
   if (state.status === 'playing') {
-    updateCard(realDt);            // 抽卡倒计时用真实时间
-    const dt = realDt * state.timeScale;
-    update(dt);
-    syncScene(state, dt);
+    if (state.paused) {
+      // 暂停时画面冻结：用 dt=0 同步一次，不推进任何计时和动画
+      syncScene(state, 0);
+    } else {
+      updateCard(realDt);          // 抽卡倒计时用真实时间
+      const dt = realDt * state.timeScale;
+      update(dt);
+      syncScene(state, dt);
+    }
   } else {
     syncScene(state, realDt);
   }

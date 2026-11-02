@@ -2997,7 +2997,11 @@ export function syncScene(state, dt) {
   }
 
   // 僵尸低吼的氛围音：交给音频层自己计时，这里只报数量和是否在局内
-  updateAudio(dt, state.zombies ? state.zombies.length : 0, state.status === 'playing');
+  updateAudio(
+    dt,
+    state.zombies ? state.zombies.length : 0,
+    state.status === 'playing' && !state.paused
+  );
 
   // 指挥光环：跟着玩家走，慢慢转
   if (playerRing) {

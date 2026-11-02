@@ -68,10 +68,46 @@ canvas {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  padding: calc(14px + env(safe-area-inset-top)) 18px 40px;
+  padding: calc(14px + env(safe-area-inset-top)) 58px 40px 18px;
   pointer-events: none;
   font-variant-numeric: tabular-nums;
   background: linear-gradient(180deg, rgba(5, 8, 12, 0.92) 0%, rgba(5, 8, 12, 0.55) 55%, rgba(5, 8, 12, 0) 100%);
+}
+
+/* 暂停：三条横线，固定右上角；HUD 整体不接收指针，按钮单独打开 */
+.pause-btn {
+  position: absolute;
+  top: calc(12px + env(safe-area-inset-top));
+  right: 14px;
+  z-index: 11;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 10px;
+  background: rgba(8, 12, 18, 0.72);
+  color: var(--fg);
+  cursor: pointer;
+  pointer-events: auto;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.pause-btn:hover {
+  border-color: rgba(78, 161, 255, 0.6);
+  background: rgba(20, 30, 42, 0.9);
+}
+
+.pause-btn span {
+  display: block;
+  width: 16px;
+  height: 2px;
+  border-radius: 1px;
+  background: currentColor;
 }
 
 .army {

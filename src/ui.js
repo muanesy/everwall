@@ -159,6 +159,10 @@ export function updateUI(state) {
   els.hud.classList.toggle('hidden', state.status !== 'playing');
   els.startScreen.classList.toggle('hidden', state.status !== 'menu');
   els.overScreen.classList.toggle('hidden', state.status !== 'over');
+  els.pauseOverlay.classList.toggle(
+    'hidden',
+    !(state.status === 'playing' && state.paused)
+  );
 
   if (state.status === 'over') {
     els.finalScore.textContent = state.score;
@@ -412,6 +416,9 @@ function buildDom() {
       <em class="wave__next" data-wave-next>15s</em>
     </div>
     <div class="score" data-score>0</div>
+    <button class="pause-btn" type="button" data-pause aria-label="暂停">
+      <span></span><span></span><span></span>
+    </button>
   `;
   document.body.appendChild(hud);
 
@@ -573,6 +580,19 @@ function buildDom() {
   if (muted) soundBtn.classList.add('is-muted');
   document.body.appendChild(soundBtn);
 
+  // 暂停菜单：最后插入，盖在抽卡层和测试面板上面
+  const pauseOverlay = document.createElement('div');
+  pauseOverlay.className = 'overlay pause-overlay hidden';
+  pauseOverlay.innerHTML = `
+    <div class="card">
+      <p class="eyebrow">已暂停</p>
+      <h2>暂停</h2>
+      <button class="btn" type="button" data-resume>继续游戏</button>
+      <button class="btn btn--ghost" type="button" data-menu>返回菜单</button>
+    </div>
+  `;
+  document.body.appendChild(pauseOverlay);
+
   // 开始页也显示这张图的历史最佳，给玩家一个目标
   // 注意：buildDom 执行时 els 还没赋值，这里只能用局部变量
   const startBest = startScreen.querySelector('[data-start-best]');
@@ -601,6 +621,10 @@ function buildDom() {
     bestScore: overScreen.querySelector('[data-best-score]'),
     bestWave: overScreen.querySelector('[data-best-wave]'),
     soundBtn,
+    pauseBtn: hud.querySelector('[data-pause]'),
+    pauseOverlay,
+    resumeBtn: pauseOverlay.querySelector('[data-resume]'),
+    menuBtn: pauseOverlay.querySelector('[data-menu]'),
     loadingBox: startScreen.querySelector('[data-loading]'),
     loadingFill: startScreen.querySelector('[data-loading-fill]'),
     loadingText: startScreen.querySelector('[data-loading-text]'),
@@ -746,9 +770,27 @@ function bindEvents() {
     if (!muted) playClick();
   });
 
+  // 暂停菜单
+  els.pauseBtn.addEventListener('click', () => {
+    initAudio();
+    playClick();
+    if (actions && actions.setPaused) actions.setPaused(true);
+  });
+
+  els.resumeBtn.addEventListener('click', () => {
+    playClick();
+    if (actions && actions.setPaused) actions.setPaused(false);
+  });
+
+  els.menuBtn.addEventListener('click', () => {
+    playClick();
+    if (actions && actions.returnToMenu) actions.returnToMenu();
+  });
+
   // 技能栏数字键 1-4
   window.addEventListener('keydown', (e) => {
     if (e.repeat || e.ctrlKey || e.altKey || e.metaKey) return;
+    if (currentState && (currentState.paused || currentState.status !== 'playing')) return;
     const n = Number(e.key);
     if (n < 1 || n > 4) return;
     if (!currentState || !currentState.skillBag) return;
