@@ -519,8 +519,15 @@ function loadModels() {
       const soldierProto = (raw, clip) => {
         if (!raw) return null;
         const p = skeletonClone(raw);
+        // skeletonClone（Object3D.clone）会把 userData 做 JSON 拷贝，把真实的
+        // AnimationClip 引用毁成普通对象（track 失去 createInterpolant 方法），
+        // 克隆士兵时一调 clipAction 就崩、整队士兵消失。这里必须把全部动画真引用补回，
+        // 和 prepareZombieType 的做法一致。
         p.userData.clip = clip;
         p.userData.attackClip = raw.userData.attackClip;
+        p.userData.damageClip = raw.userData.damageClip;
+        p.userData.deathClip = raw.userData.deathClip;
+        p.userData.roarClip = raw.userData.roarClip;
         return preparePrototype(p, MODEL_TARGET.soldierHeight);
       };
 
@@ -647,6 +654,9 @@ function despawnModel(vis) {
 let camBaseX = 0;
 let shake = 0;
 
+// 事件总线：陨石/火区这类"视觉演完要通知甲结算"的东西要靠它派发
+let eventsRef = null;
+
 const zombieMeshes = new Map();
 const barrierMeshes = new Map();
 const bulletMeshes = new Map();
@@ -692,6 +702,7 @@ const dummy = new THREE.Object3D();
  * ---------------------------------------------------------- */
 export function initVisuals(container, events) {
   containerEl = container;
+  eventsRef = events || null;
 
   renderer = new THREE.WebGLRenderer({ antialias: true });
   maxPixelRatio = Math.min(window.devicePixelRatio, 2);
@@ -807,6 +818,7 @@ export function initVisuals(container, events) {
   );
   soldierMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   soldierMesh.count = 0;
+  soldierMesh.frustumCulled = false; // 实例散落在原点之外（z≈9），基准包围球会被误剔除，整批不画
   scene.add(soldierMesh);
 
   // 枪口火光点光源：shoot 时点亮、每帧快速衰减
@@ -1024,10 +1036,22 @@ export function initVisuals(container, events) {
     shake = Math.max(shake, 0.16);
   });
 
-  // 炸药桶爆炸：甲那边派发这个事件结算伤害，这里负责声音和余震
-  events.addEventListener('barrelExploded', () => {
+  // 炸药桶爆炸：甲那边派发这个事件结算伤害，这里负责声音、余震和地面火区
+  events.addEventListener('barrelExploded', (e) => {
     playBarrelExplode();
     shake = Math.max(shake, 0.45);
+
+    // 桶里装的是油，炸完地上留一片还在烧的火（视觉自己做闭环，
+    // 持续灼烧伤害由甲监听 fireZoneSpawned 或轮询 getFireZones() 决定）
+    const d = e.detail || {};
+    igniteFireZone(d.x ?? 0, d.z ?? 0, Math.min(2.8, (d.radius || 3.2) * 0.78));
+  });
+
+  // 甲想主动砸陨石，派个 'meteor' 事件就行，不用 import 函数
+  events.addEventListener('meteor', (e) => {
+    const d = e.detail || {};
+    if (isFinite(d.x) && isFinite(d.z)) triggerMeteor(d.x, d.z);
+    else triggerMeteorRandom();
   });
 }
 
@@ -1206,15 +1230,46 @@ export function switchEra(eraIndex, mapId, opts = {}) {
   return true;
 }
 
-/* 地震：屏幕持续晃动 + 地面落灰（机制触发时机归甲，调一下就有效果）
- * 用法：triggerQuake(2.5); */
+/* 地震：屏幕持续晃动 + 地面落灰 + 地面扬尘圈
+ *
+ * 两种触发方式：
+ *   1. 甲主动调 triggerQuake(2.5)
+ *   2. 自己按周期来（点子池「地震」归乙）：局内每 16~26 秒来一下，
+ *      幅度比炸药桶（0.45）小得多，只是"地在动"的氛围，不抢战斗反馈。
+ *      甲如果想让节奏自己控，调 setQuakeAuto(false) 关掉周期触发。
+ *
+ * 僵尸停顿属于玩法数值，甲要就自己在 triggerQuake 前后加。 */
 let quakeTime = 0;
 let quakeDuration = 0;
+let quakeAuto = true;
+let quakeCycle = 12;   // 开局先给 12 秒安静时间，等玩家摸清节奏再震
+let quakeDust = 0;   // 扬尘圈的计时器（地震期间每 0.3 秒撒一圈）
 
 export function triggerQuake(duration = 2.5) {
   quakeDuration = Math.max(0.4, duration);
   quakeTime = quakeDuration;
   shake = Math.max(shake, 0.35);
+}
+
+export function setQuakeAuto(on) {
+  quakeAuto = !!on;
+  quakeCycle = quakeAuto ? 16 + Math.random() * 10 : 0;
+}
+
+/* 只在局内推进：菜单和结算页不该无缘无故抖 */
+function updateQuakeCycle(dt, playing) {
+  if (!quakeAuto || !playing) return;
+  if (quakeCycle > 0) {
+    quakeCycle -= dt;
+    if (quakeCycle > 0.001) return;
+  }
+  // 场上正震着（甲刚调过）就不叠加，等这一波震完再排下一次
+  if (quakeTime > 0) {
+    quakeCycle = 2;
+    return;
+  }
+  triggerQuake(1.5);
+  quakeCycle = 16 + Math.random() * 10;
 }
 
 /* 洪水：水位从 -2.2 升到 0（level 0~1），半透明水面 + 起伏
@@ -1271,6 +1326,558 @@ function updateQuake(dt) {
       speed: 1.2, up: 1.6, spread: 0.8, life: 0.8,
     });
   }
+
+  // 地面扬起一圈圈土：震感主要靠这个，光晃屏幕容易像相机抖了
+  quakeDust += dt;
+  if (quakeDust >= 0.3) {
+    quakeDust = 0;
+    spawnRing((Math.random() - 0.5) * 16, -20 + Math.random() * 22, 0x9a8a70, 0.9);
+  }
+
+  // 零星碎石子被颠起来
+  if (Math.random() < dt * 5) {
+    spawnBurst((Math.random() - 0.5) * 18, 0.12, -18 + Math.random() * 20, 0x6a6055, 2, {
+      speed: 0.8, up: 2.2, spread: 0.4, life: 0.7, gravity: -9,
+    });
+  }
+}
+
+/* ----------------------------------------------------------
+ * 陨石（纯视觉，伤害结算归甲）
+ *
+ * 三段演出，全部程序化，零外部素材：
+ *   1. 预警圈：地面亮一圈红环，越接近落点闪得越急，内圈同时往里收
+ *   2. 火石：从画面外斜着砸下来，拖着火星尾迹，边落边翻滚
+ *   3. 砸地：白闪一下 + 震屏 + 冲击环 + 泥土飞溅 + 留一个黑坑
+ *
+ * 落地时派发 'meteorImpact'，detail = { x, z, radius }，
+ * 甲按这个半径自己结算伤害（这里一点血都不扣）。
+ *
+ * 用法：
+ *   triggerMeteor(x, z);      指定落点
+ *   triggerMeteorRandom();    在战场里随机挑一个落点（不会砸在玩家脚下）
+ * 甲也可以直接派事件：events.dispatchEvent(new CustomEvent('meteor', { detail: { x, z } }))
+ * ---------------------------------------------------------- */
+const meteors = [];        // 正在预警/坠落中的陨石
+const craters = [];        // 砸出来的坑（贴地，慢慢淡出）
+const METEOR_WARN = 1.1;   // 预警时长（秒）
+const METEOR_FALL = 0.42;  // 坠落时长
+const METEOR_WARN_R = 2.6; // 预警圈半径 = 默认伤害半径
+const METEOR_TOP_Y = 15;   // 火石出现的空中高度
+const CRATER_MAX = 6;
+const CRATER_LIFE = 10;
+let craterTex = null;
+
+function ensureCraterTex() {
+  if (craterTex) return craterTex;
+
+  const size = 192;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const c = size / 2;
+
+  // 坑底：中间最黑，边上稍微透一点，看着像被烧穿的土
+  const g = ctx.createRadialGradient(c, c, size * 0.04, c, c, size * 0.5);
+  g.addColorStop(0, 'rgba(12,8,5,0.96)');
+  g.addColorStop(0.42, 'rgba(26,17,11,0.86)');
+  g.addColorStop(0.72, 'rgba(48,33,21,0.55)');
+  g.addColorStop(1, 'rgba(60,45,30,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(c, c, size * 0.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 坑沿：一圈浅色的翻出来的土
+  ctx.strokeStyle = 'rgba(150,124,88,0.62)';
+  ctx.lineWidth = size * 0.05;
+  ctx.beginPath();
+  ctx.arc(c, c, size * 0.36, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // 放射状的裂纹，别让坑看着像一个规整的圆
+  for (let i = 0; i < 14; i++) {
+    const a = (i / 14) * Math.PI * 2 + Math.random() * 0.28;
+    const r0 = size * (0.3 + Math.random() * 0.06);
+    const r1 = size * (0.4 + Math.random() * 0.09);
+    ctx.strokeStyle = `rgba(20,14,9,${0.4 + Math.random() * 0.35})`;
+    ctx.lineWidth = size * (0.012 + Math.random() * 0.018);
+    ctx.beginPath();
+    ctx.moveTo(c + Math.cos(a) * r0, c + Math.sin(a) * r0);
+    ctx.lineTo(c + Math.cos(a) * r1, c + Math.sin(a) * r1);
+    ctx.stroke();
+  }
+
+  craterTex = new THREE.CanvasTexture(canvas);
+  craterTex.colorSpace = THREE.SRGBColorSpace;
+  return craterTex;
+}
+
+function spawnCrater(x, z, scale = 1) {
+  if (!scene) return;
+  const s = METEOR_WARN_R * 2.1 * scale;
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(s, s),
+    new THREE.MeshBasicMaterial({
+      map: ensureCraterTex(),
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -4,
+      polygonOffsetUnits: -4,
+    })
+  );
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.rotation.z = Math.random() * Math.PI * 2;
+  mesh.position.set(x, 0.028, z);
+  mesh.renderOrder = 1;
+  scene.add(mesh);
+  craters.push({ mesh, life: 0 });
+
+  while (craters.length > CRATER_MAX) {
+    const old = craters.shift();
+    scene.remove(old.mesh);
+    old.mesh.geometry.dispose();
+    old.mesh.material.dispose();
+  }
+}
+
+function updateCraters(dt) {
+  if (!craters.length) return;
+  const fadeFrom = CRATER_LIFE - 3.5;
+
+  for (let i = craters.length - 1; i >= 0; i--) {
+    const c = craters[i];
+    c.life += dt;
+
+    if (c.life >= CRATER_LIFE) {
+      scene.remove(c.mesh);
+      c.mesh.geometry.dispose();
+      c.mesh.material.dispose();
+      craters.splice(i, 1);
+      continue;
+    }
+    if (c.life > fadeFrom) {
+      c.mesh.material.opacity = 0.9 * (1 - (c.life - fadeFrom) / 3.5);
+    }
+  }
+}
+
+function newMeteor(x, z) {
+  const group = new THREE.Group();
+
+  // 预警圈：外圈标范围，内圈往里收做倒计时
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(METEOR_WARN_R - 0.13, METEOR_WARN_R, 48),
+    new THREE.MeshBasicMaterial({
+      color: 0xff4a24,
+      transparent: true,
+      opacity: 0.8,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.set(x, 0.055, z);
+  group.add(ring);
+
+  const inner = new THREE.Mesh(
+    new THREE.RingGeometry(0.9, 1, 32),
+    new THREE.MeshBasicMaterial({
+      color: 0xff8a4a,
+      transparent: true,
+      opacity: 0.5,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    })
+  );
+  inner.rotation.x = -Math.PI / 2;
+  inner.position.set(x, 0.058, z);
+  inner.scale.setScalar(METEOR_WARN_R * 0.92);
+  group.add(inner);
+
+  // 火石本体 + 一层半透明的热壳，远看是一团带边的火球
+  const rock = new THREE.Mesh(
+    new THREE.IcosahedronGeometry(0.62, 1),
+    new THREE.MeshStandardMaterial({
+      color: 0x2a1c12,
+      emissive: 0xff5a1c,
+      emissiveIntensity: 1.5,
+      roughness: 0.95,
+      metalness: 0.05,
+      flatShading: true,
+    })
+  );
+  rock.position.set(x, METEOR_TOP_Y, z);
+  rock.visible = false;
+  group.add(rock);
+
+  const shell = new THREE.Mesh(
+    new THREE.SphereGeometry(0.95, 12, 10),
+    new THREE.MeshBasicMaterial({
+      color: 0xff7a2e,
+      transparent: true,
+      opacity: 0.4,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  shell.position.copy(rock.position);
+  shell.visible = false;
+  group.add(shell);
+
+  scene.add(group);
+
+  return {
+    x, z, group, ring, inner, rock, shell,
+    time: 0,
+    dropped: false,
+    spinX: 3 + Math.random() * 4,
+    spinZ: 2 + Math.random() * 3,
+  };
+}
+
+function impactMeteor(m) {
+  const { x, z } = m;
+
+  shake = Math.max(shake, 0.92);
+
+  // 冲击环两道，一快一慢，砸下来的分量靠这个撑住
+  spawnRing(x, z, 0xffd0a0, 0.34);
+  spawnRing(x, z, 0xff6a24, 0.62);
+
+  spawnBurst(x, 0.5, z, 0xff8a34, 30, {
+    speed: 6.4, up: 5.4, spread: 0.85, life: 0.62, gravity: -9,
+  });
+  spawnBurst(x, 0.3, z, 0x6b5540, 26, {
+    speed: 4.8, up: 3.4, spread: 1.35, life: 1.15, gravity: -3.6,
+  });
+
+  spawnCrater(x, z, 1);
+
+  if (eventsRef) {
+    try {
+      eventsRef.dispatchEvent(new CustomEvent('meteorImpact', {
+        detail: { x, z, radius: METEOR_WARN_R },
+      }));
+    } catch (err) {
+      // 事件系统出问题不能影响画面
+    }
+  }
+}
+
+/* 砸一颗陨石。同屏最多 3 颗，多了直接忽略（别把画面糊满、也省粒子） */
+export function triggerMeteor(x, z) {
+  if (!scene) return false;
+  if (meteors.length >= 3) return false;
+
+  const px = Math.max(-9, Math.min(9, Number(x) || 0));
+  const pz = Math.max(-26, Math.min(4, Number(z) || 0));
+
+  // 落点太近就把旧的那颗撤掉，别让两个预警圈叠在一起互相干扰
+  for (let i = meteors.length - 1; i >= 0; i--) {
+    const m = meteors[i];
+    if (Math.hypot(m.x - px, m.z - pz) < 1.6) {
+      scene.remove(m.group);
+      disposeMesh(m.group);
+      meteors.splice(i, 1);
+    }
+  }
+
+  meteors.push(newMeteor(px, pz));
+  return true;
+}
+
+/* 随机落点：避开玩家脚下 3 米，主要落在僵尸推进的那片区域 */
+export function triggerMeteorRandom() {
+  const p = currentState ? currentState.player : { x: 0, z: 9 };
+  let x = 0;
+  let z = 0;
+
+  for (let i = 0; i < 6; i++) {
+    x = (Math.random() - 0.5) * 16;
+    z = -3 - Math.random() * 19;
+    if (Math.hypot(x - p.x, z - p.z) > 3) break;
+  }
+  return triggerMeteor(x, z);
+}
+
+function updateMeteors(dt) {
+  for (let i = meteors.length - 1; i >= 0; i--) {
+    const m = meteors[i];
+    m.time += dt;
+
+    if (m.time < METEOR_WARN) {
+      // —— 预警段：外圈闪得越来越急，内圈一路收到落点
+      const t = m.time / METEOR_WARN;
+      m.ring.material.opacity = 0.55 + 0.35 * Math.sin(m.time * (9 + t * 30));
+      m.inner.scale.setScalar(Math.max(0.18, METEOR_WARN_R * 0.92 * (1 - t * 0.84)));
+      m.inner.material.opacity = 0.45 + 0.45 * t;
+      continue;
+    }
+
+    // —— 坠落段：预警圈收掉，火石加速下落
+    if (!m.dropped) {
+      m.dropped = true;
+      m.ring.visible = false;
+      m.inner.visible = false;
+      m.rock.visible = true;
+      m.shell.visible = true;
+    }
+
+    const t = Math.min(1, (m.time - METEOR_WARN) / METEOR_FALL);
+    const e = t * t; // 加速下坠，越接近地面越快
+    const y = METEOR_TOP_Y - (METEOR_TOP_Y - 0.4) * e;
+    m.rock.position.y = y;
+    m.shell.position.y = y;
+    m.rock.rotation.x += dt * m.spinX;
+    m.rock.rotation.z += dt * m.spinZ;
+
+    // 尾迹：每帧借三颗粒子，够连成一条火线
+    spawnBurst(m.x, y, m.z, 0xff7a2e, 3, {
+      speed: 0.5, up: 0.5, spread: 0.55, life: 0.45, gravity: -1.5,
+    });
+
+    if (t >= 1) {
+      impactMeteor(m);
+      scene.remove(m.group);
+      disposeMesh(m.group);
+      meteors.splice(i, 1);
+    }
+  }
+}
+
+/* ----------------------------------------------------------
+ * 油桶火区（纯视觉，持续灼烧伤害归甲）
+ *
+ * 炸药桶炸完，地面留一片还在烧的油：贴地火光 + 不停往上蹿的火苗 + 黑烟。
+ * 火区自己烧 4.5 秒后灭掉，不需要甲来管。
+ *
+ * 甲要做持续伤害，两种接法任选：
+ *   a. 监听 'fireZoneSpawned'（detail = { x, z, radius, duration }）自己计时
+ *   b. 每帧调 getFireZones() 拿当前活着的火区（带 remaining 剩余秒数）
+ * ---------------------------------------------------------- */
+const fireZones = [];
+const FIRE_LIFE = 4.5;
+const FIRE_RADIUS = 2.4;
+const FIRE_MAX = 4;      // 同屏最多几片火，超了顶掉最早的
+let fireTex = null;
+
+/* 拆一片火：几何体各自独立要释放，贴图是共享的不能 dispose */
+function removeFireZone(f) {
+  if (!f) return;
+  scene.remove(f.char);
+  scene.remove(f.glow);
+  f.char.geometry.dispose();
+  f.char.material.dispose();
+  f.glow.geometry.dispose();
+  f.glow.material.dispose();
+}
+
+function ensureFireTex() {
+  if (fireTex) return fireTex;
+
+  const size = 192;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const c = size / 2;
+
+  // 中心白热 → 橙 → 暗红 → 透明，边缘故意做不规则
+  const g = ctx.createRadialGradient(c, c, size * 0.03, c, c, size * 0.5);
+  g.addColorStop(0, 'rgba(255,240,196,0.92)');
+  g.addColorStop(0.2, 'rgba(255,166,60,0.78)');
+  g.addColorStop(0.52, 'rgba(226,88,24,0.42)');
+  g.addColorStop(0.78, 'rgba(140,36,8,0.16)');
+  g.addColorStop(1, 'rgba(80,16,4,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(c, c, size * 0.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 从边上啃几块缺口，火焰轮廓就不会是个完美的圆
+  ctx.globalCompositeOperation = 'destination-out';
+  for (let i = 0; i < 18; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const d = size * (0.34 + Math.random() * 0.18);
+    const r = size * (0.05 + Math.random() * 0.12);
+    ctx.beginPath();
+    ctx.arc(c + Math.cos(a) * d, c + Math.sin(a) * d, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+
+  fireTex = new THREE.CanvasTexture(canvas);
+  fireTex.colorSpace = THREE.SRGBColorSpace;
+  return fireTex;
+}
+
+/* 点一片火。同一处 1.5 米内再点一次不新建，直接把旧火续满 */
+export function igniteFireZone(x, z, radius = FIRE_RADIUS) {
+  if (!scene || !isFinite(x) || !isFinite(z)) return null;
+
+  const r = Math.max(0.8, Math.min(3.4, Number(radius) || FIRE_RADIUS));
+
+  for (const f of fireZones) {
+    if (Math.hypot(f.x - x, f.z - z) < 1.5) {
+      f.life = 0;
+      f.radius = Math.max(f.radius, r);
+      f.glow.scale.set(f.radius * 2.3, f.radius * 2.3, 1);
+      // 焦土是按初始半径建的几何体，面积变大了靠缩放跟，不重建
+      f.char.scale.setScalar(f.radius / f.charRadius);
+      return f;
+    }
+  }
+
+  // 烧黑的地面：先铺一层暗底，火光叠在上面才有"地上真有东西在烧"的层次
+  const char = new THREE.Mesh(
+    new THREE.CircleGeometry(r * 0.92, 28),
+    new THREE.MeshBasicMaterial({
+      color: 0x140d08,
+      transparent: true,
+      opacity: 0.62,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -3,
+      polygonOffsetUnits: -3,
+    })
+  );
+  char.rotation.x = -Math.PI / 2;
+  char.position.set(x, 0.03, z);
+  char.renderOrder = 1;
+  scene.add(char);
+
+  // 火光本体：加色混合，压在地面上方一点点
+  const glow = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({
+      map: ensureFireTex(),
+      transparent: true,
+      opacity: 0.85,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  glow.rotation.x = -Math.PI / 2;
+  glow.rotation.z = Math.random() * Math.PI * 2;
+  glow.scale.set(r * 2.3, r * 2.3, 1);
+  glow.position.set(x, 0.052, z);
+  glow.renderOrder = 2;
+  scene.add(glow);
+
+  const zone = {
+    x, z, radius: r,
+    charRadius: r,
+    life: 0,
+    char, glow,
+    phase: Math.random() * Math.PI * 2,
+    acc: 0,
+  };
+  fireZones.push(zone);
+
+  // 火区最多 4 片：多了顶掉最早那片，免得场上火海一片、粒子池也被抽干
+  while (fireZones.length > FIRE_MAX) removeFireZone(fireZones.shift());
+
+  if (eventsRef) {
+    try {
+      eventsRef.dispatchEvent(new CustomEvent('fireZoneSpawned', {
+        detail: { x, z, radius: r, duration: FIRE_LIFE },
+      }));
+    } catch (err) {
+      // 同上，事件异常不影响画面
+    }
+  }
+  return zone;
+}
+
+/* 甲查当前火区：remaining 是还能烧几秒 */
+export function getFireZones() {
+  return fireZones.map((f) => ({
+    x: f.x,
+    z: f.z,
+    radius: f.radius,
+    remaining: Math.max(0, FIRE_LIFE - f.life),
+    maxLife: FIRE_LIFE,
+  }));
+}
+
+function updateFireZones(dt) {
+  for (let i = fireZones.length - 1; i >= 0; i--) {
+    const f = fireZones[i];
+    f.life += dt;
+
+    if (f.life >= FIRE_LIFE) {
+      removeFireZone(f);
+      fireZones.splice(i, 1);
+      continue;
+    }
+
+    const t = f.life / FIRE_LIFE;
+    // 最后 0.7 秒慢慢收掉，不要突然消失
+    const fade = t < 0.85 ? 1 : Math.max(0, 1 - (t - 0.85) / 0.15);
+
+    // 两个不同频率的正弦叠一起，火光才像在跳，不像在呼吸
+    const flicker =
+      0.82 +
+      Math.sin(f.life * 13 + f.phase) * 0.13 +
+      Math.sin(f.life * 29 + f.phase * 2.1) * 0.09;
+
+    f.glow.material.opacity = Math.max(0, Math.min(1, 1.05 * fade * flicker));
+    f.glow.scale.set(
+      f.radius * 2.3 * (0.96 + flicker * 0.08),
+      f.radius * 2.3 * (0.96 + flicker * 0.08),
+      1
+    );
+    f.char.material.opacity = 0.62 * fade;
+
+    // 火苗：按面积给发射速率，大火区蹿得更猛
+    f.acc += dt * (30 + f.radius * 10) * fade;
+    while (f.acc >= 1) {
+      f.acc -= 1;
+      const a = Math.random() * Math.PI * 2;
+      const rr = Math.sqrt(Math.random()) * f.radius * 0.82;
+      const px = f.x + Math.cos(a) * rr;
+      const pz = f.z + Math.sin(a) * rr;
+      const hot = Math.random() < 0.28;
+      spawnBurst(px, 0.12, pz, hot ? 0xffd98a : 0xff6a22, 1, {
+        speed: 0.45,
+        up: 2.3,
+        spread: 0.16,
+        life: hot ? 0.34 : 0.5,
+        gravity: 1.7,
+      });
+      // 偶尔冒一口黑烟，火区才有厚度
+      if (Math.random() < 0.1) {
+        spawnBurst(px, 0.5, pz, 0x3a2e26, 1, {
+          speed: 0.3,
+          up: 1.1,
+          spread: 0.3,
+          life: 1.2,
+          gravity: 0.6,
+        });
+      }
+    }
+  }
+}
+
+// 重开一局：陨石、火区、弹坑全部清掉，别把上一局的火留到新局里
+function clearHazards() {
+  for (const m of meteors) {
+    scene.remove(m.group);
+    disposeMesh(m.group);
+  }
+  meteors.length = 0;
+
+  for (const f of fireZones) removeFireZone(f);
+  fireZones.length = 0;
+
+  for (const c of craters) {
+    scene.remove(c.mesh);
+    c.mesh.geometry.dispose();
+    c.mesh.material.dispose();
+  }
+  craters.length = 0;
 }
 
 // 本波已经过去多少秒（界面层用）
@@ -1336,6 +1943,9 @@ export function syncScene(state, dt) {
   // 重开一局：波次回到 1 而上一帧还在后面的波次，说明是新的一局
   if (lastWave > 1 && state.wave === 1) {
     resetBarrels();                      // 桶全部复原
+    clearHazards();                      // 陨石坑、地上的火一起清掉
+    quakeTime = 0;
+    quakeCycle = 10 + Math.random() * 6; // 新局第一震别来得太急
     if (dayNight) dayNight.setNight(false, true); // 立刻回到白天，不要跨局慢慢过渡
     soldierTierIndex = -1;               // 兵种档位重算（不弹晋升提示）
     tierAnnounced = false;
@@ -1387,6 +1997,9 @@ export function syncScene(state, dt) {
 
   updateEffects(dt);
   updateParticleFx(dt);
+  updateMeteors(dt);
+  updateFireZones(dt);
+  updateCraters(dt);
   updateFloats(dt);
   updateBlood(dt);
   updateToast(dt);
@@ -1394,6 +2007,7 @@ export function syncScene(state, dt) {
   if (state.status === 'playing') updateBarrels(dt);
   updateAmbientFx(dt);
   updateWater(dt);
+  updateQuakeCycle(dt, state.status === 'playing');
   updateQuake(dt);
   updateDeathQueue(dt);
   updatePropAnimations(dt);
@@ -1430,7 +2044,9 @@ function soldierSlot(i, state) {
 
   return {
     x: state.player.x + (col - (width - 1) / 2) * spacing,
-    z: state.player.z + 0.25 + row * rowGap,
+    // 阵型在玩家"前方"（朝敌人，z 减小）：原本 +0.25 把兵放在玩家身后（更靠相机、压在底部 HUD 上），
+    // 既不合战术逻辑也让兵看不见。改到身前，兵落在画面中下段、看得清。
+    z: state.player.z - 1.5 - row * rowGap,
   };
 }
 
@@ -1575,6 +2191,9 @@ function applyEra(era) {
   if (modelLib.zombies.length) {
     applyEraLook(era, { zombieMats: collectZombieMats() });
   }
+
+  // 路障换成这个时代的长相（木栅栏 → 沙袋 → 混凝土 → 钢板 → 能量场 → 激光）
+  buildBarricadeLook(era.id);
 }
 
 function updateSoldiers(state) {
@@ -3150,36 +3769,165 @@ function syncSlots(state) {
   }
 }
 
+/* ----------------------------------------------------------
+ * 路障外观随时代换（点子池「时代栅栏」）
+ *
+ * 同一堵墙换六种长相，占地宽度、位置、缩放完全沿用 syncBarricade 那套，
+ * 血量/反击/冷却一个都不碰（那些是甲的数值）。
+ *   0 中世纪 木栅栏 / 1 二战 沙袋掩体 / 2 现代 混凝土隔离墙
+ *   3 后现代 钢板铁丝网 / 4 星际 能量屏障 / 5 终幕 激光栅栏
+ * ---------------------------------------------------------- */
+const barricadeParts = [];
+let barricadeGlowMat = null;
+
+function clearBarricadeLook() {
+  if (!barricadeGroup) return;
+  const mats = new Set();
+  for (const p of barricadeParts) {
+    barricadeGroup.remove(p);
+    p.geometry?.dispose();
+    const list = Array.isArray(p.material) ? p.material : [p.material];
+    for (const m of list) if (m) mats.add(m);
+  }
+  for (const m of mats) m.dispose();
+  barricadeParts.length = 0;
+  barricadeGlowMat = null;
+}
+
+function addBarPart(geo, mat, x, y, z, rotY = 0) {
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(x, y, z);
+  mesh.rotation.y = rotY;
+  barricadeGroup.add(mesh);
+  barricadeParts.push(mesh);
+  return mesh;
+}
+
+function buildBarricadeLook(eraId) {
+  if (!barricadeGroup) return;
+  clearBarricadeLook();
+
+  const W = BARRICADE_WIDTH;
+  const std = (color, rough = 0.8, metal = 0.05, emissive = 0x000000, ei = 0) =>
+    new THREE.MeshStandardMaterial({
+      color,
+      roughness: rough,
+      metalness: metal,
+      emissive,
+      emissiveIntensity: ei,
+    });
+
+  if (eraId === 1) {
+    // 二战：一层层码起来的沙袋
+    const a = std(0x8d7f5c, 0.95);
+    const b = std(0x9c8e68, 0.95);
+    for (let row = 0; row < 3; row++) {
+      const n = row === 2 ? 4 : 5;
+      for (let i = 0; i < n; i++) {
+        const x = (i - (n - 1) / 2) * 0.86 + (row % 2 ? 0.2 : 0);
+        addBarPart(
+          new THREE.BoxGeometry(0.8, 0.2, 0.42),
+          (i + row) % 2 ? a : b,
+          x,
+          0.13 + row * 0.22,
+          0,
+          (Math.random() - 0.5) * 0.12
+        );
+      }
+    }
+    return;
+  }
+
+  if (eraId === 2) {
+    // 现代：混凝土隔离墩 + 黄黑警示条
+    const conc = std(0x9b9a92, 0.9, 0.02);
+    addBarPart(new THREE.BoxGeometry(W, 0.42, 0.46), conc, 0, 0.21, 0);
+    addBarPart(new THREE.BoxGeometry(W, 0.16, 0.34), conc, 0, 0.5, 0);
+    const warn = std(0xd8a63a, 0.6, 0.1);
+    for (let i = 0; i < 5; i++) {
+      addBarPart(new THREE.BoxGeometry(0.4, 0.1, 0.02), warn, -1.6 + i * 0.8, 0.36, 0.24);
+    }
+    return;
+  }
+
+  if (eraId === 3) {
+    // 后现代：钢板墙 + 顶部一圈圈铁丝网
+    const steel = std(0x6b727a, 0.5, 0.6);
+    const rust = std(0x7a5236, 0.9, 0.15);
+    const wire = std(0x9aa2aa, 0.4, 0.8);
+    addBarPart(new THREE.BoxGeometry(W, 0.6, 0.1), steel, 0, 0.3, 0);
+    for (let i = -2; i <= 2; i++) {
+      addBarPart(new THREE.BoxGeometry(0.07, 0.6, 0.16), rust, i * 0.9, 0.3, 0.04);
+    }
+    for (let i = 0; i < 4; i++) {
+      addBarPart(new THREE.TorusGeometry(0.19, 0.022, 6, 14), wire, -1.5 + i * 1.0, 0.74, 0, 0.3);
+    }
+    return;
+  }
+
+  if (eraId === 4) {
+    // 星际：两根发光立柱 + 中间一层能量场
+    const post = std(0x2f3a46, 0.4, 0.8, 0x1b6f8a, 0.9);
+    addBarPart(new THREE.CylinderGeometry(0.09, 0.11, 1.0, 8), post, -1.9, 0.5, 0);
+    addBarPart(new THREE.CylinderGeometry(0.09, 0.11, 1.0, 8), post, 1.9, 0.5, 0);
+    addBarPart(new THREE.BoxGeometry(W, 0.1, 0.5), std(0x2a333d, 0.6, 0.5), 0, 0.05, 0);
+
+    const fieldMat = new THREE.MeshBasicMaterial({
+      color: 0x4ad9ff,
+      transparent: true,
+      opacity: 0.3,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const fieldMesh = new THREE.Mesh(new THREE.PlaneGeometry(W - 0.5, 0.86), fieldMat);
+    fieldMesh.position.set(0, 0.5, 0);
+    barricadeGroup.add(fieldMesh);
+    barricadeParts.push(fieldMesh);
+    barricadeGlowMat = fieldMat;
+    return;
+  }
+
+  if (eraId === 5) {
+    // 终幕：两根立柱之间拉四道激光
+    const post = std(0x3a2a24, 0.5, 0.6, 0xff6a24, 0.9);
+    addBarPart(new THREE.CylinderGeometry(0.1, 0.12, 1.05, 8), post, -1.9, 0.52, 0);
+    addBarPart(new THREE.CylinderGeometry(0.1, 0.12, 1.05, 8), post, 1.9, 0.52, 0);
+    const barMat = new THREE.MeshBasicMaterial({
+      color: 0xff8a3c,
+      transparent: true,
+      opacity: 0.9,
+    });
+    for (let i = 0; i < 4; i++) {
+      addBarPart(new THREE.BoxGeometry(W - 0.6, 0.035, 0.035), barMat, 0, 0.2 + i * 0.18, 0);
+    }
+    barricadeGlowMat = barMat;
+    return;
+  }
+
+  // 默认 / 中世纪：木栅栏（立桩 + 两道横梁）
+  const wood = std(0x7a5a34, 0.9, 0.02);
+  const dark = std(0x5c4126, 0.95, 0.02);
+  for (let i = 0; i < 7; i++) {
+    const log = addBarPart(
+      new THREE.CylinderGeometry(0.085, 0.1, 0.8, 6),
+      i % 2 ? wood : dark,
+      -1.8 + i * 0.6,
+      0.4,
+      (Math.random() - 0.5) * 0.06,
+      (Math.random() - 0.5) * 0.16
+    );
+    log.rotation.z = (Math.random() - 0.5) * 0.06;
+  }
+  addBarPart(new THREE.BoxGeometry(W - 0.3, 0.09, 0.09), dark, 0, 0.62, 0.12);
+  addBarPart(new THREE.BoxGeometry(W - 0.3, 0.09, 0.09), dark, 0, 0.24, 0.12);
+}
+
 function initBarricade() {
   barricadeGroup = new THREE.Group();
   barricadeGroup.position.set(BARRICADE_X, 0, BARRICADE_Z);
 
-  const woodMat = new THREE.MeshStandardMaterial({
-    color: 0x7a6648,
-    roughness: 0.85,
-    metalness: 0.05,
-  });
-  const darkMat = new THREE.MeshStandardMaterial({
-    color: 0x5c4a30,
-    roughness: 0.9,
-  });
-
-  const wall = new THREE.Mesh(
-    new THREE.BoxGeometry(BARRICADE_WIDTH, 0.55, 0.5),
-    woodMat
-  );
-  wall.position.y = 0.28;
-  barricadeGroup.add(wall);
-
-  for (let i = 0; i < 6; i++) {
-    const block = new THREE.Mesh(
-      new THREE.BoxGeometry(0.62, 0.26, 0.42),
-      i % 2 ? darkMat : woodMat
-    );
-    block.position.set(-1.75 + i * 0.7, 0.68, 0);
-    block.rotation.y = i % 2 ? 0.08 : -0.06;
-    barricadeGroup.add(block);
-  }
+  buildBarricadeLook(getCurrentEraIndex());
 
   scene.add(barricadeGroup);
 
@@ -3225,6 +3973,12 @@ function syncBarricade(state) {
   barricadeGroup.visible = active;
   barricadeHpBar.group.visible = active;
   barricadeCountdown.visible = !active;
+
+  // 能量场 / 激光这种发光时代：拦得越久闪得越急一点，看起来"在扛"
+  if (barricadeGlowMat && active) {
+    const pulse = 0.22 + Math.sin(performance.now() * 0.004) * 0.09;
+    barricadeGlowMat.opacity = pulse;
+  }
 
   if (active) {
     const ratio = b.maxHp ? Math.max(0, Math.min(1, b.hp / b.maxHp)) : 0;
