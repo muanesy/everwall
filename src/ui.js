@@ -294,17 +294,28 @@ function updateSkillRail(state) {
     els.skillVersion = state.skillBagVersion;
     const bag = actions && actions.getSkillBag ? actions.getSkillBag() : [];
 
+    // 空槽：技能栏固定四格（和 game.js 的 SKILL_BAG_MAX 一致）。
+    // 没装满时补空位，玩家才知道"还能再捡一张"，而不是以为就这几个。
+    const SLOT_COUNT = 4;
+    const emptyCount = Math.max(0, SLOT_COUNT - bag.length);
+
     els.skillRail.innerHTML = bag.map((s, i) => {
       const color = '#' + (s.color >>> 0).toString(16).padStart(6, '0');
       return `
-        <button class="skill-slot" type="button" data-skill-id="${s.id}" style="--skill-color:${color}">
+        <button class="skill-slot" type="button" data-skill-id="${s.id}"
+          data-charges="${s.charges}" style="--skill-color:${color}">
           <span class="skill-slot__key">${i + 1}</span>
           <span class="skill-slot__icon">${skillIconTag(s.id, { size: 26 })}</span>
           <span class="skill-slot__name">${s.name}</span>
           <span class="skill-slot__charges">×${s.charges}</span>
         </button>
       `;
-    }).join('');
+    }).join('') + Array.from({ length: emptyCount }, (_, i) => `
+        <div class="skill-slot skill-slot--empty" aria-hidden="true">
+          <span class="skill-slot__key">${bag.length + i + 1}</span>
+          <span class="skill-slot__empty-mark">+</span>
+        </div>
+      `).join('');
 
     els.skillRail.querySelectorAll('[data-skill-id]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -314,9 +325,29 @@ function updateSkillRail(state) {
     });
   }
 
+  // 每次更新都要跑：次数会变，冷却也在变。
+  // bag 只在 version 变化时重建，但次数是靠 useSkill 直接改 state 的，
+  // 所以要在这里把最新的次数同步回 DOM——否则徽章会一直显示旧数字。
+  const liveBag = actions && actions.getSkillBag ? actions.getSkillBag() : [];
+  const liveById = new Map(liveBag.map((b) => [b.id, b]));
+
   const cooling = state.skillUseCd > 0;
-  els.skillRail.querySelectorAll('.skill-slot').forEach((btn) => {
+  els.skillRail.querySelectorAll('.skill-slot[data-skill-id]').forEach((btn) => {
     btn.disabled = cooling;
+
+    const live = liveById.get(btn.dataset.skillId);
+    if (live) {
+      const n = Math.max(0, live.charges | 0);
+      if (btn.dataset.charges !== String(n)) {
+        btn.dataset.charges = String(n);
+        const badge = btn.querySelector('.skill-slot__charges');
+        if (badge) badge.textContent = `×${n}`;
+      }
+      // 次数徽章的三种状态。徽章是"还能用几次"的唯一提示，
+      // 见底时必须变红，否则玩家会点下去才发现没了。
+      btn.classList.toggle('is-low', n > 0 && n <= 1);
+      btn.classList.toggle('is-out', n <= 0);
+    }
   });
 }
 
