@@ -26,7 +26,11 @@ body {
   font-family: "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
   -webkit-user-select: none;
   user-select: none;
-  touch-action: none;
+  /* 页面本身锁死不能滚动；但开始页的地图网格和遮罩层要能上下滑，
+     所以这里放开纵向手势，再用 overscroll-behavior 挡掉下拉刷新。
+     战场的拖动只用到横向位移（pointerRatio 取 clientX），不受影响。 */
+  touch-action: pan-y;
+  overscroll-behavior: none;
 }
 
 /* 竖屏舞台：把画面锁在 9:16 里居中显示。
@@ -186,6 +190,19 @@ canvas {
   padding: 24px;
   background: rgba(6, 9, 13, 0.72);
   backdrop-filter: blur(6px);
+  /* 窄屏/矮窗口下卡片会超出视口，开始按钮不能被裁掉：
+     body 关了默认滚动，这里单独放开纵向滚动和触摸拖动 */
+  overflow-y: auto;
+  overflow-x: hidden;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* 内容比视口高时从顶部开始排，避免 flex 居中把卡片上沿裁掉 */
+@supports (align-items: safe center) {
+  .overlay {
+    align-items: safe center;
+  }
 }
 
 .card {
