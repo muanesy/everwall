@@ -5265,11 +5265,6 @@ function syncSlots(state, dt) {
 
   for (const [id, v] of slotVisuals) {
     const on = !!(state.slots && state.slots[id]);
-    // 召唤槽「后现代起才显示」只作用于【还没解锁】的情况。
-    // 玩法层已经解锁（测试模式全开、或者面板手动拉等级）时必须以 state.slots 为准，
-    // 否则会出现「面板显示 Lv1、地图上连地基都没有」——画面层自己又判断一次解锁，
-    // 和玩法层的判断依据不是同一个，两边一不一致就凭空消失
-    const eraLocked = id === 'summon' && era < 3 && !on;
     const level = Math.max(0, Math.min(5, levels[id] | 0));
 
     // 时代或等级变了就重建：模型是按这两个参数造出来的，
@@ -5286,11 +5281,15 @@ function syncSlots(state, dt) {
       v.spin = rebuilt.userData.spinParts || [];
     }
 
-    v.pad.visible = !eraLocked;
-    v.ring.visible = !eraLocked;
-    v.dots.visible = !eraLocked;
-    v.structure.visible = !eraLocked && on;
-    if (!eraLocked) v.ring.material.opacity = on ? 0.8 : 0.16;
+    // 六个槽位一视同仁：地基 / 光环 / 等级点永远在，只有模型按解锁状态出现。
+    // 召唤槽以前有一条「era < 3 就连地基一起藏」的特殊规则，结果那个位置上
+    // 什么都没有，看起来像模型丢了。五个槽位都是抽卡解锁的，未解锁时本来
+    // 就该留一个空地基告诉玩家「这里还能开一个」，召唤不该例外。
+    v.pad.visible = true;
+    v.ring.visible = true;
+    v.dots.visible = true;
+    v.structure.visible = on;
+    v.ring.material.opacity = on ? 0.8 : 0.16;
 
     // 等级点：只显示已解锁的，未解锁的保持很淡的底点
     v.dots.children.forEach((dot, i) => {

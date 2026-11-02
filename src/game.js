@@ -1207,10 +1207,20 @@ const CARD_POOL = [
     apply: () => setSlotLevel('command', state.slotLevels.command + 1),
   },
   {
+    // 另外四个槽位都有解锁卡，只有召唤没有——结果就是前期永远开不出来，
+    // 那第六个地基一直空着，看起来像模型丢了。补上，和别的槽位一样抽。
+    // （后现代 era>=3 的自动解锁保留，作为抽不到时的保底）
+    id: 'slotSummon',
+    name: '召唤槽',
+    desc: () => `解锁召唤 1 级：${slotSummary('summon', 1)}`,
+    can: () => !state.slotLevels.summon,
+    apply: () => setSlotLevel('summon', 1),
+  },
+  {
     id: 'slotSummonUpgrade',
     name: '召唤升级',
     desc: () => `召唤 ${state.slotLevels.summon} → ${state.slotLevels.summon + 1} 级，${slotSummary('summon', state.slotLevels.summon + 1)}`,
-    can: () => state.era >= 3 && state.slotLevels.summon > 0 && state.slotLevels.summon < SLOT_MAX_LEVEL,
+    can: () => state.slotLevels.summon > 0 && state.slotLevels.summon < SLOT_MAX_LEVEL,
     apply: () => setSlotLevel('summon', state.slotLevels.summon + 1),
   },
   {
