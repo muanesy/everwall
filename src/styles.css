@@ -378,6 +378,24 @@ canvas {
   100% { opacity: 0; }
 }
 
+/* 终幕技能的全屏闪光：审判白光、献祭血光、重启冷光共用，颜色由 JS 写 background */
+.fx-flash {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 7;
+  opacity: 0;
+}
+
+.fx-flash.show {
+  animation: fx-flash-pop 0.45s ease-out forwards;
+}
+
+@keyframes fx-flash-pop {
+  0% { opacity: 0.9; }
+  100% { opacity: 0; }
+}
+
 /* 时间类减速：蓝色边缘滤镜，持续到减速结束 */
 .fx-slow {
   position: fixed;

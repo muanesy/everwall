@@ -683,6 +683,7 @@ const effects = [];
 let muzzleLight = null;
 let fxBanner = null;
 let fxHurt = null;
+let fxFlash = null;    // 终幕技能的全屏闪光（颜色每次由 flashScreen 写）
 let fxSlow = null;
 let fxFloats = null;   // 击杀飘字的容器（绝对定位，位置每帧由相机投影算）
 let fxToast = null;
@@ -869,6 +870,7 @@ export function initVisuals(container, events) {
   fxLayer.innerHTML = `
     <div class="fx-banner"><div class="fx-banner__title"></div><div class="fx-banner__sub"></div></div>
     <div class="fx-hurt"></div>
+    <div class="fx-flash"></div>
     <div class="fx-slow"></div>
     <div class="fx-floats"></div>
     <div class="fx-toast"></div>
@@ -877,6 +879,7 @@ export function initVisuals(container, events) {
   document.body.appendChild(fxLayer);
   fxBanner = fxLayer.querySelector('.fx-banner');
   fxHurt = fxLayer.querySelector('.fx-hurt');
+  fxFlash = fxLayer.querySelector('.fx-flash');
   fxSlow = fxLayer.querySelector('.fx-slow');
   fxFloats = fxLayer.querySelector('.fx-floats');
   fxToast = fxLayer.querySelector('.fx-toast');
@@ -1023,6 +1026,12 @@ export function initVisuals(container, events) {
       spawnWeaponDropFx(d.x, d.z);
     } else if (d.type === 'friendlyLegion') {
       spawnRing(0, 8.5, 0x9c6bff, 0.8);
+    } else if (d.type === 'execute') {
+      spawnJudgmentFx(d.executed, d.chipped);
+    } else if (d.type === 'sacrifice') {
+      spawnSacrificeFx(d.shaved);
+    } else if (d.type === 'reboot') {
+      spawnRebootFx(d.removed);
     } else if (
       d.type === 'rollingLog' ||
       d.type === 'knightCharge' ||
@@ -5543,6 +5552,117 @@ function spawnOrbitalBeamAt(z, color) {
   }
 }
 
+/* ----------------------------------------------------------
+ * 终幕三张牌的特效（审判 / 献祭 / 重启）
+ *
+ * 三张牌都不再是"在天上炸一下"，所以视觉也不用 AOE 那套：
+ * 审判是垂直落下的白光柱（点名处决），献祭是从玩家脚下推出去的血环，
+ * 重启是一条从阵型扫向出生点的扫描线。三者一眼能分清。
+ * ---------------------------------------------------------- */
+
+// 全屏闪光：颜色每次由调用方写，再重触发一次 CSS 动画
+function flashScreen(cssBackground) {
+  if (!fxFlash) return;
+  fxFlash.style.background = cssBackground;
+  fxFlash.classList.remove('show');
+  void fxFlash.offsetWidth; // 强制重排，连放两次也能重新播
+  fxFlash.classList.add('show');
+}
+
+// 名单太长时抽样，避免一次几百个粒子
+function thin(list, max) {
+  if (list.length <= max) return list;
+  const step = Math.ceil(list.length / max);
+  return list.filter((_, i) => i % step === 0);
+}
+
+// 审判的处决柱：一根从天上插下来的细光柱 + 落地一圈环，比"掉个球"更像点名
+function spawnVerdictPillar(x, z, color = 0xffffff) {
+  const beam = new THREE.Mesh(
+    new THREE.BoxGeometry(0.26, 7.2, 0.26),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.85,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  beam.position.set(x, 3.6, z);
+  scene.add(beam);
+  effects.push({ mesh: beam, life: 0, maxLife: 0.32, type: 'fade' });
+
+  spawnRing(x, z, 0xf2fbff, 0.45);
+  spawnBurst(x, 0.4, z, 0xffffff, 4, {
+    speed: 1.3,
+    up: 2.2,
+    spread: 0.25,
+    life: 0.35,
+  });
+}
+
+// 终焉审判：全屏白闪 + 被处决的僵尸头顶插下光柱 + 没到线的套一圈白环
+function spawnJudgmentFx(executed = [], chipped = []) {
+  flashScreen(
+    'radial-gradient(circle at 50% 42%, rgba(255,255,255,0.95), rgba(215,240,255,0.6) 58%, rgba(255,255,255,0) 100%)'
+  );
+  shake = Math.max(shake, 0.45);
+
+  for (const p of thin(executed, 36)) {
+    spawnVerdictPillar(p.x, p.z);
+  }
+
+  for (const p of thin(chipped, 30)) {
+    spawnRing(p.x, p.z, 0xdff0ff, 0.32);
+  }
+}
+
+// 献祭：红色血光 + 从阵型向外推的两圈血环 + 每只僵尸脚下冒血雾
+function spawnSacrificeFx(shaved = []) {
+  flashScreen(
+    'radial-gradient(circle at 50% 58%, rgba(255,70,55,0.45), rgba(150,0,0,0.42) 70%, rgba(110,0,0,0.1) 100%)'
+  );
+  spawnRing(0, 8.0, 0xff3a3a, 2.2);
+  spawnRing(0, 8.0, 0xff9a7a, 1.5);
+  shake = Math.max(shake, 0.4);
+
+  for (const p of thin(shaved, 28)) {
+    spawnBurst(p.x, 0.6, p.z, 0xff3a3a, 3, {
+      speed: 1.1,
+      up: 1.4,
+      spread: 0.35,
+      life: 0.45,
+    });
+  }
+}
+
+// 重启：冷色闪白 + 一条扫描线从士兵阵型扫向出生点 + 场上留消散白环
+function spawnRebootFx(removed = []) {
+  flashScreen(
+    'linear-gradient(180deg, rgba(180,235,255,0.2), rgba(214,246,255,0.8) 55%, rgba(110,195,255,0.35))'
+  );
+  shake = Math.max(shake, 0.5);
+
+  // z 从士兵线（9）扫到出生点之前（-24），不依赖 CONFIG，画面层的固定取景范围
+  const bar = new THREE.Mesh(
+    new THREE.BoxGeometry(19, 0.16, 0.55),
+    new THREE.MeshBasicMaterial({
+      color: 0xbfe9ff,
+      transparent: true,
+      opacity: 0.8,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  bar.position.set(0, 1.0, 9);
+  scene.add(bar);
+  effects.push({ mesh: bar, life: 0, maxLife: 0.55, type: 'scan', fromZ: 9, toZ: -24 });
+
+  for (const p of thin(removed, 26)) {
+    spawnRing(p.x, p.z, 0xbfe9ff, 0.3);
+  }
+}
+
 /* 空投补给：金色武器箱落到玩家脚边 */
 function spawnWeaponDropFx(x, z) {
   const crate = new THREE.Mesh(
@@ -5765,6 +5885,10 @@ function updateEffects(dt) {
     } else if (fx.type === 'beamGlow') {
       fx.mesh.material.opacity = (1 - t) * 0.35;
       fx.mesh.scale.set(1, 1 + t * 0.6, 1 + t * 0.6);
+    } else if (fx.type === 'scan') {
+      // 重启的扫描线：从阵型一路扫向出生点
+      fx.mesh.position.z = fx.fromZ + (fx.toZ - fx.fromZ) * t;
+      fx.mesh.material.opacity = (1 - t) * 0.8;
     } else {
       fx.mesh.scale.setScalar(1 + t * 0.6);
       fx.mesh.material.opacity = 1 - t;

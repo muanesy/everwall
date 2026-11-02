@@ -378,6 +378,8 @@ const state = {
   wave: 1,
   score: 0,
   soldiers: 5,
+  // 本局兵数历史最高值：重启靠它算回补目标，每帧在 update() 里刷新
+  peakSoldiers: 5,
 
   era: 0,
   mapId: START_MAP,
@@ -645,6 +647,7 @@ function resetState(opts = {}) {
   state.wave = 1;
   state.score = 0;
   state.soldiers = state.testMode ? 120 : 5;
+  state.peakSoldiers = state.soldiers;
   state.player.x = 0;
   state.era = 0;
   state.mapId = START_MAP;
@@ -1204,10 +1207,29 @@ const SKILL_DEFS = [
   { id: 'carrierDrones', name: '舰载无人机群', era: 4, type: 'carrierDrones', color: 0x9fe3ff },
   { id: 'timeDilation', name: '时间膨胀', era: 4, type: 'slow', duration: 3, mul: 0.4, color: 0x8fb6ff },
   // 5 终幕
-  { id: 'finalJudgment', name: '终焉审判', era: 5, type: 'aoe', damage: 200, radius: 6.0, color: 0xffffff },
+  // 三张牌三种单位：审判按敌人血量百分比处决，献祭按全场总血量比例削，
+  // 重启按士兵峰值比例回补。固定数值在无限波次里会失效，见 docs/技能说明.md
+  {
+    id: 'finalJudgment', name: '终焉审判', era: 5, type: 'execute',
+    executeLine: 0.5,   // 生命 ≤50% 直接处决
+    chipDamage: 0.20,   // 没到阈值的吃 20% 最大生命
+    bossDamage: 0.30,   // Boss 不处决，改吃 30% 最大生命
+    color: 0xffffff,
+  },
   { id: 'cosmicCollapse', name: '宇宙坍缩', era: 5, type: 'pull', damage: 80, radius: 6.0, pullRadius: 14, pullFactor: 0.85, color: 0x6a4dff },
-  { id: 'sacrifice', name: '献祭', era: 5, type: 'sacrifice', damage: 300, soldiers: 20, requiresSoldiers: 20, color: 0xff5a5a },
-  { id: 'reboot', name: '重启', era: 5, type: 'clear', color: 0xffffff },
+  {
+    id: 'sacrifice', name: '献祭', era: 5, type: 'sacrifice',
+    soldiers: 20, requiresSoldiers: 20,
+    shave: 0.5,         // 全场生命上限与当前生命一起砍半
+    bossShave: 0.75,    // Boss 只砍到 75%
+    color: 0xff5a5a,
+  },
+  {
+    id: 'reboot', name: '重启', era: 5, type: 'reboot',
+    restoreRatio: 0.8,  // 兵回补到本局峰值的 80%
+    pause: 3,           // 随后几秒不刷怪
+    color: 0xbfe9ff,
+  },
   { id: 'entropy', name: '熵增', era: 5, type: 'slow', duration: 5, mul: 0.5, dps: 8, color: 0x8a8f99 },
 ];
 
@@ -1253,10 +1275,10 @@ const SKILL_DESCS = {
   wormhole: '全场僵尸一起送回出生点',
   carrierDrones: '召唤 4 架大型舰载无人机，持续一波（15 秒），每 0.45 秒造成 20 点小范围伤害',
   timeDilation: '全场僵尸所有移动 ×0.4，持续 3 秒',
-  finalJudgment: '最密处半径 6 内 200 伤害',
+  finalJudgment: '全场处决：生命 ≤50% 的僵尸直接消失并计分；其余受 20% 最大生命伤害；Boss 改吃 30% 最大生命',
   cosmicCollapse: '半径 14 内僵尸吸向中心，中心半径 6 内 80 伤害',
-  sacrifice: '兵多于 20 时消耗 20 兵，全屏 300 伤害',
-  reboot: '清空场上所有僵尸，击杀照常计分',
+  sacrifice: '消耗 20 兵（需多于 20），全场僵尸生命上限与当前生命一起砍半，Boss 砍到 75%；不致死、不直接计分',
+  reboot: '全场僵尸不计分消失；士兵回补到本局峰值的 80%；随后 3 秒不刷怪',
   entropy: '全场僵尸所有移动 ×0.5，每秒 8 伤害，持续 5 秒',
 };
 
@@ -1339,6 +1361,34 @@ function bombardNearestFraction(fraction) {
   }
 
   return { killed: killCount, nearZ, farZ };
+}
+
+// 终焉审判：全场按血量处决，不看位置也不看半径。
+// 生命低于阈值线的直接消失（照常计分），没到线的吃一段最大生命伤害；
+// Boss 不吃处决，改吃固定比例最大生命 —— 否则一张牌就能秒掉 9 倍血的 Boss。
+function castJudgment(def) {
+  const line = def.executeLine ?? 0.5;
+  const chip = def.chipDamage ?? 0.2;
+  const bossChip = def.bossDamage ?? 0.3;
+
+  const executed = [];
+  const chipped = [];
+
+  // 从后往前删，避免 damageZombieAt 里的 splice 打乱下标
+  for (let i = state.zombies.length - 1; i >= 0; i--) {
+    const zb = state.zombies[i];
+    const maxHp = Math.max(1, zb.maxHp || zb.hp);
+    const at = { x: zb.x, z: zb.z, type: zb.type };
+
+    let damage;
+    if (zb.boss) damage = maxHp * bossChip;
+    else if (zb.hp <= maxHp * line) damage = Infinity;
+    else damage = maxHp * chip;
+
+    (damageZombieAt(i, damage) ? executed : chipped).push(at);
+  }
+
+  return { executed, chipped, line };
 }
 
 // 普通僵尸在当前波次的血量。滚木用它算伤害：1.25 倍能秒普通，大块头是 2.5 倍血，秒不掉。
@@ -1547,11 +1597,69 @@ function castSkill(id) {
       }
       break;
     }
-    case 'sacrifice':
+    case 'sacrifice': {
+      // 血祭：花 20 兵把全场砍半血。不致死，所以它买的是"接下来的收割条件"，
+      // 不是清场——和终焉审判、重启刻意分成三种动词
+      if (!state.zombies.length) return false;
       if (state.soldiers <= def.soldiers) return false;
       applySoldiers(-def.soldiers, { force: true });
-      damageZombiesInRadius(0, -6, 60, def.damage);
+
+      const shaved = [];
+      for (const zb of state.zombies) {
+        const mul = zb.boss ? def.bossShave : def.shave;
+        const maxHp = Math.max(1, zb.maxHp || zb.hp);
+        const newMax = Math.max(1, maxHp * mul);
+        zb.maxHp = newMax;
+        // 当前血量按同一比例缩，但至少留 1 点：这张牌不负责杀人
+        zb.hp = Math.max(1, Math.min(newMax, zb.hp * mul));
+        shaved.push({ x: zb.x, z: zb.z });
+      }
+      castExtra = { shaved, soldiers: state.soldiers };
+      emit('skillNotice', {
+        text: `献祭 ${def.soldiers} 兵 · 场上 ${shaved.length} 只僵尸生命减半`,
+        kind: 'skill',
+      });
       break;
+    }
+    case 'execute': {
+      if (!state.zombies.length) return false;
+      const result = castJudgment(def);
+      castExtra = result;
+      emit('skillNotice', {
+        text: `处决 ${result.executed.length} 只 · ${result.chipped.length} 只受 20% 最大生命伤害`,
+        kind: 'skill',
+      });
+      break;
+    }
+    case 'reboot': {
+      const removed = [];
+      // 直接移出数组：不计分、不走死亡结算，自爆僵尸也不会连锁
+      for (let i = state.zombies.length - 1; i >= 0; i--) {
+        const zb = state.zombies[i];
+        removed.push({ x: zb.x, z: zb.z, type: zb.type });
+        state.zombies.splice(i, 1);
+      }
+
+      const target = Math.floor(state.peakSoldiers * (def.restoreRatio ?? 0.8));
+      const before = state.soldiers;
+      if (target > state.soldiers) applySoldiers(target - state.soldiers);
+
+      const pause = def.pause ?? 3;
+      state.zombieSpawnPauseUntil = state.time + pause;
+      state.zombieTimer = Math.max(state.zombieTimer, pause);
+
+      castExtra = {
+        removed,
+        soldiersBefore: before,
+        soldiersAfter: state.soldiers,
+        pause,
+      };
+      emit('skillNotice', {
+        text: `重启：清场 ${removed.length} 只（不计分）· 兵 ${before} → ${state.soldiers}`,
+        kind: 'skill',
+      });
+      break;
+    }
     case 'clear':
       clearZombies();
       break;
@@ -1828,6 +1936,7 @@ function syncEraWithWave(wave) {
 
 function update(dt) {
   state.time += dt;
+  if (state.soldiers > state.peakSoldiers) state.peakSoldiers = state.soldiers;
   state.skillUseCd = Math.max(0, state.skillUseCd - dt);
 
   const nextWave = Math.floor(state.time / CONFIG.wave.duration) + 1;
