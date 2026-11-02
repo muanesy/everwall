@@ -1102,6 +1102,37 @@ export function initVisuals(container, events) {
     // 地上留一小片烧痕，让人看得出这儿炸过
     spawnRing(x, z, 0x9a3010, 0.9);
   });
+
+  // 补给箱砸到地上：一圈土 + 轻微"咚"的震感（不用重震，它不是爆炸）
+  events.addEventListener('crateLand', (e) => {
+    const d = e.detail || {};
+    const x = Number(d.x);
+    const z = Number(d.z);
+    if (!isFinite(x) || !isFinite(z)) return;
+    spawnRing(x, z, 0xc8a878, 0.34);
+    spawnBurst(x, 0.12, z, 0x9a8a6a, 7, {
+      speed: 1.6, up: 1.2, spread: 0.5, life: 0.45, gravity: -6,
+    });
+    shake = Math.max(shake, 0.12);
+  });
+
+  // 补给箱被打碎：木屑四散 + 一道绿色光圈（绿色 = 正向收益，和扣兵红屏区分开）
+  events.addEventListener('crateHit', (e) => {
+    const d = e.detail || {};
+    const x = Number(d.x);
+    const z = Number(d.z);
+    if (!isFinite(x) || !isFinite(z)) return;
+
+    spawnRing(x, z, 0x58e08a, 0.55);
+    spawnBurst(x, 0.35, z, 0xb08148, 16, {
+      speed: 3.0, up: 2.8, spread: 0.45, life: 0.6, gravity: -8,
+    });
+    spawnBurst(x, 0.4, z, 0x58e08a, 8, {
+      speed: 1.6, up: 2.2, spread: 0.3, life: 0.5, gravity: -5,
+    });
+    // 奖励文案走已有的提示条，不新开 UI
+    if (d.label) pushToast(d.label, 'crate');
+  });
 }
 
 /* ----------------------------------------------------------
@@ -2335,6 +2366,7 @@ export function syncScene(state, dt) {
   if (lastWave > 1 && state.wave === 1) {
     resetBarrels();                      // 桶全部复原
     clearHazards();                      // 陨石坑、地上的火一起清掉
+    clearCrates();                       // 补给箱模型也清掉，别留到新局
     quakeTime = 0;
     quakeCycle = 10 + Math.random() * 6; // 新局第一震别来得太急
     if (dayNight) dayNight.setNight(false, true); // 立刻回到白天，不要跨局慢慢过渡
@@ -2383,6 +2415,7 @@ export function syncScene(state, dt) {
   syncZombies(state, dt);
   syncBarricade(state);
   syncSlots(state);
+  syncCrates(state);
   updateBossPresence(state);
   updateZombieHitFeedback(state);
 
@@ -4322,6 +4355,117 @@ function syncSlots(state) {
     v.structure.visible = on;
     v.ring.material.opacity = on ? 0.8 : 0.16;
   }
+}
+
+/* ----------------------------------------------------------
+ * 补给箱（点子池「补给箱」）
+ *
+ * 玩法层管刷新、下落、命中、奖励；这里只负责画：
+ *   木箱 + 金色包角 + 顶上一面小旗，落地砸起一圈灰，打碎炸成木屑。
+ * 箱子在屏幕上只有十几像素，所以轮廓要做粗——深色底 + 亮金包角，
+ * 比精细木纹更容易在手机屏上一眼认出来。
+ * ---------------------------------------------------------- */
+const crateVisuals = new Map();
+let crateGeos = null;
+
+function getCrateGeo() {
+  if (crateGeos) return crateGeos;
+  crateGeos = {
+    body: new THREE.BoxGeometry(0.72, 0.62, 0.72),
+    corner: new THREE.BoxGeometry(0.08, 0.66, 0.08),
+    band: new THREE.BoxGeometry(0.78, 0.07, 0.78),
+    flag: new THREE.PlaneGeometry(0.19, 0.13),
+  };
+  return crateGeos;
+}
+
+function makeCrateMesh() {
+  const g = new THREE.Group();
+  const geo = getCrateGeo();
+
+  const woodMat = new THREE.MeshStandardMaterial({
+    color: 0xa8793e, roughness: 0.85, metalness: 0.05,
+    emissive: 0x3a2408, emissiveIntensity: 0.5,
+  });
+  const goldMat = new THREE.MeshStandardMaterial({
+    color: 0xe8c060, roughness: 0.4, metalness: 0.7,
+    emissive: 0x8a6008, emissiveIntensity: 0.6,
+  });
+
+  const body = new THREE.Mesh(geo.body, woodMat);
+  body.position.y = 0.31;
+  g.add(body);
+
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      const corner = new THREE.Mesh(geo.corner, goldMat);
+      corner.position.set(sx * 0.33, 0.31, sz * 0.33);
+      g.add(corner);
+    }
+  }
+  const band = new THREE.Mesh(geo.band, goldMat);
+  band.position.y = 0.31;
+  g.add(band);
+
+  // 小旗用金色而不是亮绿：亮绿在绿地面和绿色 HUD 里容易糊成一片，
+  // 金色和包角同色系，箱子整体读起来就是一个"发光的小金块"
+  const flag = new THREE.Mesh(
+    geo.flag,
+    new THREE.MeshBasicMaterial({
+      color: 0xffd45a, transparent: true, opacity: 0.9, side: THREE.DoubleSide,
+    })
+  );
+  flag.position.set(0.12, 0.82, 0);
+  g.add(flag);
+
+  return { group: g, flag, woodMat, goldMat };
+}
+
+function syncCrates(state) {
+  if (!scene) return;
+  const list = state.crates || [];
+  const alive = new Set();
+
+  for (const c of list) {
+    alive.add(c.id);
+    let entry = crateVisuals.get(c.id);
+    if (!entry) {
+      entry = makeCrateMesh();
+      entry.phase = Math.random() * Math.PI * 2;
+      scene.add(entry.group);
+      crateVisuals.set(c.id, entry);
+    }
+    entry.group.position.set(c.x, c.y || 0, c.z);
+
+    // 落地前翻滚，落地后停住；旗子一直轻轻晃，方便一眼找到
+    if (!c.landed) {
+      entry.group.rotation.y += 0.14;
+      entry.group.rotation.z += 0.04;
+    } else {
+      entry.group.rotation.z *= 0.9;
+    }
+    entry.flag.rotation.y = Math.sin(performance.now() * 0.004 + entry.phase) * 0.5;
+  }
+
+  // 被打碎的箱子：把场上多余的模型拆掉（材质是每个箱子独立的，要释放）
+  for (const [id, entry] of crateVisuals) {
+    if (alive.has(id)) continue;
+    scene.remove(entry.group);
+    entry.woodMat.dispose();
+    entry.goldMat.dispose();
+    entry.flag.material.dispose();
+    crateVisuals.delete(id);
+  }
+}
+
+function clearCrates() {
+  for (const [, entry] of crateVisuals) {
+    scene.remove(entry.group);
+    entry.woodMat.dispose();
+    entry.goldMat.dispose();
+    entry.flag.material.dispose();
+  }
+  crateVisuals.clear();
 }
 
 /* ----------------------------------------------------------

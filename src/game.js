@@ -250,6 +250,20 @@ const CONFIG = {
     rewardScore: 30,     // 击败奖励：额外分数（types 里的 score 40 会另算）
     toast: true,
   },
+  // 补给箱：场上随机掉一个木箱，打碎给随机奖励
+  crate: {
+    interval: 16,        // 每隔多少秒尝试刷一个
+    max: 2,              // 场上最多几个
+    firstDelay: 10,      // 开局多久后刷第一个，别一上来就掉
+    fallSpeed: 9,        // 从天而降的速度
+    hitW: 0.8,           // 横向命中半宽（比僵尸宽，别让玩家瞄不准）
+    hitZ: 0.75,
+    rewards: [
+      { kind: 'soldiers', amount: 5, weight: 46, label: '援兵 +5' },
+      { kind: 'score', amount: 30, weight: 34, label: '分数 +30' },
+      { kind: 'soldiers', amount: 10, weight: 20, label: '援兵 +10' },
+    ],
+  },
 };
 
 const SLOT_IDS = ['siege', 'closeDefense', 'support', 'command'];
@@ -359,6 +373,8 @@ const state = {
   barrierTimer: 0,
   zombieTimer: 0,
   barrelTimer: 0,
+  crateTimer: 0,
+  crates: [],        // 补给箱：{ id, x, z, y, landed, reward }
   nextId: 1,
   spawnCounts: new Array(13).fill(0), // 调试用：统计每种僵尸刷了多少只（0-12）
 };
@@ -577,6 +593,8 @@ function resetState(opts = {}) {
   state.barrierTimer = 0.6;
   state.zombieTimer = 1.0;
   state.barrelTimer = CONFIG.barrel.spawnInterval;
+  state.crateTimer = CONFIG.crate.firstDelay;
+  state.crates.length = 0;
   state.nextId = 1;
   state.spawnCounts.fill(0);
   resetBarricade();
@@ -1576,6 +1594,7 @@ function update(dt) {
   updatePlayer(dt);
   updateFiring(dt);
   updateBarrelSpawn(dt);
+  updateCrates(dt);
   updateBullets(dt);
   updateSlots(dt);
   updateBarriers(dt);
@@ -1711,6 +1730,91 @@ function updateBarrelSpawn(dt) {
   spawnBarrel(x, z);
 }
 
+/* ----------------------------------------------------------
+ * 补给箱（点子池「补给箱」）：场上随机掉一个木箱，打碎给随机奖励
+ *
+ * 只放在玩家能打到的地方：x 在战场内、z 在玩家上方不远处。
+ * 子弹是垂直往上飞的，所以箱子必须落在玩家走位能覆盖的横向范围里，
+ * 否则玩家永远打不到（炸药桶当初就踩过这个坑）。
+ * ---------------------------------------------------------- */
+function pickCrateReward() {
+  const list = CONFIG.crate.rewards;
+  const total = list.reduce((s, r) => s + r.weight, 0);
+  let roll = Math.random() * total;
+  for (const r of list) {
+    roll -= r.weight;
+    if (roll <= 0) return r;
+  }
+  return list[0];
+}
+
+function spawnCrate() {
+  if (state.crates.length >= CONFIG.crate.max) return null;
+
+  // 横向铺满玩家能走到的范围（±半宽），纵向放在中场：
+  // 太靠前会被僵尸挡住，太靠后会贴着玩家脚下，中场最容易在交火时被顺手打到
+  const halfW = CONFIG.world.halfWidth;
+  const x = (Math.random() * 2 - 1) * halfW * 0.85;
+  const z = -8 + Math.random() * 12;
+
+  const crate = {
+    id: state.nextId++,
+    x,
+    z,
+    y: 12,               // 从高处落下
+    landed: false,
+    reward: pickCrateReward(),
+  };
+  state.crates.push(crate);
+  emit('crateSpawn', { x, z, id: crate.id });
+  return crate;
+}
+
+function updateCrates(dt) {
+  if (state.testMode) return;
+
+  // 落地动画：从 y=12 掉到 0
+  for (const c of state.crates) {
+    if (c.landed) continue;
+    c.y -= CONFIG.crate.fallSpeed * dt;
+    if (c.y <= 0) {
+      c.y = 0;
+      c.landed = true;
+      emit('crateLand', { x: c.x, z: c.z, id: c.id });
+    }
+  }
+
+  state.crateTimer -= dt;
+  if (state.crateTimer > 0) return;
+  state.crateTimer = CONFIG.crate.interval;
+  spawnCrate();
+}
+
+// 子弹打箱子：打中就碎，奖励当场结算
+function hitCrate(bx, bz) {
+  for (let i = state.crates.length - 1; i >= 0; i--) {
+    const c = state.crates[i];
+    // 还在空中不能打，必须落地（和炸药桶一致）
+    if (!c.landed) continue;
+    if (Math.abs(bx - c.x) > CONFIG.crate.hitW) continue;
+    if (Math.abs(bz - c.z) > CONFIG.crate.hitZ) continue;
+
+    state.crates.splice(i, 1);
+    const r = c.reward;
+    if (r.kind === 'soldiers') {
+      applySoldiers(r.amount);
+    } else if (r.kind === 'score') {
+      state.score += r.amount;
+    }
+    emit('crateHit', {
+      x: c.x, z: c.z, id: c.id,
+      kind: r.kind, amount: r.amount, label: r.label,
+    });
+    return true;
+  }
+  return false;
+}
+
 function updateBullets(dt) {
   for (let i = state.bullets.length - 1; i >= 0; i--) {
     const b = state.bullets[i];
@@ -1724,6 +1828,12 @@ function updateBullets(dt) {
 
     // 打中炸药桶：点燃引信，子弹消失，爆炸伤害由 barrelExploded 结算
     if (!state.testMode && hitBarrel(b.x, b.z, 0.45)) {
+      state.bullets.splice(i, 1);
+      continue;
+    }
+
+    // 打中补给箱：当场碎，奖励已经结算完
+    if (!state.testMode && hitCrate(b.x, b.z)) {
       state.bullets.splice(i, 1);
       continue;
     }
