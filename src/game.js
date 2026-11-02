@@ -71,8 +71,8 @@ const CONFIG = {
   barricade: {
     xMin: -0.4,          // 路障左边界，避开左边屏障通道
     xMax: 3.8,           // 路障右边界
-    z: 6.5,              // 路障所在纵深
-    blockZ: 5.9,         // 僵尸停在墙前的位置
+    z: 4.5,              // 路障所在纵深
+    blockZ: 3.9,         // 僵尸停在墙前的位置
     hp: 240,
     hitDamage: 6,        // 僵尸每啃一口的伤害
     attackInterval: 0.9, // 每只僵尸的啃咬间隔

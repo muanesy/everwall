@@ -195,7 +195,7 @@ const GROUND_Z = -14;
 
 // 路障位置和尺寸：和 game.js 的 CONFIG.barricade 保持一致
 const BARRICADE_X = 1.7;
-const BARRICADE_Z = 6.5;
+const BARRICADE_Z = 4.5;
 const BARRICADE_WIDTH = 4.2;
 
 let renderer = null;
