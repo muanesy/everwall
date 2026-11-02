@@ -66,7 +66,7 @@ const CONFIG = {
   card: {
     everyWaves: 2,       // 每几波抽一次
     slowMo: 0.25,        // 抽卡时全场慢放倍率
-    duration: 4,         // 选择时间，秒
+    duration: 6,         // 选择时间，秒
   },
   slots: {
     siege: { x: 4.5, z: 15 },        // 攻城，后排右
@@ -213,12 +213,13 @@ const state = {
   },
   timeScale: 1,
 
-  // 路障：挡在前排，有血量，碎了冷却后重建
+  // 路障：抽到卡才出现，挡在前排，有血量，碎了冷却后重建
   barricade: {
-    level: 1,
-    hp: 240,
+    unlocked: false,
+    level: 0,
+    hp: 0,
     maxHp: 240,
-    active: true,
+    active: false,
     cooldown: 0,
     xMin: -0.4,
     xMax: 3.8,
@@ -415,7 +416,15 @@ function revive() {
   state.zombies.length = 0;
   state.barrierTimer = 0.4;
   state.zombieTimer = 0.8;
-  resetBarricade();
+
+  // 复活保留已经解锁的路障，并把它修好；没解锁就保持没有
+  const b = state.barricade;
+  if (b.unlocked) {
+    b.active = true;
+    b.hp = b.maxHp;
+    b.cooldown = 0;
+    emit('barricadeRebuild', {});
+  }
 }
 
 function barricadeStats(level) {
@@ -433,6 +442,7 @@ function applyBarricadeLevel(level, opts = {}) {
   const stats = barricadeStats(next);
   const prevMax = b.maxHp || stats.hp;
 
+  b.unlocked = true;
   b.level = next;
   b.maxHp = stats.hp;
   b.width = stats.width;
@@ -445,13 +455,35 @@ function applyBarricadeLevel(level, opts = {}) {
 }
 
 function resetBarricade() {
+  const b = state.barricade;
+  b.unlocked = false;
+  b.level = 0;
+  b.hp = 0;
+  b.active = false;
+  b.cooldown = 0;
+  b.damage = 0;
+  b.width = 4.2;
+  b.xMin = CONFIG.barricade.xMin;
+  b.xMax = CONFIG.barricade.xMin + 4.2;
+}
+
+function unlockBarricade() {
+  const b = state.barricade;
+  if (b.unlocked) return;
+
+  b.unlocked = true;
+  b.active = true;
+  b.cooldown = 0;
   applyBarricadeLevel(1, { full: true });
-  state.barricade.active = true;
-  state.barricade.cooldown = 0;
+  emit('barricadeRebuild', {});
 }
 
 // 以后抽卡升级路障时调用；先暴露到 window 方便调试
 function upgradeBarricade() {
+  if (!state.barricade.unlocked) {
+    unlockBarricade();
+    return;
+  }
   applyBarricadeLevel(state.barricade.level + 1);
   emit('barricadeUpgrade', { level: state.barricade.level });
 }
@@ -469,10 +501,18 @@ if (typeof window !== 'undefined') {
  * ---------------------------------------------------------- */
 const CARD_POOL = [
   {
-    id: 'barricade',
+    id: 'barricadeUnlock',
+    name: '路障',
+    desc: '解锁路障，挡住前排僵尸',
+    can: () => !state.barricade.unlocked,
+    apply: () => unlockBarricade(),
+  },
+  {
+    id: 'barricadeUpgrade',
     name: '路障升级',
     desc: '路障 +1 级，血量和宽度提升',
-    can: () => state.barricade.level < CONFIG.barricade.levels.length,
+    can: () => state.barricade.unlocked &&
+      state.barricade.level < CONFIG.barricade.levels.length,
     apply: () => upgradeBarricade(),
   },
   {
@@ -560,7 +600,9 @@ function updateCard(realDt) {
 
   // 超时优先拿防御类，没有再拿第一张
   const preferred = state.card.choices.findIndex(
-    (c) => c.id === 'armor' || c.id === 'barricade'
+    (c) => c.id === 'armor' ||
+      c.id === 'barricadeUnlock' ||
+      c.id === 'barricadeUpgrade'
   );
   chooseCard(preferred >= 0 ? preferred : 0);
 }
@@ -1001,6 +1043,7 @@ function makeSpecialBarrier(kind, x, z, wave) {
  * ---------------------------------------------------------- */
 function updateBarricade(dt) {
   const b = state.barricade;
+  if (!b.unlocked) return;
   if (b.active) return;
 
   b.cooldown -= dt;

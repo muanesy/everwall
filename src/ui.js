@@ -295,11 +295,13 @@ function buildDom() {
   const cardLayer = document.createElement('div');
   cardLayer.className = 'card-layer hidden';
   cardLayer.innerHTML = `
-    <div class="card-layer__head">
-      <span>选择一张强化</span>
-      <span class="card-layer__timer" data-card-timer>4s</span>
+    <div class="card-panel">
+      <div class="card-layer__head">
+        <span>选择一张强化</span>
+        <span class="card-layer__timer" data-card-timer>6s</span>
+      </div>
+      <div class="card-layer__row" data-card-row></div>
     </div>
-    <div class="card-layer__row" data-card-row></div>
   `;
   document.body.appendChild(cardLayer);
 

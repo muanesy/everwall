@@ -3087,6 +3087,14 @@ function syncBarricade(state) {
   const b = state.barricade;
   if (!b || !barricadeGroup) return;
 
+  // 还没抽到路障卡时不显示
+  if (!b.unlocked) {
+    barricadeGroup.visible = false;
+    barricadeHpBar.group.visible = false;
+    barricadeCountdown.visible = false;
+    return;
+  }
+
   // 等级会改宽度：左边界不动，向右长；整段墙和 UI 一起缩放
   const center = b.xMin + b.width / 2;
   const scale = b.width / BARRICADE_WIDTH;

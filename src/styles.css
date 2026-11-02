@@ -604,23 +604,36 @@ canvas {
 
 .card-layer {
   position: fixed;
-  left: 50%;
-  bottom: 0;
-  transform: translateX(-50%);
-  width: min(100vw, calc(100vh * 9 / 16));
-  padding: 14px 14px calc(18px + env(safe-area-inset-bottom));
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(5, 8, 12, 0.55);
+  backdrop-filter: blur(3px);
+  z-index: 9;
+  pointer-events: none;
+}
+
+.card-panel {
+  width: 100%;
+  max-width: 360px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  background: linear-gradient(0deg, rgba(6, 9, 13, 0.96) 25%, rgba(6, 9, 13, 0.8) 70%, rgba(6, 9, 13, 0));
-  z-index: 9;
+  gap: 12px;
+  padding: 18px;
+  border-radius: 18px;
+  background: rgba(16, 22, 30, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  pointer-events: auto;
 }
 
 .card-layer__head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  font-size: 13px;
+  font-size: 14px;
   letter-spacing: 0.08em;
   color: var(--muted);
 }
@@ -632,19 +645,19 @@ canvas {
 }
 
 .card-layer__row {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .card-choice {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 12px 10px 10px;
-  border-radius: 12px;
+  padding: 14px 16px;
+  border-radius: 14px;
   border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(20, 28, 38, 0.92);
+  background: rgba(20, 28, 38, 0.95);
   color: var(--fg);
   text-align: left;
   font-family: inherit;
@@ -654,26 +667,26 @@ canvas {
 
 .card-choice:hover {
   border-color: rgba(78, 161, 255, 0.65);
-  background: rgba(30, 44, 60, 0.96);
+  background: rgba(30, 44, 60, 0.98);
 }
 
 .card-choice:active {
-  transform: scale(0.97);
+  transform: scale(0.98);
 }
 
 .card-choice em {
   font-style: normal;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--accent);
 }
 
 .card-choice strong {
-  font-size: 14px;
+  font-size: 18px;
 }
 
 .card-choice span {
-  font-size: 11px;
+  font-size: 13px;
   line-height: 1.5;
   color: var(--muted);
 }
