@@ -2278,10 +2278,11 @@ function updateBullets(dt) {
     for (let j = state.zombies.length - 1; j >= 0; j--) {
       const z = state.zombies[j];
 
-      // Boss 体型是普通僵尸的 1.95 倍，判定跟着放大：否则贴着它身体边缘开枪，
-      // 画面上明明打中了却是空的，读起来像"厚血打不动"
-      const halfW = z.boss ? 1.35 : 0.72;
-      const halfZ = z.boss ? 0.95 : 0.7;
+      // Boss 体型是普通僵尸的 6 倍（约 9.3 个单位高、8 个单位宽，横宽造型），
+      // 判定跟着放大：否则贴着它身体边缘开枪，画面上明明打中了却是空的，
+      // 读起来像"厚血打不动"
+      const halfW = z.boss ? 1.9 : 0.72;
+      const halfZ = z.boss ? 1.2 : 0.7;
 
       if (Math.abs(b.x - z.x) < halfW && Math.abs(b.z - z.z) < halfZ) {
         z.hp -= b.damage * (z.armor ?? 1);

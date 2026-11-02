@@ -327,8 +327,19 @@ const MODEL_TARGET = {
   zombieHeight: 1.55, // 僵尸目标身高，比方块(1.15)略高一点更有压迫感
 };
 
-// Boss 体型是普通僵尸的几倍：一眼就能从人群里认出它
-const BOSS_HEIGHT_MUL = 1.95;
+// Boss 体型是普通僵尸的几倍。
+//
+// 6 是**镜头完全不动**时能放到的上限，再大头顶就会从出生点起顶出画面。
+// 这个数是按投影算出来的（b-boss-creep 原始宽高比 0.87，是张手爬行的横宽造型）：
+//   5 倍 → 顶部 y=44px，还有富余
+//   6 倍 → 顶部 y=5px，刚好卡满
+//   7 倍 → 顶部 y=-36px，开始出画
+// 相比最初的 1.95，相当于放大 3.1 倍：屏幕高度 65px → 213px，能形成压迫感，
+// 又不用为它单独改相机。
+const BOSS_HEIGHT_MUL = 6;
+
+// Boss 血条宽度：跟体型匹配。Boss 按身高缩放后肩宽约 8 个单位，血条比肩略窄
+const BOSS_HPBAR_WIDTH = 3.0;
 
 // 这个 GLB 的节点树会让 Box3.setFromObject 崩（树里有坏引用），
 // 手动遍历 mesh 的几何包围盒测身高，顺便返回最低点用来落地。
@@ -961,6 +972,11 @@ export function initVisuals(container, events) {
       spawnTracer(d.fromX, d.fromZ, d.x, d.z, d.color || 0xff6a4a);
     }
     spawnRing(d.x, d.z, d.color || 0xffa64d, 0.5);
+
+    // 槽位 Fire 动画：这个事件就是"槽位刚开了一炮"的唯一信号。
+    // kind 直接对应槽位 id，不需要甲额外加事件。
+    const slotId = d.kind === 'tank' ? 'siege' : d.kind;
+    triggerSlotFire(slotId, d);
   });
 
   events.addEventListener('apcShot', (e) => {
@@ -2608,7 +2624,7 @@ export function syncScene(state, dt) {
   // 僵尸
   syncZombies(state, dt);
   syncBarricade(state);
-  syncSlots(state);
+  syncSlots(state, dt);
   syncCrates(state);
   syncChains(state);
   syncPits(state);
@@ -2967,7 +2983,9 @@ function syncZombies(state, dt) {
         // 精英和 Boss 头顶挂血条；普通僵尸不显示，避免满屏血条
         const look = ZOMBIE_LOOKS[z.type];
         if (look && (look.isBoss || look.score >= 5)) {
-          const w = look.isBoss ? 2.0 : 1.2;
+          // Boss 血条也要跟着放大：2.0 是给 3 单位高的小 Boss 用的，
+          // 现在它有 16 单位高，血条还那么细就成了一根头发丝
+          const w = look.isBoss ? BOSS_HPBAR_WIDTH : 1.2;
           entry.hpBar = makeHpBar(w);
           entry.hpHeight =
             MODEL_TARGET.zombieHeight * look.scale * (look.isBoss ? BOSS_HEIGHT_MUL : 1);
@@ -3620,34 +3638,142 @@ function makeFriendlyZombieMesh() {
   return group;
 }
 
+/* ----------------------------------------------------------
+ * 友方僵尸（生物人军团 / 病毒转化）
+ *
+ * 从几何体占位换成正式角色模型：复用敌人那套 b-zombie-* 的克隆管线
+ * （自带 Walk / Punch / ReceiveHit / Death 全套动画），
+ * 但材质整体染成阵营绿——这是"一眼分清敌我"的根本手段，比脚下光环更可靠。
+ *
+ * 为什么染色要改材质而不是叠一层绿色透明壳：
+ * 叠壳会让模型变成一团糊绿，走路和出拳的形体全丢了；
+ * 直接乘色能保住明暗结构，还能看出是个"人"。
+ * ---------------------------------------------------------- */
+const FRIENDLY_TINT = new THREE.Color(0.42, 1.32, 0.72);
+
+function tintFriendly(root) {
+  root.traverse((o) => {
+    if (!(o.isMesh || o.isSkinnedMesh)) return;
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    o.material = Array.isArray(o.material)
+      ? mats.map((m) => {
+        const c = m.clone();
+        if (c.color) c.color.multiply(FRIENDLY_TINT);
+        if (c.emissive) { c.emissive.setHex(0x1f6b3a); c.emissiveIntensity = 0.4; }
+        return c;
+      })
+      : (() => {
+        const c = mats[0].clone();
+        if (c.color) c.color.multiply(FRIENDLY_TINT);
+        if (c.emissive) { c.emissive.setHex(0x1f6b3a); c.emissiveIntensity = 0.4; }
+        return c;
+      })();
+  });
+}
+
+/* 在模型脚下挂阵营标识：双层光环 + 头顶三角。
+ * 模型有 1.5 单位高，标识要按它的尺度放，不能沿用几何体那套数字。 */
+function addFriendlyMarks(root, height) {
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.34, 0.46, 20),
+    new THREE.MeshBasicMaterial({
+      color: 0x5adf7a, transparent: true, opacity: 0.6,
+      side: THREE.DoubleSide, depthWrite: false,
+    })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.03;
+  root.add(ring);
+
+  const halo = new THREE.Mesh(
+    new THREE.RingGeometry(0.46, 0.6, 22),
+    new THREE.MeshBasicMaterial({
+      color: 0x9effc0, transparent: true, opacity: 0.22,
+      side: THREE.DoubleSide, depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  halo.rotation.x = -Math.PI / 2;
+  halo.position.y = 0.025;
+  root.add(halo);
+
+  const marker = new THREE.Mesh(
+    new THREE.ConeGeometry(0.13, 0.22, 3),
+    new THREE.MeshBasicMaterial({
+      color: 0x9effc0, transparent: true, opacity: 0.85, depthWrite: false,
+    })
+  );
+  marker.position.y = height + 0.2;
+  marker.rotation.x = Math.PI;
+  root.add(marker);
+
+  root.userData.ring = ring;
+  root.userData.halo = halo;
+  root.userData.marker = marker;
+  root.userData.markY = height + 0.2;
+}
+
 function syncFriendlyZombies(state) {
   const alive = new Set();
+  const list = state.friendlyZombies || [];
 
-  for (const f of state.friendlyZombies || []) {
+  for (const f of list) {
     alive.add(f.id);
-    let mesh = friendlyZombieMeshes.get(f.id);
-    if (!mesh) {
-      mesh = makeFriendlyZombieMesh();
-      if (f.converted) mesh.scale.setScalar(1.08);
-      scene.add(mesh);
-      friendlyZombieMeshes.set(f.id, mesh);
-    }
-    mesh.position.set(f.x, 0, f.z);
+    let entry = friendlyZombieMeshes.get(f.id);
 
-    // 头顶三角上下浮 + 脚环呼吸。动起来才能在密堆里被眼睛挑出来
+    if (!entry) {
+      // 有模型就上正式角色，没有退回几何体占位（保证功能不会因为模型没加载就消失）
+      const proto = modelLib.zombies && modelLib.zombies[0];
+      const vis = proto ? spawnModel(proto, 0) : null;
+
+      if (vis) {
+        tintFriendly(vis.root);
+        addFriendlyMarks(vis.root, MODEL_TARGET.zombieHeight);
+        // 转化的僵尸稍大一点，和"召来的"区分开
+        if (f.converted) vis.root.scale.multiplyScalar(1.08);
+        scene.add(vis.root);
+        entry = { isModel: true, vis, root: vis.root };
+      } else {
+        const mesh = makeFriendlyZombieMesh();
+        if (f.converted) mesh.scale.setScalar(1.08);
+        scene.add(mesh);
+        entry = { isModel: false, root: mesh };
+      }
+      friendlyZombieMeshes.set(f.id, entry);
+    }
+
+    const root = entry.root;
+    root.position.set(f.x, 0, f.z);
+
+    // 头顶三角上下浮 + 光环呼吸。动起来才能在密堆里被眼睛挑出来
     const t = performance.now() * 0.0022;
-    const mk = mesh.userData.marker;
-    const rg = mesh.userData.ring;
-    if (mk) mk.position.y = 1.68 + Math.sin(t + f.id) * 0.07;
+    const mk = root.userData.marker;
+    const rg = root.userData.ring;
+    const ha = root.userData.halo;
+    if (mk) mk.position.y = (root.userData.markY || 1.68) + Math.sin(t + f.id) * 0.07;
     if (rg) rg.material.opacity = 0.45 + Math.sin(t * 0.8 + f.id) * 0.16;
+    if (ha) ha.material.opacity = 0.16 + Math.sin(t * 0.8 + f.id) * 0.1;
+
+    // 朝向：友方是往 -z 走的，模型原生朝 +z，转 180°
+    if (entry.isModel) root.rotation.y = Math.PI;
   }
 
-  for (const [id, mesh] of friendlyZombieMeshes) {
-    if (!alive.has(id)) {
-      scene.remove(mesh);
-      disposeMesh(mesh);
-      friendlyZombieMeshes.delete(id);
+  for (const [id, entry] of friendlyZombieMeshes) {
+    if (alive.has(id)) continue;
+    if (entry.isModel) {
+      // 走的是共享几何体 + 独立材质：只摘场景、释放独立材质
+      entry.root.traverse((o) => {
+        if ((o.isMesh || o.isSkinnedMesh) && o.material) {
+          const ms = Array.isArray(o.material) ? o.material : [o.material];
+          for (const m of ms) m.dispose();
+        }
+      });
+      despawnModel(entry.vis);
+    } else {
+      scene.remove(entry.root);
+      disposeMesh(entry.root);
     }
+    friendlyZombieMeshes.delete(id);
   }
 }
 
@@ -3727,8 +3853,10 @@ function updateCamera(state, dt) {
     sy = (Math.random() - 0.5) * shake;
   }
 
-  // Boss 在场时镜头缓缓推近一点，制造压迫感；退场后慢慢拉回
-  const wantZoom = bossOnField ? -1.6 : 0;
+  // Boss 在场时镜头缓缓推近一点，制造压迫感；退场后慢慢拉回。
+  // 推近量受 Boss 体型约束：Boss 已经是 6 倍大、头顶贴到画面上沿，
+  // 推得太近会把它顶出画，所以这里只留很小的位移。
+  const wantZoom = bossOnField ? -0.5 : 0;
   camZoom += (wantZoom - camZoom) * Math.min(1, dt * 1.6);
 
   camera.position.set(camBaseX + sx, camY + sy, camZ + camZoom);
@@ -4873,6 +5001,55 @@ function initSlots() {
   }
 }
 
+/* ----------------------------------------------------------
+ * 槽位 Fire 动画（对应美术需求 P1「每个槽位至少 Idle 和 Fire 两条动画」）
+ *
+ * 没有骨骼模型，所以用"整体后坐 + 炮口闪光"两件事表达开火：
+ *   1. 后坐：整个槽位沿远离目标的方向弹一下，0.22 秒内回位（阻尼衰减）
+ *   2. 炮口闪光：在朝向目标的一侧生成一个快速膨胀的亮球 + 一圈冲击
+ * 这两件事加起来，在俯视小尺寸下已经够读成"它打了一发"。
+ *
+ * 触发源是现有的 slotStrike 事件（kind = siege / closeDefense / tank），
+ * 不需要甲新增接口。
+ * ---------------------------------------------------------- */
+function triggerSlotFire(slotId, d) {
+  const v = slotVisuals.get(slotId);
+  if (!v || !v.structure || !v.structure.visible) return;
+
+  // 后坐：记下开始时间和指向目标的方向，syncSlots 里逐帧衰减
+  v.recoil = 1;
+  v.recoilDir = Math.atan2(v.x - (d.x || 0), v.z - (d.z || 0));
+
+  // 炮口位置：槽位朝目标那一侧的边缘
+  const dirX = Math.sign((d.x || 0) - v.x) || 0;
+  const dirZ = Math.sign((d.z || 0) - v.z) || 0;
+  const mx = v.x + dirX * 0.5;
+  const mz = v.z + dirZ * 0.5;
+  const color = d.color || 0xffa64d;
+
+  // 炮口闪光：一个亮球从 0.15 涨到 0.5 再消失
+  const flash = new THREE.Mesh(
+    new THREE.SphereGeometry(0.16, 10, 8),
+    new THREE.MeshBasicMaterial({
+      color: 0xfff0c0, transparent: true, opacity: 0.95,
+      depthWrite: false, blending: THREE.AdditiveBlending,
+    })
+  );
+  flash.position.set(mx, 0.62, mz);
+  scene.add(flash);
+  effects.push({
+    mesh: flash, life: 0, maxLife: 0.16,
+    type: 'fireball', baseScale: 0.55, baseY: 0.62,
+  });
+
+  spawnRing(mx, mz, color, 0.24);
+
+  // 少量火星朝目标方向喷出
+  spawnBurst(mx, 0.6, mz, color, 6, {
+    speed: 2.4, up: 1.4, spread: 0.18, life: 0.3, gravity: -6,
+  });
+}
+
 function syncSlots(state, dt) {
   const era = getCurrentEraIndex();
   const levels = (state && state.slotLevels) || {};
@@ -4907,6 +5084,19 @@ function syncSlots(state, dt) {
     v.dots.children.forEach((dot, i) => {
       dot.material.opacity = i < level ? 1 : 0.14;
     });
+
+    // 后坐：沿着开火反方向弹一下，然后阻尼回位。
+    // 用 structure.position 做位移，不动 x/z 基准（那是地基位置，重建模型要用）
+    if (v.recoil > 0) {
+      v.recoil = Math.max(0, v.recoil - dt * 4.5);
+      const push = Math.sin(v.recoil * Math.PI) * 0.14;
+      v.structure.position.x = v.x + Math.cos(v.recoilDir || 0) * push;
+      v.structure.position.z = v.z + Math.sin(v.recoilDir || 0) * push;
+    } else if (v.structure.position.x !== v.x || v.structure.position.z !== v.z) {
+      // 回位后精确归零，否则会残留亚像素偏移，看着像槽位慢慢漂走了
+      v.structure.position.x = v.x;
+      v.structure.position.z = v.z;
+    }
 
     // 满级 / 星际以上的旋转件转起来（炮塔缓转、能量环转、虫巢脉动）
     if (v.structure.visible) {
