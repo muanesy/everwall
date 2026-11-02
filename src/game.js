@@ -193,6 +193,7 @@ const CONFIG = {
     baseSpeed: 3.2,
     speedPerWave: 0.25,
     nightSpeedMul: 1.15, // 夜晚僵尸移速加成
+    nightSpawnMul: 0.75, // 夜晚刷新间隔乘这个，越小越密（0.75 = 快 33%）
     maxSpeed: 7.5,
     speedCap: 9,       // 快鬼加速后也不会超过这个速度
     spawnInterval: 0.35,
@@ -216,6 +217,10 @@ const CONFIG = {
       { id: 2, name: '快鬼',   hp: 0.5, speed: 1.50, touchLoss: 1, score: 1, baseWeight: 22, growth: 0,                    minWave: 1 },
       { id: 3, name: '精英',   hp: 3.5, speed: 0.85, touchLoss: 3, score: 5, baseWeight: 6,  growth: 0.5, maxWeight: 12, minWave: 3 },
       { id: 4, name: '女僵尸', hp: 1.2, speed: 1.10, touchLoss: 1, score: 2, baseWeight: 12, growth: 0,                    minWave: 1 },
+      // 时代 Boss：不参与随机抽签（minWave 999 + boss 标记双保险），
+      // 只由 spawnEraBoss() 在切换时代时单独刷一只
+      // hp 9 = 同波普通僵尸的 9 倍（第 5 波约 470 血），40 兵对准约 20 秒能打完
+      { id: 10, name: '时代Boss', hp: 9, speed: 0.5, touchLoss: 6, score: 40, baseWeight: 0, growth: 0, minWave: 999, boss: true },
     ],
   },
   wave: {
@@ -233,6 +238,13 @@ const CONFIG = {
     recommendedLevel: [1, 2, 3, 4, 4, 5],
     underLevelStep: 0.15, // 每差 1 级 -15%
     underLevelMin: 0.55,  // 最多 -45%
+  },
+  // 时代 Boss：每次切换时代刷一只，作为分段节点
+  // 血量乘子和普通僵尸同一套公式（baseHp + 波次成长），再乘 types 里的 hp=14
+  boss: {
+    rewardSoldiers: 8,   // 击败奖励：加兵
+    rewardScore: 30,     // 击败奖励：额外分数（types 里的 score 40 会另算）
+    toast: true,
   },
 };
 
@@ -344,11 +356,20 @@ const state = {
   zombieTimer: 0,
   barrelTimer: 0,
   nextId: 1,
-  spawnCounts: [0, 0, 0, 0, 0], // 调试用：统计每种僵尸刷了多少只
+  spawnCounts: new Array(11).fill(0), // 调试用：统计每种僵尸刷了多少只（0-10，10 是 Boss）
 };
 
 // 调试用：浏览器控制台输入 __state 可以看实时数据
 window.__state = state;
+
+// 按 id 查僵尸类型。注意**不能用 CONFIG.zombie.types[z.type] 当下标**：
+// 类型 id 是约定编号（画面层按同一套编号，中间留了 5-9 给地图专属僵尸），
+// 而数组里只放实际存在的几个，id 10 的 Boss 只排在第 6 个位置上。
+const ZTYPE_BY_ID = new Map();
+CONFIG.zombie.types.forEach((t) => ZTYPE_BY_ID.set(t.id, t));
+function zombieTypeById(id) {
+  return ZTYPE_BY_ID.get(id) || null;
+}
 
 const events = new EventTarget();
 
@@ -417,10 +438,30 @@ events.addEventListener('barrelExploded', (e) => {
     zb.hp -= damage;
     if (zb.hp <= 0) {
       state.zombies.splice(i, 1);
-      state.score += CONFIG.zombie.types[zb.type]?.score || 1;
+      state.score += zombieTypeById(zb.type)?.score || 1;
       emit('zombieDie', { x: zb.x, z: zb.z, type: zb.type });
     }
   }
+});
+
+// 时代 Boss 被击败：给兵 + 额外分数。
+// 僵尸死亡一共有四个结算点（炸药桶 / 攻城 / 技能 / 路障反击），
+// 全都派 zombieDie，所以奖励在这里单点结算，不会漏也不会重复。
+events.addEventListener('zombieDie', (e) => {
+  const d = e.detail || {};
+  if (d.type !== 10) return;
+
+  state.soldiers = Math.min(
+    CONFIG.formation.maxSoldiers,
+    state.soldiers + CONFIG.boss.rewardSoldiers
+  );
+  state.score += CONFIG.boss.rewardScore;
+  emit('bossDefeated', {
+    wave: state.wave,
+    x: d.x,
+    z: d.z,
+    soldiers: CONFIG.boss.rewardSoldiers,
+  });
 });
 
 /* ----------------------------------------------------------
@@ -1055,7 +1096,7 @@ function damageZombieAt(index, damage) {
   if (zb.hp > 0) return false;
 
   state.zombies.splice(index, 1);
-  state.score += CONFIG.zombie.types[zb.type]?.score || 1;
+  state.score += zombieTypeById(zb.type)?.score || 1;
   emit('zombieDie', { x: zb.x, z: zb.z, type: zb.type });
   return true;
 }
@@ -1489,6 +1530,9 @@ function syncEraWithWave(wave) {
   // 只换时代配色和地图，场上僵尸、子弹、屏障全部保留
   switchEra(eraIndex, map);
   refreshSlotsForEra();
+
+  // 新时代开场：一只 Boss 压下来当分段节点
+  spawnEraBoss(eraIndex);
 }
 
 function update(dt) {
@@ -1735,7 +1779,12 @@ function updateBullets(dt) {
     for (let j = state.zombies.length - 1; j >= 0; j--) {
       const z = state.zombies[j];
 
-      if (Math.abs(b.x - z.x) < 0.72 && Math.abs(b.z - z.z) < 0.7) {
+      // Boss 体型是普通僵尸的 1.95 倍，判定跟着放大：否则贴着它身体边缘开枪，
+      // 画面上明明打中了却是空的，读起来像"厚血打不动"
+      const halfW = z.boss ? 1.35 : 0.72;
+      const halfZ = z.boss ? 0.95 : 0.7;
+
+      if (Math.abs(b.x - z.x) < halfW && Math.abs(b.z - z.z) < halfZ) {
         // 测试模式：子弹命中但不掉血，子弹仍然消耗
         if (state.testMode) {
           state.bullets.splice(i, 1);
@@ -1746,7 +1795,7 @@ function updateBullets(dt) {
 
         if (z.hp <= 0) {
           state.zombies.splice(j, 1);
-          state.score += CONFIG.zombie.types[z.type].score;
+          state.score += (zombieTypeById(z.type)?.score ?? 1);
           emit('zombieDie', { x: z.x, z: z.z, type: z.type });
         }
 
@@ -2033,9 +2082,13 @@ function updateZombies(dt) {
   // 电磁脉冲：冻结期间所有僵尸原地不动，也不啃路障
   const frozen = state.time < state.freezeUntil;
 
+  // 刷怪间隔：波次越高越密；夜里再密一档（点子池「夜晚加密度」）
+  // 夜晚倍率乘在波次压缩之后，再被 minSpawnInterval 兜底，不会密到瞬移
+  const nightDensity = isNight(state.wave) ? CONFIG.zombie.nightSpawnMul : 1;
   const spawnInterval = Math.max(
     CONFIG.zombie.minSpawnInterval,
-    CONFIG.zombie.spawnInterval - (state.wave - 1) * CONFIG.zombie.intervalPerWave
+    (CONFIG.zombie.spawnInterval - (state.wave - 1) * CONFIG.zombie.intervalPerWave) *
+      nightDensity
   );
 
   if (state.zombieTimer <= 0) {
@@ -2130,7 +2183,7 @@ function updateZombies(dt) {
     if (z.hp > 0) continue;
 
     state.zombies.splice(i, 1);
-    state.score += CONFIG.zombie.types[z.type]?.score || 1;
+    state.score += zombieTypeById(z.type)?.score || 1;
     emit('zombieDie', { x: z.x, z: z.z, type: z.type });
   }
 
@@ -2268,6 +2321,8 @@ function separateZombies() {
 }
 
 function typeWeight(type, wave) {
+  // Boss 永远不进随机池：它只在切换时代时由 spawnEraBoss() 单独刷
+  if (type.boss) return 0;
   if (wave < type.minWave) return 0;
 
   let w = type.baseWeight + (wave - type.minWave) * (type.growth || 0);
@@ -2318,6 +2373,45 @@ function spawnZombie() {
   });
 
   if (state.spawnCounts) state.spawnCounts[type.id] += 1;
+}
+
+/* ----------------------------------------------------------
+ * 时代 Boss
+ *
+ * 每次切换时代刷一只，从右侧通道正中压下来，作为"这一时代开场的高潮"。
+ * 不参与随机抽签（typeWeight 里直接返回 0），一局最多同时存在一只。
+ * 血量沿用普通僵尸那套公式再乘 types 里的 hp=14，所以越往后的时代越硬。
+ * ---------------------------------------------------------- */
+function spawnEraBoss(eraIndex) {
+  const type = CONFIG.zombie.types.find((t) => t.boss);
+  if (!type) return null;
+
+  // 场上已经有一只就不刷第二只
+  if (state.zombies.some((z) => z.type === type.id)) return null;
+
+  const [minX, maxX] = CONFIG.world.rightZone;
+  const baseHp = CONFIG.zombie.baseHp + (state.wave - 1) * CONFIG.zombie.hpPerWave;
+  const hp = baseHp * type.hp;
+
+  const boss = {
+    id: state.nextId++,
+    // 从通道正中来，正对士兵，不走边缘
+    x: (minX + maxX) / 2,
+    z: CONFIG.world.spawnZ - 2,
+    hp,
+    maxHp: hp,          // 画面层靠这个显示头顶血条
+    speed: Math.min(CONFIG.zombie.speedCap, CONFIG.zombie.baseSpeed * type.speed),
+    touchLoss: type.touchLoss,
+    type: type.id,
+    aggro: false,
+    boss: true,
+    era: eraIndex,
+  };
+
+  state.zombies.push(boss);
+  state.spawnCounts[type.id] = (state.spawnCounts[type.id] || 0) + 1;
+  emit('bossSpawn', { x: boss.x, z: boss.z, hp, wave: state.wave, era: eraIndex });
+  return boss;
 }
 
 function damageArmy(amount, cause) {
