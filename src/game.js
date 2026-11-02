@@ -198,7 +198,8 @@ const CONFIG = {
     falloff: 0.7,      // 越靠边伤害越低：边缘只保留 30%
   },
   tankSupport: {
-    x: -5.5, z: 9.4,   // 左下方；再叫一辆就摆在它右边 spacing 格处
+    // 底部三大槽位在 z=15，坦克摆在它们后面（屏幕更下方），不再挡在士兵阵型前
+    x: -5.5, z: 16.0,  // 底部槽位后方；再叫一辆就摆在它右边 spacing 格处
     spacing: 2.4,      // 第二辆在第一辆右边这么多格
     shots: 6,          // 每辆坦克一轮打 6 发（比原来多 2 发）
     shotInterval: 0.7,
@@ -208,6 +209,7 @@ const CONFIG = {
     retreatDelay: 0.9, // 打完多久开始撤
     holdTime: 4,       // 打完最后一发后多停留 4 秒再撤退
     retreatSpeed: 4.5,
+    despawnZ: 17.6,    // 撤退到屏幕下边缘外侧就移除
   },
   airStrike: {
     bombs: 3,
@@ -232,6 +234,7 @@ const CONFIG = {
     impactDamage: 20,
   },
   apc: {
+    spawnX: 0,         // 从底部中间开出来，不再随机左右偏移
     speed: 7.5,        // 比骑士慢很多
     damage: 90,        // 撞击伤害，每只僵尸一次
     hitRadius: 1.1,
@@ -3765,7 +3768,7 @@ function updateTankSupports(dt) {
 
     if (t.retreating) {
       t.z += cfg.retreatSpeed * dt;
-      if (t.z > 13.5) state.tankSupports.splice(i, 1);
+      if (t.z > cfg.despawnZ) state.tankSupports.splice(i, 1);
       continue;
     }
 
@@ -3817,7 +3820,9 @@ function spawnApcCharge() {
   const cfg = CONFIG.apc;
   state.apcCharges.push({
     id: state.nextId++,
-    x: (Math.random() * 2 - 1) * 3,
+    // 固定从底部中间出发。以前 x 在 -3~3 随机，镜头跟着玩家往右偏时，
+    // 最左那几档会贴着屏幕左边出现，看起来像从侧边冒出来
+    x: cfg.spawnX,
     z: cfg.spawnZ,
     speed: cfg.speed,
     damage: cfg.damage,
