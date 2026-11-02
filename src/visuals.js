@@ -1573,7 +1573,16 @@ export function triggerMeteor(x, z) {
   const px = Math.max(-9, Math.min(9, Number(x) || 0));
   const pz = Math.max(-26, Math.min(4, Number(z) || 0));
 
-  // 落点太近就先清掉同位置那颗旧的，避免两个预警圈叠在一起
+  // 落点太近就把旧的那颗撤掉，别让两个预警圈叠在一起互相干扰
+  for (let i = meteors.length - 1; i >= 0; i--) {
+    const m = meteors[i];
+    if (Math.hypot(m.x - px, m.z - pz) < 1.6) {
+      scene.remove(m.group);
+      disposeMesh(m.group);
+      meteors.splice(i, 1);
+    }
+  }
+
   meteors.push(newMeteor(px, pz));
   return true;
 }
@@ -1650,7 +1659,19 @@ function updateMeteors(dt) {
 const fireZones = [];
 const FIRE_LIFE = 4.5;
 const FIRE_RADIUS = 2.4;
+const FIRE_MAX = 4;      // 同屏最多几片火，超了顶掉最早的
 let fireTex = null;
+
+/* 拆一片火：几何体各自独立要释放，贴图是共享的不能 dispose */
+function removeFireZone(f) {
+  if (!f) return;
+  scene.remove(f.char);
+  scene.remove(f.glow);
+  f.char.geometry.dispose();
+  f.char.material.dispose();
+  f.glow.geometry.dispose();
+  f.glow.material.dispose();
+}
 
 function ensureFireTex() {
   if (fireTex) return fireTex;
@@ -1701,6 +1722,8 @@ export function igniteFireZone(x, z, radius = FIRE_RADIUS) {
       f.life = 0;
       f.radius = Math.max(f.radius, r);
       f.glow.scale.set(f.radius * 2.3, f.radius * 2.3, 1);
+      // 焦土是按初始半径建的几何体，面积变大了靠缩放跟，不重建
+      f.char.scale.setScalar(f.radius / f.charRadius);
       return f;
     }
   }
@@ -1743,12 +1766,16 @@ export function igniteFireZone(x, z, radius = FIRE_RADIUS) {
 
   const zone = {
     x, z, radius: r,
+    charRadius: r,
     life: 0,
     char, glow,
     phase: Math.random() * Math.PI * 2,
     acc: 0,
   };
   fireZones.push(zone);
+
+  // 火区最多 4 片：多了顶掉最早那片，免得场上火海一片、粒子池也被抽干
+  while (fireZones.length > FIRE_MAX) removeFireZone(fireZones.shift());
 
   if (eventsRef) {
     try {
@@ -1779,12 +1806,7 @@ function updateFireZones(dt) {
     f.life += dt;
 
     if (f.life >= FIRE_LIFE) {
-      scene.remove(f.char);
-      scene.remove(f.glow);
-      f.char.geometry.dispose();
-      f.char.material.dispose();
-      f.glow.geometry.dispose();
-      f.glow.material.dispose(); // 贴图共享，别 dispose
+      removeFireZone(f);
       fireZones.splice(i, 1);
       continue;
     }
@@ -1845,14 +1867,7 @@ function clearHazards() {
   }
   meteors.length = 0;
 
-  for (const f of fireZones) {
-    scene.remove(f.char);
-    scene.remove(f.glow);
-    f.char.geometry.dispose();
-    f.char.material.dispose();
-    f.glow.geometry.dispose();
-    f.glow.material.dispose();
-  }
+  for (const f of fireZones) removeFireZone(f);
   fireZones.length = 0;
 
   for (const c of craters) {
@@ -2174,6 +2189,9 @@ function applyEra(era) {
   if (modelLib.zombies.length) {
     applyEraLook(era, { zombieMats: collectZombieMats() });
   }
+
+  // 路障换成这个时代的长相（木栅栏 → 沙袋 → 混凝土 → 钢板 → 能量场 → 激光）
+  buildBarricadeLook(era.id);
 }
 
 function updateSoldiers(state) {
@@ -3749,36 +3767,165 @@ function syncSlots(state) {
   }
 }
 
+/* ----------------------------------------------------------
+ * 路障外观随时代换（点子池「时代栅栏」）
+ *
+ * 同一堵墙换六种长相，占地宽度、位置、缩放完全沿用 syncBarricade 那套，
+ * 血量/反击/冷却一个都不碰（那些是甲的数值）。
+ *   0 中世纪 木栅栏 / 1 二战 沙袋掩体 / 2 现代 混凝土隔离墙
+ *   3 后现代 钢板铁丝网 / 4 星际 能量屏障 / 5 终幕 激光栅栏
+ * ---------------------------------------------------------- */
+const barricadeParts = [];
+let barricadeGlowMat = null;
+
+function clearBarricadeLook() {
+  if (!barricadeGroup) return;
+  const mats = new Set();
+  for (const p of barricadeParts) {
+    barricadeGroup.remove(p);
+    p.geometry?.dispose();
+    const list = Array.isArray(p.material) ? p.material : [p.material];
+    for (const m of list) if (m) mats.add(m);
+  }
+  for (const m of mats) m.dispose();
+  barricadeParts.length = 0;
+  barricadeGlowMat = null;
+}
+
+function addBarPart(geo, mat, x, y, z, rotY = 0) {
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(x, y, z);
+  mesh.rotation.y = rotY;
+  barricadeGroup.add(mesh);
+  barricadeParts.push(mesh);
+  return mesh;
+}
+
+function buildBarricadeLook(eraId) {
+  if (!barricadeGroup) return;
+  clearBarricadeLook();
+
+  const W = BARRICADE_WIDTH;
+  const std = (color, rough = 0.8, metal = 0.05, emissive = 0x000000, ei = 0) =>
+    new THREE.MeshStandardMaterial({
+      color,
+      roughness: rough,
+      metalness: metal,
+      emissive,
+      emissiveIntensity: ei,
+    });
+
+  if (eraId === 1) {
+    // 二战：一层层码起来的沙袋
+    const a = std(0x8d7f5c, 0.95);
+    const b = std(0x9c8e68, 0.95);
+    for (let row = 0; row < 3; row++) {
+      const n = row === 2 ? 4 : 5;
+      for (let i = 0; i < n; i++) {
+        const x = (i - (n - 1) / 2) * 0.86 + (row % 2 ? 0.2 : 0);
+        addBarPart(
+          new THREE.BoxGeometry(0.8, 0.2, 0.42),
+          (i + row) % 2 ? a : b,
+          x,
+          0.13 + row * 0.22,
+          0,
+          (Math.random() - 0.5) * 0.12
+        );
+      }
+    }
+    return;
+  }
+
+  if (eraId === 2) {
+    // 现代：混凝土隔离墩 + 黄黑警示条
+    const conc = std(0x9b9a92, 0.9, 0.02);
+    addBarPart(new THREE.BoxGeometry(W, 0.42, 0.46), conc, 0, 0.21, 0);
+    addBarPart(new THREE.BoxGeometry(W, 0.16, 0.34), conc, 0, 0.5, 0);
+    const warn = std(0xd8a63a, 0.6, 0.1);
+    for (let i = 0; i < 5; i++) {
+      addBarPart(new THREE.BoxGeometry(0.4, 0.1, 0.02), warn, -1.6 + i * 0.8, 0.36, 0.24);
+    }
+    return;
+  }
+
+  if (eraId === 3) {
+    // 后现代：钢板墙 + 顶部一圈圈铁丝网
+    const steel = std(0x6b727a, 0.5, 0.6);
+    const rust = std(0x7a5236, 0.9, 0.15);
+    const wire = std(0x9aa2aa, 0.4, 0.8);
+    addBarPart(new THREE.BoxGeometry(W, 0.6, 0.1), steel, 0, 0.3, 0);
+    for (let i = -2; i <= 2; i++) {
+      addBarPart(new THREE.BoxGeometry(0.07, 0.6, 0.16), rust, i * 0.9, 0.3, 0.04);
+    }
+    for (let i = 0; i < 4; i++) {
+      addBarPart(new THREE.TorusGeometry(0.19, 0.022, 6, 14), wire, -1.5 + i * 1.0, 0.74, 0, 0.3);
+    }
+    return;
+  }
+
+  if (eraId === 4) {
+    // 星际：两根发光立柱 + 中间一层能量场
+    const post = std(0x2f3a46, 0.4, 0.8, 0x1b6f8a, 0.9);
+    addBarPart(new THREE.CylinderGeometry(0.09, 0.11, 1.0, 8), post, -1.9, 0.5, 0);
+    addBarPart(new THREE.CylinderGeometry(0.09, 0.11, 1.0, 8), post, 1.9, 0.5, 0);
+    addBarPart(new THREE.BoxGeometry(W, 0.1, 0.5), std(0x2a333d, 0.6, 0.5), 0, 0.05, 0);
+
+    const fieldMat = new THREE.MeshBasicMaterial({
+      color: 0x4ad9ff,
+      transparent: true,
+      opacity: 0.3,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const fieldMesh = new THREE.Mesh(new THREE.PlaneGeometry(W - 0.5, 0.86), fieldMat);
+    fieldMesh.position.set(0, 0.5, 0);
+    barricadeGroup.add(fieldMesh);
+    barricadeParts.push(fieldMesh);
+    barricadeGlowMat = fieldMat;
+    return;
+  }
+
+  if (eraId === 5) {
+    // 终幕：两根立柱之间拉四道激光
+    const post = std(0x3a2a24, 0.5, 0.6, 0xff6a24, 0.9);
+    addBarPart(new THREE.CylinderGeometry(0.1, 0.12, 1.05, 8), post, -1.9, 0.52, 0);
+    addBarPart(new THREE.CylinderGeometry(0.1, 0.12, 1.05, 8), post, 1.9, 0.52, 0);
+    const barMat = new THREE.MeshBasicMaterial({
+      color: 0xff8a3c,
+      transparent: true,
+      opacity: 0.9,
+    });
+    for (let i = 0; i < 4; i++) {
+      addBarPart(new THREE.BoxGeometry(W - 0.6, 0.035, 0.035), barMat, 0, 0.2 + i * 0.18, 0);
+    }
+    barricadeGlowMat = barMat;
+    return;
+  }
+
+  // 默认 / 中世纪：木栅栏（立桩 + 两道横梁）
+  const wood = std(0x7a5a34, 0.9, 0.02);
+  const dark = std(0x5c4126, 0.95, 0.02);
+  for (let i = 0; i < 7; i++) {
+    const log = addBarPart(
+      new THREE.CylinderGeometry(0.085, 0.1, 0.8, 6),
+      i % 2 ? wood : dark,
+      -1.8 + i * 0.6,
+      0.4,
+      (Math.random() - 0.5) * 0.06,
+      (Math.random() - 0.5) * 0.16
+    );
+    log.rotation.z = (Math.random() - 0.5) * 0.06;
+  }
+  addBarPart(new THREE.BoxGeometry(W - 0.3, 0.09, 0.09), dark, 0, 0.62, 0.12);
+  addBarPart(new THREE.BoxGeometry(W - 0.3, 0.09, 0.09), dark, 0, 0.24, 0.12);
+}
+
 function initBarricade() {
   barricadeGroup = new THREE.Group();
   barricadeGroup.position.set(BARRICADE_X, 0, BARRICADE_Z);
 
-  const woodMat = new THREE.MeshStandardMaterial({
-    color: 0x7a6648,
-    roughness: 0.85,
-    metalness: 0.05,
-  });
-  const darkMat = new THREE.MeshStandardMaterial({
-    color: 0x5c4a30,
-    roughness: 0.9,
-  });
-
-  const wall = new THREE.Mesh(
-    new THREE.BoxGeometry(BARRICADE_WIDTH, 0.55, 0.5),
-    woodMat
-  );
-  wall.position.y = 0.28;
-  barricadeGroup.add(wall);
-
-  for (let i = 0; i < 6; i++) {
-    const block = new THREE.Mesh(
-      new THREE.BoxGeometry(0.62, 0.26, 0.42),
-      i % 2 ? darkMat : woodMat
-    );
-    block.position.set(-1.75 + i * 0.7, 0.68, 0);
-    block.rotation.y = i % 2 ? 0.08 : -0.06;
-    barricadeGroup.add(block);
-  }
+  buildBarricadeLook(getCurrentEraIndex());
 
   scene.add(barricadeGroup);
 
@@ -3824,6 +3971,12 @@ function syncBarricade(state) {
   barricadeGroup.visible = active;
   barricadeHpBar.group.visible = active;
   barricadeCountdown.visible = !active;
+
+  // 能量场 / 激光这种发光时代：拦得越久闪得越急一点，看起来"在扛"
+  if (barricadeGlowMat && active) {
+    const pulse = 0.22 + Math.sin(performance.now() * 0.004) * 0.09;
+    barricadeGlowMat.opacity = pulse;
+  }
 
   if (active) {
     const ratio = b.maxHp ? Math.max(0, Math.min(1, b.hp / b.maxHp)) : 0;
