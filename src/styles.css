@@ -1103,8 +1103,66 @@ canvas {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
+  gap: 8px;
   padding-bottom: 8px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.test-panel__collapse {
+  margin-left: auto;
+  padding: 4px 8px;
+  border: 1px solid rgba(255, 210, 122, 0.35);
+  border-radius: 7px;
+  background: rgba(255, 210, 122, 0.1);
+  color: #ffd27a;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.test-panel-tab {
+  position: fixed;
+  z-index: 10;
+  top: calc(130px + env(safe-area-inset-top));
+  left: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 210, 122, 0.5);
+  border-radius: 10px;
+  background: rgba(8, 12, 18, 0.94);
+  color: #ffd27a;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+}
+
+/* 手机：测试面板改成底部抽屉，默认收起；打开后最多占半屏，可滚动 */
+@media (max-width: 600px) {
+  .test-panel {
+    left: 8px;
+    right: 8px;
+    width: auto;
+    top: auto;
+    bottom: calc(8px + env(safe-area-inset-bottom));
+    max-height: min(52vh, 460px);
+    border-radius: 14px;
+  }
+
+  @supports (height: 100dvh) {
+    .test-panel {
+      max-height: min(52dvh, 460px);
+    }
+  }
+
+  .test-panel__head {
+    position: sticky;
+    top: -12px;
+    z-index: 2;
+    margin-top: -12px;
+    padding-top: 12px;
+    background: rgba(8, 12, 18, 0.98);
+  }
 }
 
 .test-panel__head strong {
@@ -1273,13 +1331,6 @@ canvas {
 .test-panel__actions button {
   padding: 8px 4px;
   font-size: 11px;
-}
-
-@media (max-width: 720px) {
-  .test-panel {
-    width: min(52vw, 236px);
-    font-size: 11px;
-  }
 }
 
 /* ---------- 左侧技能栏 ---------- */

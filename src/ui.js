@@ -47,6 +47,10 @@ function syncBuildStamp(root) {
 let els = null;
 let actions = null;
 let currentState = null;
+// 手机默认收起测试面板，留一个「测试」小按钮，避免整块面板挡住战场
+let testPanelCollapsed =
+  typeof window !== "undefined" &&
+  window.matchMedia("(max-width: 600px)").matches;
 
 /* 地图列表：按时代分组排，同时代的连在一起。
  * 26 张（原 9 + 新 17）塞进 3 列网格会撑爆开始页，
@@ -328,7 +332,8 @@ function updateTestPanel(state) {
   if (!els.testPanel) return;
 
   const show = state.status === 'playing' && state.testMode;
-  els.testPanel.classList.toggle('hidden', !show);
+  els.testPanel.classList.toggle('hidden', !show || testPanelCollapsed);
+  els.testPanelTab.classList.toggle('hidden', !show || !testPanelCollapsed);
   if (!show) return;
 
   const eraName = els.testEraNames[state.era] || '';
@@ -606,6 +611,7 @@ function buildDom() {
     <div class="test-panel__head">
       <strong>测试模式</strong>
       <span data-test-era-name></span>
+      <button class="test-panel__collapse" type="button" data-test-collapse>收起</button>
     </div>
     <div class="test-panel__section">
       <p class="test-panel__label">时代</p>
@@ -625,6 +631,13 @@ function buildDom() {
     </div>
   `;
   document.body.appendChild(testPanel);
+
+  // 测试面板收起后留的小按钮，手机默认显示这个
+  const testPanelTab = document.createElement('button');
+  testPanelTab.className = 'test-panel-tab hidden';
+  testPanelTab.type = 'button';
+  testPanelTab.textContent = '测试面板';
+  document.body.appendChild(testPanelTab);
 
   // 静音开关：不影响游戏，只控制声音。现场演示嫌吵可以按一下。
   const soundBtn = document.createElement('button');
@@ -700,6 +713,8 @@ function buildDom() {
     testToggleLabel: startScreen.querySelector('[data-test-toggle-label]'),
     testStartBtn: startScreen.querySelector('[data-start]'),
     testPanel,
+    testPanelTab,
+    testCollapse: testPanel.querySelector('[data-test-collapse]'),
     testEraName: testPanel.querySelector('[data-test-era-name]'),
     testEraNames: testData.eras,
     testEraBtns: [...testPanel.querySelectorAll('[data-test-era-btn]')],
@@ -766,6 +781,16 @@ function bindEvents() {
   if (mapGrid && activeMapBtn) {
     mapGrid.scrollTop = Math.max(0, activeMapBtn.offsetTop - mapGrid.offsetTop - 8);
   }
+
+  // 测试面板收起/展开
+  els.testCollapse.addEventListener('click', () => {
+    testPanelCollapsed = true;
+    updateTestPanel(currentState || { status: 'menu' });
+  });
+  els.testPanelTab.addEventListener('click', () => {
+    testPanelCollapsed = false;
+    updateTestPanel(currentState || { status: 'menu' });
+  });
 
   // 测试面板：切时代、升级槽位、放技能、刷/清僵尸
   els.testEraBtns.forEach((btn, i) => {
