@@ -136,9 +136,10 @@ const CONFIG = {
     spawnZ: 9.8,       // 屏幕下方出生
   },
   campfire: {
-    radius: 3.5,
+    radius: 7.0,       // 范围大幅增大，覆盖大半个战场
     duration: 5,       // 火区存在 5 秒
-    dps: 12,           // 每秒伤害，总计 60
+    dps: 18,           // 圆心每秒伤害，总计 90
+    falloff: 0.7,      // 越靠边伤害越低：边缘只保留 30%
   },
   barricade: {
     xMin: -0.4,          // 路障左边界，避开左边屏障通道
@@ -1135,6 +1136,7 @@ function castSkill(id) {
         radius: cfg.radius,
         remaining: cfg.duration,
         dps: cfg.dps,
+        falloff: cfg.falloff,
       });
       // 篝火本体和地面范围圈都由画面层负责
       spawnCampfireFx(target.x, target.z, cfg.duration, cfg.radius);
@@ -1988,14 +1990,27 @@ function updateRollingLogs(dt) {
   }
 }
 
-// 篝火：火区内持续掉血，5 秒后消失
+// 篝火：火区内持续掉血，离圆心越远伤害越低，5 秒后消失
 function updateCampfireZones(dt) {
   for (let i = state.campfireZones.length - 1; i >= 0; i--) {
     const fire = state.campfireZones[i];
     fire.remaining -= dt;
 
     if (fire.remaining > 0) {
-      damageZombiesInRadius(fire.x, fire.z, fire.radius, fire.dps * dt);
+      const r2 = fire.radius * fire.radius;
+
+      for (let j = state.zombies.length - 1; j >= 0; j--) {
+        const zb = state.zombies[j];
+        const dx = zb.x - fire.x;
+        const dz = zb.z - fire.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 > r2) continue;
+
+        // 线性衰减：圆心 100%，边缘保留 (1 - falloff)
+        const dist = Math.sqrt(d2);
+        const mul = Math.max(0, 1 - fire.falloff * (dist / fire.radius));
+        damageZombieAt(j, fire.dps * mul * dt);
+      }
     }
 
     if (fire.remaining <= 0) state.campfireZones.splice(i, 1);

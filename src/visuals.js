@@ -1818,7 +1818,7 @@ export function spawnCampfireFx(x, z, duration = 5, radius = 3.5) {
     new THREE.MeshBasicMaterial({
       color: 0xff6a1e,
       transparent: true,
-      opacity: 0.07,
+      opacity: 0.045,
       side: THREE.DoubleSide,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
@@ -2013,8 +2013,8 @@ function updateCampfireFx(dt) {
     fx.glow.scale.set(2.6 * pulse, 2.6 * pulse, 1);
     fx.glow.rotation.z += dt * 0.45;
     fx.glow.material.opacity = (0.72 + Math.sin(fx.life * 11) * 0.14) * fade;
-    fx.ring.material.opacity = 0.34 * pulse * fade;
-    fx.area.material.opacity = 0.065 * fade;
+    fx.ring.material.opacity = 0.38 * pulse * fade;
+    fx.area.material.opacity = 0.04 * fade;
 
     fx.light.intensity = (2.2 + Math.sin(fx.life * 17) * 0.5) * fade;
   }
