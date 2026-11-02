@@ -520,6 +520,21 @@ canvas {
   letter-spacing: 4px;
 }
 
+/* ---------- 武器拾取提示 ---------- */
+
+.fx-toast--pickup {
+  color: #fff0c8;
+  border-color: rgba(255, 212, 90, 0.72);
+  box-shadow: 0 0 24px rgba(255, 200, 60, 0.5);
+  letter-spacing: 3px;
+}
+
+.fx-toast--pickup-off {
+  color: #c8d0da;
+  border-color: rgba(150, 165, 180, 0.55);
+  box-shadow: 0 0 16px rgba(120, 135, 150, 0.3);
+}
+
 /* ---------- 血月提示（每 10 波） ---------- */
 
 .fx-toast--blood {
@@ -527,6 +542,18 @@ canvas {
   border-color: rgba(255, 96, 60, 0.72);
   box-shadow: 0 0 24px rgba(220, 50, 26, 0.5);
   letter-spacing: 3px;
+}
+
+/* ---------- 全屏白闪（终焉审判 / 轨道轰炸） ----------
+ * 按技能色染色，opacity 由 visuals.js 推，过渡写在 style 里 */
+
+.fx-flash {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9;
+  opacity: 0;
+  mix-blend-mode: screen;
 }
 
 /* ---------- 血月全屏暗角 ----------

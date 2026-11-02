@@ -34,6 +34,8 @@ import { getEra, applyEraLook, tintMaterials } from './visuals-era.js';
 export { eraMaps, pickEraMap } from './visuals-era.js';
 import { createDayNight, nightForWave } from './visuals-daynight.js';
 import { initBarrels, updateBarrels, resetBarrels, hitTestBarrel, spawnBarrelAt } from './visuals-barrels.js';
+// 槽位正式模型：六槽位 × 六时代 × 五等级，全程序化（对应 docs/美术需求-槽位与技能.md P1）
+import { buildSlotStructure, buildLevelDots, disposeSlotStructure } from './visuals-slots.js';
 
 /* ----------------------------------------------------------
  * 地图配置表
@@ -325,8 +327,19 @@ const MODEL_TARGET = {
   zombieHeight: 1.55, // 僵尸目标身高，比方块(1.15)略高一点更有压迫感
 };
 
-// Boss 体型是普通僵尸的几倍：一眼就能从人群里认出它
-const BOSS_HEIGHT_MUL = 1.95;
+// Boss 体型是普通僵尸的几倍。
+//
+// 6 是**镜头完全不动**时能放到的上限，再大头顶就会从出生点起顶出画面。
+// 这个数是按投影算出来的（b-boss-creep 原始宽高比 0.87，是张手爬行的横宽造型）：
+//   5 倍 → 顶部 y=44px，还有富余
+//   6 倍 → 顶部 y=5px，刚好卡满
+//   7 倍 → 顶部 y=-36px，开始出画
+// 相比最初的 1.95，相当于放大 3.1 倍：屏幕高度 65px → 213px，能形成压迫感，
+// 又不用为它单独改相机。
+const BOSS_HEIGHT_MUL = 6;
+
+// Boss 血条宽度：跟体型匹配。Boss 按身高缩放后肩宽约 8 个单位，血条比肩略窄
+const BOSS_HPBAR_WIDTH = 3.0;
 
 // 这个 GLB 的节点树会让 Box3.setFromObject 崩（树里有坏引用），
 // 手动遍历 mesh 的几何包围盒测身高，顺便返回最低点用来落地。
@@ -683,7 +696,7 @@ const effects = [];
 let muzzleLight = null;
 let fxBanner = null;
 let fxHurt = null;
-let fxFlash = null;    // 终幕技能的全屏闪光（颜色每次由 flashScreen 写）
+let fxFlash = null;    // 全屏闪光：终幕技能、终焉审判、轨道轰炸共用
 let fxSlow = null;
 let fxFloats = null;   // 击杀飘字的容器（绝对定位，位置每帧由相机投影算）
 let fxToast = null;
@@ -959,6 +972,11 @@ export function initVisuals(container, events) {
       spawnTracer(d.fromX, d.fromZ, d.x, d.z, d.color || 0xff6a4a);
     }
     spawnRing(d.x, d.z, d.color || 0xffa64d, 0.5);
+
+    // 槽位 Fire 动画：这个事件就是"槽位刚开了一炮"的唯一信号。
+    // kind 直接对应槽位 id，不需要甲额外加事件。
+    const slotId = d.kind === 'tank' ? 'siege' : d.kind;
+    triggerSlotFire(slotId, d);
   });
 
   events.addEventListener('apcShot', (e) => {
@@ -1012,6 +1030,16 @@ export function initVisuals(container, events) {
 
   events.addEventListener('skillCast', (e) => {
     const d = e.detail;
+    // P0 通用打击：每个技能的差别只在参数（半径 / 颜色 / 力度 / 要不要尘土）
+    const IMPACT_TUNING = {
+      airStrike:     { power: 1.15, dust: true },   // 空袭：一整排轰炸，最大的尘土
+      precision:     { power: 0.8, dust: false },   // 精确打击：小而准，不起尘
+      droneSwarm:    { power: 0.7, dust: true },    // 无人机蜂群：轻、密
+      finalJudgment: { power: 1.6, dust: true },    // 终焉审判：最重
+      holyWater:     { power: 0.5, dust: false },
+      napalm:        { power: 0.9, dust: true },
+    };
+
     if (d.type === 'line') {
       spawnBar(d.z, d.color || 0xffffff);
     } else if (d.type === 'heal') {
@@ -1021,7 +1049,25 @@ export function initVisuals(container, events) {
     } else if (d.type === 'barrage') {
       spawnBarrageFx(d.x, d.z, d.radius || 4.5, d.color || 0xff8a4d);
     } else if (d.type === 'orbital') {
+      // 光柱只铺被打掉的那一段（bandMin/bandMax 由 game.js 传入）
       spawnOrbitalBeam(d.z, d.color || 0x7fe3ff, d.bandMin, d.bandMax);
+      // 再补远端新增的闪白和地面熔痕
+      spawnFlash(d.color || 0x7fe3ff, 0.42);
+      spawnCrater(0, d.z, 2.6);
+    } else if (d.type === 'aoe') {
+      // 所有纯伤害范围技都走这一套
+      const tune = IMPACT_TUNING[d.id] || { power: 1, dust: true };
+      spawnImpact(d.x, d.z, {
+        radius: d.radius || 3,
+        color: d.color || 0xffb060,
+        power: tune.power,
+        dust: tune.dust,
+      });
+      // 终焉审判额外给一次全屏白，和普通爆炸拉开量级
+      if (d.id === 'finalJudgment') spawnFlash(0xffffff, 0.72);
+    } else if (d.type === 'pull') {
+      // 黑洞 / 宇宙坍缩：不是炸开，是往里吸
+      spawnImplosion(d.x, d.z, d.color || 0x6a4dff, d.radius || 4);
     } else if (d.type === 'weaponDrop') {
       spawnWeaponDropFx(d.x, d.z);
     } else if (d.type === 'friendlyLegion') {
@@ -1186,7 +1232,71 @@ export function initVisuals(container, events) {
     spawnRing(x, z, 0x9a3010, 0.9);
   });
 
-  // 酸液打到阵型：一小片绿雾 + 轻微震屏，让玩家知道"被远程点到了"
+  // 地面塌陷：土石往下掉 + 震屏。落下去的是"塌"，不是"炸"，所以用碎石而不是火
+  events.addEventListener('pitSpawn', (e) => {
+    const d = e.detail || {};
+    const x = Number(d.x);
+    const z = Number(d.z);
+    if (!isFinite(x) || !isFinite(z)) return;
+    const r = Math.max(0.8, Number(d.r) || 1.35);
+
+    shake = Math.max(shake, 0.5);
+    spawnRing(x, z, 0x6a5540, 0.7);
+    spawnBurst(x, 0.25, z, 0x8a7458, Math.round(20 * r), {
+      speed: 3.4, up: 2.6, spread: r * 0.7, life: 0.9, gravity: -7,
+    });
+    spawnBurst(x, 0.15, z, 0x3a2e22, Math.round(10 * r), {
+      speed: 1.6, up: 1.2, spread: r * 0.9, life: 1.2, gravity: -2,
+    });
+  });
+
+  // 回填：一圈淡土扬起来，提示"这块地能走了"
+  events.addEventListener('pitFill', (e) => {
+    const d = e.detail || {};
+    const x = Number(d.x);
+    const z = Number(d.z);
+    if (!isFinite(x) || !isFinite(z)) return;
+    spawnRing(x, z, 0x9a8a70, 0.5);
+    spawnBurst(x, 0.2, z, 0xa09078, 8, {
+      speed: 1.4, up: 1.0, spread: 0.6, life: 0.6, gravity: -3,
+    });
+  });
+
+  // 武器箱落地：轻震一下，别用爆炸那种分量
+  events.addEventListener('pickupLand', (e) => {
+    const d = e.detail || {};
+    const x = Number(d.x);
+    const z = Number(d.z);
+    if (!isFinite(x) || !isFinite(z)) return;
+    spawnRing(x, z, 0xbcd0e0, 0.32);
+    spawnBurst(x, 0.15, z, 0x9aa8b8, 7, {
+      speed: 1.6, up: 1.2, spread: 0.45, life: 0.45, gravity: -6,
+    });
+    shake = Math.max(shake, 0.12);
+  });
+
+  // 捡到武器：一圈武器色光爆 + 提示条，让"换枪了"这件事被看见
+  events.addEventListener('weaponPickup', (e) => {
+    const d = e.detail || {};
+    const tint = d.tint || 0xffd45a;
+    const px = currentState ? currentState.player.x : 0;
+    const pz = currentState ? currentState.player.z : 9;
+
+    spawnRing(px, pz, tint, 0.6);
+    spawnBurst(px, 0.8, pz, tint, 18, {
+      speed: 3.0, up: 2.6, spread: 0.5, life: 0.6, gravity: -6,
+    });
+    shake = Math.max(shake, 0.2);
+    pushToast(`换上 ${d.name}`, 'pickup');
+  });
+
+  // 临时武器到期：提示换回时代武器，不然玩家会以为是枪"坏了"
+  events.addEventListener('weaponExpired', (e) => {
+    const d = e.detail || {};
+    pushToast(`${d.name} 用尽 · 换回旧枪`, 'pickup-off');
+  });
+
+  // 酸液打到阵型：一小片绿雾 + 轻微震屏，让玩家知道"被远程点到了'
   events.addEventListener('enemyShotHit', (e) => {
     const d = e.detail || {};
     const x = Number(d.x);
@@ -2464,6 +2574,8 @@ export function syncScene(state, dt) {
     clearHazards();                      // 陨石坑、地上的火一起清掉
     clearCrates();                       // 补给箱模型也清掉，别留到新局
     clearChains();                       // 锁链也清掉
+    clearPits();                         // 坑洞回填
+    clearPickups();                      // 武器箱也清掉
     quakeTime = 0;
     quakeCycle = 10 + Math.random() * 6; // 新局第一震别来得太急
     if (dayNight) dayNight.setNight(false, true); // 立刻回到白天，不要跨局慢慢过渡
@@ -2519,9 +2631,11 @@ export function syncScene(state, dt) {
   // 僵尸
   syncZombies(state, dt);
   syncBarricade(state);
-  syncSlots(state);
+  syncSlots(state, dt);
   syncCrates(state);
   syncChains(state);
+  syncPits(state);
+  syncPickups(state);
   updateBossPresence(state);
   updateZombieHitFeedback(state);
 
@@ -2876,7 +2990,9 @@ function syncZombies(state, dt) {
         // 精英和 Boss 头顶挂血条；普通僵尸不显示，避免满屏血条
         const look = ZOMBIE_LOOKS[z.type];
         if (look && (look.isBoss || look.score >= 5)) {
-          const w = look.isBoss ? 2.0 : 1.2;
+          // Boss 血条也要跟着放大：2.0 是给 3 单位高的小 Boss 用的，
+          // 现在它有 16 单位高，血条还那么细就成了一根头发丝
+          const w = look.isBoss ? BOSS_HPBAR_WIDTH : 1.2;
           entry.hpBar = makeHpBar(w);
           entry.hpHeight =
             MODEL_TARGET.zombieHeight * look.scale * (look.isBoss ? BOSS_HEIGHT_MUL : 1);
@@ -3481,12 +3597,13 @@ function makeFriendlyZombieMesh() {
     group.add(arm);
   }
 
+  // 脚下光环：双层，内圈实、外圈散，混在僵尸堆里也能一眼认出是自己人
   const ring = new THREE.Mesh(
     new THREE.RingGeometry(0.36, 0.48, 20),
     new THREE.MeshBasicMaterial({
       color: 0x5adf7a,
       transparent: true,
-      opacity: 0.5,
+      opacity: 0.6,
       side: THREE.DoubleSide,
       depthWrite: false,
     })
@@ -3495,30 +3612,175 @@ function makeFriendlyZombieMesh() {
   ring.position.y = 0.02;
   group.add(ring);
 
+  const halo = new THREE.Mesh(
+    new THREE.RingGeometry(0.48, 0.62, 22),
+    new THREE.MeshBasicMaterial({
+      color: 0x9effc0,
+      transparent: true,
+      opacity: 0.22,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  halo.rotation.x = -Math.PI / 2;
+  halo.position.y = 0.015;
+  group.add(halo);
+
+  // 头顶阵营标记：一个朝下的小三角，比脚下光环更远也看得见——
+  // 俯视视角下脚环容易被尸体和粒子盖住，头顶标记是最后一道保险
+  const marker = new THREE.Mesh(
+    new THREE.ConeGeometry(0.13, 0.22, 3),
+    new THREE.MeshBasicMaterial({
+      color: 0x9effc0, transparent: true, opacity: 0.85, depthWrite: false,
+    })
+  );
+  marker.position.y = 1.68;
+  marker.rotation.x = Math.PI;   // 尖端朝下，指向自己
+  marker.userData.bob = true;
+  group.add(marker);
+
+  group.userData.marker = marker;
+  group.userData.ring = ring;
   return group;
+}
+
+/* ----------------------------------------------------------
+ * 友方僵尸（生物人军团 / 病毒转化）
+ *
+ * 从几何体占位换成正式角色模型：复用敌人那套 b-zombie-* 的克隆管线
+ * （自带 Walk / Punch / ReceiveHit / Death 全套动画），
+ * 但材质整体染成阵营绿——这是"一眼分清敌我"的根本手段，比脚下光环更可靠。
+ *
+ * 为什么染色要改材质而不是叠一层绿色透明壳：
+ * 叠壳会让模型变成一团糊绿，走路和出拳的形体全丢了；
+ * 直接乘色能保住明暗结构，还能看出是个"人"。
+ * ---------------------------------------------------------- */
+const FRIENDLY_TINT = new THREE.Color(0.42, 1.32, 0.72);
+
+function tintFriendly(root) {
+  root.traverse((o) => {
+    if (!(o.isMesh || o.isSkinnedMesh)) return;
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    o.material = Array.isArray(o.material)
+      ? mats.map((m) => {
+        const c = m.clone();
+        if (c.color) c.color.multiply(FRIENDLY_TINT);
+        if (c.emissive) { c.emissive.setHex(0x1f6b3a); c.emissiveIntensity = 0.4; }
+        return c;
+      })
+      : (() => {
+        const c = mats[0].clone();
+        if (c.color) c.color.multiply(FRIENDLY_TINT);
+        if (c.emissive) { c.emissive.setHex(0x1f6b3a); c.emissiveIntensity = 0.4; }
+        return c;
+      })();
+  });
+}
+
+/* 在模型脚下挂阵营标识：双层光环 + 头顶三角。
+ * 模型有 1.5 单位高，标识要按它的尺度放，不能沿用几何体那套数字。 */
+function addFriendlyMarks(root, height) {
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.34, 0.46, 20),
+    new THREE.MeshBasicMaterial({
+      color: 0x5adf7a, transparent: true, opacity: 0.6,
+      side: THREE.DoubleSide, depthWrite: false,
+    })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.03;
+  root.add(ring);
+
+  const halo = new THREE.Mesh(
+    new THREE.RingGeometry(0.46, 0.6, 22),
+    new THREE.MeshBasicMaterial({
+      color: 0x9effc0, transparent: true, opacity: 0.22,
+      side: THREE.DoubleSide, depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  halo.rotation.x = -Math.PI / 2;
+  halo.position.y = 0.025;
+  root.add(halo);
+
+  const marker = new THREE.Mesh(
+    new THREE.ConeGeometry(0.13, 0.22, 3),
+    new THREE.MeshBasicMaterial({
+      color: 0x9effc0, transparent: true, opacity: 0.85, depthWrite: false,
+    })
+  );
+  marker.position.y = height + 0.2;
+  marker.rotation.x = Math.PI;
+  root.add(marker);
+
+  root.userData.ring = ring;
+  root.userData.halo = halo;
+  root.userData.marker = marker;
+  root.userData.markY = height + 0.2;
 }
 
 function syncFriendlyZombies(state) {
   const alive = new Set();
+  const list = state.friendlyZombies || [];
 
-  for (const f of state.friendlyZombies || []) {
+  for (const f of list) {
     alive.add(f.id);
-    let mesh = friendlyZombieMeshes.get(f.id);
-    if (!mesh) {
-      mesh = makeFriendlyZombieMesh();
-      if (f.converted) mesh.scale.setScalar(1.08);
-      scene.add(mesh);
-      friendlyZombieMeshes.set(f.id, mesh);
+    let entry = friendlyZombieMeshes.get(f.id);
+
+    if (!entry) {
+      // 有模型就上正式角色，没有退回几何体占位（保证功能不会因为模型没加载就消失）
+      const proto = modelLib.zombies && modelLib.zombies[0];
+      const vis = proto ? spawnModel(proto, 0) : null;
+
+      if (vis) {
+        tintFriendly(vis.root);
+        addFriendlyMarks(vis.root, MODEL_TARGET.zombieHeight);
+        // 转化的僵尸稍大一点，和"召来的"区分开
+        if (f.converted) vis.root.scale.multiplyScalar(1.08);
+        scene.add(vis.root);
+        entry = { isModel: true, vis, root: vis.root };
+      } else {
+        const mesh = makeFriendlyZombieMesh();
+        if (f.converted) mesh.scale.setScalar(1.08);
+        scene.add(mesh);
+        entry = { isModel: false, root: mesh };
+      }
+      friendlyZombieMeshes.set(f.id, entry);
     }
-    mesh.position.set(f.x, 0, f.z);
+
+    const root = entry.root;
+    root.position.set(f.x, 0, f.z);
+
+    // 头顶三角上下浮 + 光环呼吸。动起来才能在密堆里被眼睛挑出来
+    const t = performance.now() * 0.0022;
+    const mk = root.userData.marker;
+    const rg = root.userData.ring;
+    const ha = root.userData.halo;
+    if (mk) mk.position.y = (root.userData.markY || 1.68) + Math.sin(t + f.id) * 0.07;
+    if (rg) rg.material.opacity = 0.45 + Math.sin(t * 0.8 + f.id) * 0.16;
+    if (ha) ha.material.opacity = 0.16 + Math.sin(t * 0.8 + f.id) * 0.1;
+
+    // 朝向：友方是往 -z 走的，模型原生朝 +z，转 180°
+    if (entry.isModel) root.rotation.y = Math.PI;
   }
 
-  for (const [id, mesh] of friendlyZombieMeshes) {
-    if (!alive.has(id)) {
-      scene.remove(mesh);
-      disposeMesh(mesh);
-      friendlyZombieMeshes.delete(id);
+  for (const [id, entry] of friendlyZombieMeshes) {
+    if (alive.has(id)) continue;
+    if (entry.isModel) {
+      // 走的是共享几何体 + 独立材质：只摘场景、释放独立材质
+      entry.root.traverse((o) => {
+        if ((o.isMesh || o.isSkinnedMesh) && o.material) {
+          const ms = Array.isArray(o.material) ? o.material : [o.material];
+          for (const m of ms) m.dispose();
+        }
+      });
+      despawnModel(entry.vis);
+    } else {
+      scene.remove(entry.root);
+      disposeMesh(entry.root);
     }
+    friendlyZombieMeshes.delete(id);
   }
 }
 
@@ -3598,8 +3860,10 @@ function updateCamera(state, dt) {
     sy = (Math.random() - 0.5) * shake;
   }
 
-  // Boss 在场时镜头缓缓推近一点，制造压迫感；退场后慢慢拉回
-  const wantZoom = bossOnField ? -1.6 : 0;
+  // Boss 在场时镜头缓缓推近一点，制造压迫感；退场后慢慢拉回。
+  // 推近量受 Boss 体型约束：Boss 已经是 6 倍大、头顶贴到画面上沿，
+  // 推得太近会把它顶出画，所以这里只留很小的位移。
+  const wantZoom = bossOnField ? -0.5 : 0;
   camZoom += (wantZoom - camZoom) * Math.min(1, dt * 1.6);
 
   camera.position.set(camBaseX + sx, camY + sy, camZ + camZoom);
@@ -4694,100 +4958,6 @@ const SLOT_DEFS = [
 
 const slotVisuals = new Map();
 
-function makeSlotStructure(id, color) {
-  const group = new THREE.Group();
-  const mainMat = new THREE.MeshStandardMaterial({
-    color,
-    emissive: color,
-    emissiveIntensity: 0.2,
-    roughness: 0.5,
-    metalness: 0.2,
-  });
-  const darkMat = new THREE.MeshStandardMaterial({
-    color: 0x2a3440,
-    roughness: 0.8,
-  });
-
-  if (id === 'siege') {
-    const base = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.35, 1.0), darkMat);
-    base.position.y = 0.18;
-    group.add(base);
-
-    const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.28, 1.1), mainMat);
-    barrel.position.set(0, 0.55, -0.15);
-    barrel.rotation.x = -0.5;
-    group.add(barrel);
-  } else if (id === 'closeDefense') {
-    const base = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.4, 0.48, 0.35, 12),
-      darkMat
-    );
-    base.position.y = 0.18;
-    group.add(base);
-
-    const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.18, 0.8), mainMat);
-    barrel.position.set(0, 0.5, -0.25);
-    barrel.rotation.x = -0.3;
-    group.add(barrel);
-  } else if (id === 'support') {
-    const tent = new THREE.Mesh(
-      new THREE.BoxGeometry(1.0, 0.6, 1.0),
-      new THREE.MeshStandardMaterial({ color: 0xe8f0e8, roughness: 0.8 })
-    );
-    tent.position.y = 0.3;
-    group.add(tent);
-
-    const crossA = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.12, 0.04), mainMat);
-    crossA.position.set(0, 0.42, 0.52);
-    group.add(crossA);
-
-    const crossB = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.5, 0.04), mainMat);
-    crossB.position.set(0, 0.42, 0.52);
-    group.add(crossB);
-  } else if (id === 'command') {
-    const base = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.35, 0.42, 0.25, 12),
-      darkMat
-    );
-    base.position.y = 0.13;
-    group.add(base);
-
-    const pole = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.05, 0.05, 1.5, 8),
-      mainMat
-    );
-    pole.position.y = 0.85;
-    group.add(pole);
-
-    const flag = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.3, 0.03), mainMat);
-    flag.position.set(0.3, 1.35, 0);
-    group.add(flag);
-  } else if (id === 'summon') {
-    const base = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.5, 0.6, 0.3, 12),
-      darkMat
-    );
-    base.position.y = 0.15;
-    group.add(base);
-
-    const pod = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.32, 0.42, 1.0, 10),
-      mainMat
-    );
-    pod.position.y = 0.85;
-    group.add(pod);
-
-    const core = new THREE.Mesh(
-      new THREE.SphereGeometry(0.2, 10, 8),
-      new THREE.MeshBasicMaterial({ color: 0x9c6bff, transparent: true, opacity: 0.9 })
-    );
-    core.position.y = 1.3;
-    group.add(core);
-  }
-
-  return group;
-}
-
 function initSlots() {
   for (const s of SLOT_DEFS) {
     const pad = new THREE.Mesh(
@@ -4811,30 +4981,141 @@ function initSlots() {
     ring.position.set(s.x, 0.09, s.z);
     scene.add(ring);
 
-    const structure = makeSlotStructure(s.id, s.color);
+    // 正式模型按「时代 + 等级」现造，时代或等级变了就整个重建
+    const era = getCurrentEraIndex();
+    const level = 1;
+    const structure = buildSlotStructure(s.id, era, level);
     structure.position.set(s.x, 0, s.z);
     scene.add(structure);
+
+    // 地基上的 1-5 级小点
+    const dots = buildLevelDots(0, s.color);
+    dots.position.set(s.x, 0, s.z);
+    scene.add(dots);
 
     slotVisuals.set(s.id, {
       pad,
       ring,
       structure,
+      dots,
       x: s.x,
       z: s.z,
       color: s.color,
+      era,
+      level,
+      spin: structure.userData.spinParts || [],
     });
   }
 }
 
-function syncSlots(state) {
+/* ----------------------------------------------------------
+ * 槽位 Fire 动画（对应美术需求 P1「每个槽位至少 Idle 和 Fire 两条动画」）
+ *
+ * 没有骨骼模型，所以用"整体后坐 + 炮口闪光"两件事表达开火：
+ *   1. 后坐：整个槽位沿远离目标的方向弹一下，0.22 秒内回位（阻尼衰减）
+ *   2. 炮口闪光：在朝向目标的一侧生成一个快速膨胀的亮球 + 一圈冲击
+ * 这两件事加起来，在俯视小尺寸下已经够读成"它打了一发"。
+ *
+ * 触发源是现有的 slotStrike 事件（kind = siege / closeDefense / tank），
+ * 不需要甲新增接口。
+ * ---------------------------------------------------------- */
+function triggerSlotFire(slotId, d) {
+  const v = slotVisuals.get(slotId);
+  if (!v || !v.structure || !v.structure.visible) return;
+
+  // 后坐：记下开始时间和指向目标的方向，syncSlots 里逐帧衰减
+  v.recoil = 1;
+  v.recoilDir = Math.atan2(v.x - (d.x || 0), v.z - (d.z || 0));
+
+  // 炮口位置：槽位朝目标那一侧的边缘
+  const dirX = Math.sign((d.x || 0) - v.x) || 0;
+  const dirZ = Math.sign((d.z || 0) - v.z) || 0;
+  const mx = v.x + dirX * 0.5;
+  const mz = v.z + dirZ * 0.5;
+  const color = d.color || 0xffa64d;
+
+  // 炮口闪光：一个亮球从 0.15 涨到 0.5 再消失
+  const flash = new THREE.Mesh(
+    new THREE.SphereGeometry(0.16, 10, 8),
+    new THREE.MeshBasicMaterial({
+      color: 0xfff0c0, transparent: true, opacity: 0.95,
+      depthWrite: false, blending: THREE.AdditiveBlending,
+    })
+  );
+  flash.position.set(mx, 0.62, mz);
+  scene.add(flash);
+  effects.push({
+    mesh: flash, life: 0, maxLife: 0.16,
+    type: 'fireball', baseScale: 0.55, baseY: 0.62,
+  });
+
+  spawnRing(mx, mz, color, 0.24);
+
+  // 少量火星朝目标方向喷出
+  spawnBurst(mx, 0.6, mz, color, 6, {
+    speed: 2.4, up: 1.4, spread: 0.18, life: 0.3, gravity: -6,
+  });
+}
+
+function syncSlots(state, dt) {
+  const era = getCurrentEraIndex();
+  const levels = (state && state.slotLevels) || {};
+  const t = performance.now() * 0.001;
+
   for (const [id, v] of slotVisuals) {
-    const eraLocked = id === 'summon' && state.era < 3;
+    const eraLocked = id === 'summon' && era < 3;
     const on = !!(state.slots && state.slots[id]);
+    const level = Math.max(0, Math.min(5, levels[id] | 0));
+
+    // 时代或等级变了就重建：模型是按这两个参数造出来的，
+    // 不重建就只能靠改材质色，附件和体量变不了
+    if (v.era !== era || v.level !== Math.max(1, level)) {
+      scene.remove(v.structure);
+      disposeSlotStructure(v.structure);
+      const rebuilt = buildSlotStructure(id, era, Math.max(1, level));
+      rebuilt.position.set(v.x, 0, v.z);
+      scene.add(rebuilt);
+      v.structure = rebuilt;
+      v.era = era;
+      v.level = Math.max(1, level);
+      v.spin = rebuilt.userData.spinParts || [];
+    }
 
     v.pad.visible = !eraLocked;
     v.ring.visible = !eraLocked;
+    v.dots.visible = !eraLocked;
     v.structure.visible = !eraLocked && on;
     if (!eraLocked) v.ring.material.opacity = on ? 0.8 : 0.16;
+
+    // 等级点：只显示已解锁的，未解锁的保持很淡的底点
+    v.dots.children.forEach((dot, i) => {
+      dot.material.opacity = i < level ? 1 : 0.14;
+    });
+
+    // 后坐：沿着开火反方向弹一下，然后阻尼回位。
+    // 用 structure.position 做位移，不动 x/z 基准（那是地基位置，重建模型要用）
+    if (v.recoil > 0) {
+      v.recoil = Math.max(0, v.recoil - dt * 4.5);
+      const push = Math.sin(v.recoil * Math.PI) * 0.14;
+      v.structure.position.x = v.x + Math.cos(v.recoilDir || 0) * push;
+      v.structure.position.z = v.z + Math.sin(v.recoilDir || 0) * push;
+    } else if (v.structure.position.x !== v.x || v.structure.position.z !== v.z) {
+      // 回位后精确归零，否则会残留亚像素偏移，看着像槽位慢慢漂走了
+      v.structure.position.x = v.x;
+      v.structure.position.z = v.z;
+    }
+
+    // 满级 / 星际以上的旋转件转起来（炮塔缓转、能量环转、虫巢脉动）
+    if (v.structure.visible) {
+      for (let i = 0; i < v.spin.length; i++) {
+        v.spin[i].rotation.z = t * (0.6 + i * 0.15);
+      }
+      // 5 级加一点呼吸，让"满级"不用看数字也认得出来
+      if (v.level >= 5 && v.structure.userData.mats) {
+        const gm = v.structure.userData.mats.glowSoft;
+        if (gm) gm.opacity = 0.4 + Math.sin(t * 2.4) * 0.16;
+      }
+    }
   }
 }
 
@@ -5044,6 +5325,256 @@ function syncChains(state) {
     scene.remove(entry.group);
     chainVisuals.delete(id);
   }
+}
+
+/* ----------------------------------------------------------
+ * 地面坑洞（点子池「地面塌陷」）
+ *
+ * 难点是「怎么让俯视画面里的一个圆看起来是个洞，而不是一块黑斑」：
+ *   1. 洞底要接近纯黑（比任何阴影都深），否则读成污渍
+ *   2. 洞沿要有一圈亮的碎裂土层，光从上方打下来，近沿比远沿更亮
+ *   3. 洞沿外侧再补一圈很淡的塌陷阴影，把洞「压」进地面
+ * 三层叠起来才有下陷感。只画一层黑圆是最常见的失败做法。
+ * ---------------------------------------------------------- */
+const pitVisuals = new Map();
+let pitTex = null;
+let pitGeo = null;
+
+function ensurePitTex() {
+  if (pitTex) return pitTex;
+
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const c = size / 2;
+
+  // 洞外一圈塌陷阴影：很淡，作用是把洞压进地面
+  const outer = ctx.createRadialGradient(c, c, size * 0.36, c, c, size * 0.5);
+  outer.addColorStop(0, 'rgba(58,46,34,0.55)');
+  outer.addColorStop(1, 'rgba(58,46,34,0)');
+  ctx.fillStyle = outer;
+  ctx.beginPath();
+  ctx.arc(c, c, size * 0.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 洞沿：亮一点的碎裂土层，做成不规则边
+  ctx.beginPath();
+  const segs = 26;
+  for (let i = 0; i <= segs; i++) {
+    const a = (i / segs) * Math.PI * 2;
+    const jag = 0.40 + Math.sin(a * 5.3) * 0.018 + Math.sin(a * 11.7) * 0.012;
+    const r = size * jag;
+    const x = c + Math.cos(a) * r;
+    const y = c + Math.sin(a) * r;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(122,100,72,0.9)';
+  ctx.fill();
+
+  // 洞内：接近纯黑，往下渐变更深
+  const inner = ctx.createRadialGradient(c, c * 0.94, size * 0.02, c, c, size * 0.40);
+  inner.addColorStop(0, 'rgba(4,3,2,1)');
+  inner.addColorStop(0.62, 'rgba(10,7,5,0.98)');
+  inner.addColorStop(1, 'rgba(26,18,12,0.94)');
+  ctx.beginPath();
+  for (let i = 0; i <= segs; i++) {
+    const a = (i / segs) * Math.PI * 2;
+    const jag = 0.355 + Math.sin(a * 7.1 + 1.4) * 0.014;
+    const r = size * jag;
+    const x = c + Math.cos(a) * r;
+    const y = c + Math.sin(a) * r;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fillStyle = inner;
+  ctx.fill();
+
+  // 从洞沿往外的放射裂纹
+  for (let i = 0; i < 16; i++) {
+    const a = (i / 16) * Math.PI * 2 + Math.random() * 0.2;
+    const r0 = size * 0.41;
+    const r1 = size * (0.45 + Math.random() * 0.045);
+    ctx.strokeStyle = `rgba(22,16,11,${0.45 + Math.random() * 0.3})`;
+    ctx.lineWidth = size * (0.008 + Math.random() * 0.012);
+    ctx.beginPath();
+    ctx.moveTo(c + Math.cos(a) * r0, c + Math.sin(a) * r0);
+    ctx.lineTo(c + Math.cos(a) * r1, c + Math.sin(a) * r1);
+    ctx.stroke();
+  }
+
+  pitTex = new THREE.CanvasTexture(canvas);
+  pitTex.colorSpace = THREE.SRGBColorSpace;
+  return pitTex;
+}
+
+function syncPits(state) {
+  if (!scene) return;
+  const list = state.pits || [];
+  const alive = new Set();
+
+  if (!pitGeo) pitGeo = new THREE.PlaneGeometry(2, 2);
+
+  for (const p of list) {
+    alive.add(p.id);
+    let mesh = pitVisuals.get(p.id);
+    if (!mesh) {
+      mesh = new THREE.Mesh(
+        pitGeo,
+        new THREE.MeshBasicMaterial({
+          map: ensurePitTex(),
+          transparent: true,
+          depthWrite: false,
+          polygonOffset: true,
+          polygonOffsetFactor: -6,
+          polygonOffsetUnits: -6,
+        })
+      );
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.rotation.z = Math.random() * Math.PI * 2;
+      mesh.renderOrder = 2;
+      scene.add(mesh);
+      pitVisuals.set(p.id, mesh);
+    }
+    mesh.position.set(p.x, 0.035, p.z);
+    // 平面几何体是 2×2，半径 r 的坑要缩放到 2r
+    mesh.scale.setScalar(p.r);
+
+    // 最后 3 秒慢慢回填：淡出比"啪一下消失"自然
+    const left = (p.life != null && p.maxLife) ? p.maxLife - p.life : 99;
+    mesh.material.opacity = left < 3 ? Math.max(0, left / 3) : 1;
+  }
+
+  for (const [id, mesh] of pitVisuals) {
+    if (alive.has(id)) continue;
+    scene.remove(mesh);
+    mesh.material.dispose();
+    pitVisuals.delete(id);
+  }
+}
+
+/* ----------------------------------------------------------
+ * 武器箱（点子池「掉落拾取」）
+ *
+ * 必须和补给箱一眼分开：补给箱是木色 + 金角（要打碎），
+ * 武器箱做成金属箱 + 武器色发光带 + 头顶一圈旋转光环。
+ * 玩家在混战里靠"发光 + 转圈"这两个动态特征就能认出来。
+ * ---------------------------------------------------------- */
+const pickupVisuals = new Map();
+let pickupGeo = null;
+
+function ensurePickupGeo() {
+  if (pickupGeo) return;
+  pickupGeo = {
+    body: new THREE.BoxGeometry(0.62, 0.34, 0.62),
+    lid: new THREE.BoxGeometry(0.66, 0.07, 0.66),
+    ring: new THREE.TorusGeometry(0.46, 0.035, 6, 20),
+    bar: new THREE.BoxGeometry(0.5, 0.05, 0.9),
+  };
+}
+
+function makePickupMesh(tint) {
+  ensurePickupGeo();
+  const g = new THREE.Group();
+
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: 0x3f4650, roughness: 0.5, metalness: 0.65,
+  });
+  const accentMat = new THREE.MeshStandardMaterial({
+    color: tint,
+    emissive: tint,
+    emissiveIntensity: 1.4,
+    roughness: 0.35,
+    metalness: 0.3,
+  });
+  const ringMat = new THREE.MeshBasicMaterial({
+    color: tint, transparent: true, opacity: 0.75,
+  });
+
+  const body = new THREE.Mesh(pickupGeo.body, bodyMat);
+  body.position.y = 0.17;
+  g.add(body);
+
+  // 箱盖和一条发光带：发光带是"这是什么武器"的颜色标识
+  const lid = new THREE.Mesh(pickupGeo.lid, bodyMat);
+  lid.position.y = 0.37;
+  g.add(lid);
+
+  const bar = new THREE.Mesh(pickupGeo.bar, accentMat);
+  bar.position.y = 0.25;
+  g.add(bar);
+
+  // 头顶光环，慢慢转
+  const ring = new THREE.Mesh(pickupGeo.ring, ringMat);
+  ring.position.y = 0.72;
+  ring.rotation.x = Math.PI / 2;
+  g.add(ring);
+
+  return { group: g, ring, bodyMat, accentMat, ringMat, tint };
+}
+
+function syncPickups(state) {
+  if (!scene) return;
+  const list = state.pickups || [];
+  const alive = new Set();
+
+  for (const b of list) {
+    alive.add(b.id);
+    let entry = pickupVisuals.get(b.id);
+    if (!entry) {
+      const tint = (b.weapon && b.weapon.tint) || 0xffd45a;
+      entry = makePickupMesh(tint);
+      entry.phase = Math.random() * Math.PI * 2;
+      scene.add(entry.group);
+      pickupVisuals.set(b.id, entry);
+    }
+    entry.group.position.set(b.x, b.y || 0, b.z);
+
+    // 落地前翻滚，落地后只转光环
+    if (!b.landed) {
+      entry.group.rotation.y += 0.16;
+      entry.group.rotation.z += 0.05;
+    } else {
+      entry.group.rotation.z *= 0.88;
+      entry.group.rotation.y += 0.012;
+    }
+    entry.ring.rotation.z = performance.now() * 0.003 + entry.phase;
+
+    // 呼吸式发光，让它在暗场里也显眼
+    const pulse = 1.1 + Math.sin(performance.now() * 0.005 + entry.phase) * 0.45;
+    entry.accentMat.emissiveIntensity = pulse;
+    entry.ringMat.opacity = 0.55 + Math.sin(performance.now() * 0.005 + entry.phase) * 0.2;
+  }
+
+  for (const [id, entry] of pickupVisuals) {
+    if (alive.has(id)) continue;
+    scene.remove(entry.group);
+    entry.bodyMat.dispose();
+    entry.accentMat.dispose();
+    entry.ringMat.dispose();
+    pickupVisuals.delete(id);
+  }
+}
+
+function clearPickups() {
+  for (const [, entry] of pickupVisuals) {
+    scene.remove(entry.group);
+    entry.bodyMat.dispose();
+    entry.accentMat.dispose();
+    entry.ringMat.dispose();
+  }
+  pickupVisuals.clear();
+}
+
+function clearPits() {
+  for (const [, mesh] of pitVisuals) {
+    scene.remove(mesh);
+    mesh.material.dispose();
+  }
+  pitVisuals.clear();
 }
 
 function clearChains() {
@@ -5424,6 +5955,154 @@ function spawnRing(x, z, color, maxLife) {
   mesh.position.set(x, 0.06, z);
   scene.add(mesh);
   effects.push({ mesh, life: 0, maxLife, type: 'ring' });
+}
+
+/* ==========================================================
+ * P0 通用范围打击特效（对应 docs/美术需求-槽位与技能.md 第一组）
+ *
+ * 一套系统覆盖八个技能：箭雨、空袭、炮火覆盖、精确打击、无人机蜂群、
+ * 轨道轰炸、舰载无人机群、终焉审判、宇宙坍缩。区别只在参数，不在实现。
+ *
+ * 五层按顺序叠，缺一层就散：
+ *   1. 落点圈  —— 贴地暗色圆盘，标"打的是这一片"
+ *   2. 火球    —— 加色膨胀球，爆炸本体
+ *   3. 冲击波  —— 贴地薄环，扩得最远，给"震开"的感觉
+ *   4. 尘土    —— 棕色粒子往外抛，落点才有重量
+ *   5. 迸射    —— 亮色粒子往上冲，补速度感
+ *
+ * 为什么不做"预警圈先出、0.4 秒后再炸"：
+ * 甲的 aoe 技能在 castSkill 里是**立刻结算伤害**的（见 game.js damageZombiesInRadius）。
+ * 视觉上延后 0.4 秒爆炸，就会变成"僵尸先死、后爆炸"，
+ * 读起来像画面卡了。要真做预警，得甲那边把伤害延后，那是玩法改动，不在美术范围里。
+ * 所以这里做的是"命中即炸"的瞬时冲击，落点圈只作为冲击的第一帧。
+ * ========================================================== */
+function spawnImpact(x, z, opts = {}) {
+  if (!scene || !isFinite(x) || !isFinite(z)) return;
+
+  const radius = Math.max(0.8, Number(opts.radius) || 3);
+  const color = opts.color != null ? opts.color : 0xffffff;
+  const power = Math.max(0.2, Math.min(1.6, Number(opts.power) || 1));
+  const dust = opts.dust !== false;
+  const coreY = 0.55 + radius * 0.08;
+
+  // 1. 落点圈：暗色圆盘，压住地面，标范围
+  const disc = new THREE.Mesh(
+    new THREE.CircleGeometry(radius, 28),
+    new THREE.MeshBasicMaterial({
+      color: 0x120c08, transparent: true, opacity: 0.5,
+      depthWrite: false, polygonOffset: true,
+      polygonOffsetFactor: -5, polygonOffsetUnits: -5,
+    })
+  );
+  disc.rotation.x = -Math.PI / 2;
+  disc.position.set(x, 0.03, z);
+  disc.renderOrder = 2;
+  scene.add(disc);
+  effects.push({ mesh: disc, life: 0, maxLife: 0.5, type: 'areaDisc' });
+
+  // 2. 火球：两层，内白外色，加色混合才有"发光"而不是"一个球"
+  const ball = new THREE.Mesh(
+    new THREE.SphereGeometry(radius * 0.42, 14, 12),
+    new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity: 0.95,
+      depthWrite: false, blending: THREE.AdditiveBlending,
+    })
+  );
+  ball.position.set(x, coreY, z);
+  scene.add(ball);
+  effects.push({
+    mesh: ball, life: 0, maxLife: 0.38,
+    type: 'fireball', baseScale: radius * 1.05, baseY: coreY,
+  });
+
+  const core = new THREE.Mesh(
+    new THREE.SphereGeometry(radius * 0.2, 10, 8),
+    new THREE.MeshBasicMaterial({
+      color: 0xffffff, transparent: true, opacity: 0.9,
+      depthWrite: false, blending: THREE.AdditiveBlending,
+    })
+  );
+  core.position.set(x, coreY + 0.1, z);
+  scene.add(core);
+  effects.push({
+    mesh: core, life: 0, maxLife: 0.26,
+    type: 'fireball', baseScale: radius * 0.62, baseY: coreY + 0.1,
+  });
+
+  // 3. 冲击波：贴地薄环，扩到 1.6 倍半径
+  const wave = new THREE.Mesh(
+    new THREE.RingGeometry(radius * 0.72, radius * 0.8, 40),
+    new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity: 0.75,
+      side: THREE.DoubleSide, depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  wave.rotation.x = -Math.PI / 2;
+  wave.position.set(x, 0.07, z);
+  scene.add(wave);
+  effects.push({ mesh: wave, life: 0, maxLife: 0.62, type: 'shockwave', baseScale: 1.6 });
+
+  // 4. 尘土：往外抛，落下来
+  if (dust) {
+    spawnBurst(x, 0.3, z, 0x6b5540, Math.round(16 * power), {
+      speed: 4.2 * power, up: 3.0 * power,
+      spread: radius * 0.55, life: 1.05, gravity: -4.5,
+    });
+  }
+
+  // 5. 迸射：亮色向上，补速度感
+  spawnBurst(x, coreY, z, color, Math.round(22 * power), {
+    speed: 6.0 * power, up: 4.6 * power,
+    spread: radius * 0.3, life: 0.55, gravity: -10,
+  });
+
+  shake = Math.max(shake, 0.3 + 0.34 * power);
+}
+
+/* 内爆：黑洞 / 宇宙坍缩。粒子和光环从外圈往中心收 */
+function spawnImplosion(x, z, color, radius) {
+  if (!scene || !isFinite(x) || !isFinite(z)) return;
+  const r = Math.max(1, Number(radius) || 4);
+
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(r * 0.68, r * 0.78, 40),
+    new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity: 0.85,
+      side: THREE.DoubleSide, depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.set(x, 0.08, z);
+  scene.add(ring);
+  effects.push({ mesh: ring, life: 0, maxLife: 0.75, type: 'implosion', baseScale: 1 });
+
+  // 单点内爆：收完之后补一下亮斑，证明"吸完了"
+  const dot = new THREE.Mesh(
+    new THREE.SphereGeometry(r * 0.16, 10, 8),
+    new THREE.MeshBasicMaterial({
+      color: 0xffffff, transparent: true, opacity: 0.9,
+      depthWrite: false, blending: THREE.AdditiveBlending,
+    })
+  );
+  dot.position.set(x, 0.6, z);
+  scene.add(dot);
+  effects.push({ mesh: dot, life: 0, maxLife: 0.55, type: 'fireball', baseScale: r * 0.5, baseY: 0.6 });
+
+  shake = Math.max(shake, 0.42);
+}
+
+/* 全屏白闪：终焉审判 / 轨道轰炸用。复用 fx-layer 里的一个 div */
+function spawnFlash(color, strength) {
+  if (!fxFlash) return;
+  fxFlash.style.background = `#${new THREE.Color(color).getHexString()}`;
+  fxFlash.style.transition = 'none';
+  fxFlash.style.opacity = String(Math.min(1, strength));
+  // 强制重排后再过渡，否则浏览器会把两次 opacity 合并成一次、闪不出来
+  void fxFlash.offsetWidth;
+  fxFlash.style.transition = 'opacity 420ms ease-out';
+  fxFlash.style.opacity = '0';
 }
 
 /* 攻城：从炮口抛一颗炮弹到落点 */
@@ -5867,6 +6546,26 @@ function updateEffects(dt) {
       const s = 1 + t * 3;
       fx.mesh.scale.set(s, s, s);
       fx.mesh.material.opacity = (1 - t) * 0.9;
+    } else if (fx.type === 'fireball') {
+      // 火球：先快速涨到最大，再在最后三成时间里收亮度。
+      // 只淡出不变小，看起来才像"烧掉"而不是"缩回去"
+      const grow = Math.min(1, t / 0.35);
+      const sc = fx.baseScale * (0.35 + grow * 0.9);
+      fx.mesh.scale.setScalar(sc);
+      fx.mesh.position.y = fx.baseY + grow * 0.45;
+      fx.mesh.material.opacity = t < 0.35 ? 0.95 : Math.max(0, (1 - t) / 0.65) * 0.95;
+    } else if (fx.type === 'shockwave') {
+      // 冲击波：贴地薄环，扩得比 ring 更快更远，透明度掉得更狠
+      const e = 1 - (1 - t) * (1 - t); // easeOutQuad：一开始猛，后面减速
+      const sc = fx.baseScale * (0.2 + e);
+      fx.mesh.scale.set(sc, sc, sc);
+      fx.mesh.material.opacity = (1 - t) * 0.75;
+    } else if (fx.type === 'implosion') {
+      // 内爆：从外圈往里收，和爆炸正好相反
+      const e = t * t;
+      const sc = fx.baseScale * (1 - e) + 0.05;
+      fx.mesh.scale.set(sc, sc, sc);
+      fx.mesh.material.opacity = 0.85 * (1 - t * 0.4);
     } else if (fx.type === 'dust') {
       fx.mesh.scale.setScalar(0.7 + t * 0.8);
       fx.mesh.material.opacity = (1 - t) * 0.32;

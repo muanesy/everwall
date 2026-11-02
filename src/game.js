@@ -332,6 +332,35 @@ const CONFIG = {
     slowFrom: 0.55,    // 水位超过这个值才开始拖慢僵尸
     slowMul: 0.62,     // 水里僵尸移速乘这个
   },
+  // 地面塌陷（点子池「地面塌陷」）：地面裂开坑洞，玩家和僵尸都过不去
+  pit: {
+    startWave: 11,
+    interval: 11,      // 每隔多少秒尝试塌一个
+    max: 3,            // 场上最多几个
+    radius: 1.35,
+    life: 26,          // 多少秒后自行回填，不会永久占场
+    avoidPlayer: 2.4,  // 不在玩家脚下塌，否则会把人关在里面
+    playerPad: 0.45,   // 玩家身板半径，判定比坑本身大一圈
+  },
+  // 掉落拾取（点子池「掉落拾取」）：场上掉武器箱，走过去换枪
+  pickup: {
+    interval: 14,
+    firstDelay: 12,
+    duration: 18,      // 换来的枪能用多少秒，到点自动换回时代武器
+    reach: 1.05,       // 走到多近算捡到
+    max: 2,
+    weapons: [
+      { kind: 'shotgun', name: '霰弹枪', bullets: 3, spread: 2.8,
+        intervalMul: 1.45, damageMul: 0.55, tint: 0xffb04a,
+        desc: '三发扇形，近身压制' },
+      { kind: 'sniper', name: '狙击枪', bullets: 1, spread: 0.12,
+        intervalMul: 2.2, damageMul: 3.2, pierce: true, tint: 0x9ad0ff,
+        desc: '单发重击，必穿透' },
+      { kind: 'mg', name: '机枪', bullets: 1, spread: 1.0,
+        intervalMul: 0.45, damageMul: 0.42, tint: 0x8affc0,
+        desc: '泼水射速，单发轻' },
+    ],
+  },
   // 锁链路障（点子池「锁链路障」）：挡半条通道，僵尸必须绕过去
   chain: {
     startWave: 6,      // 第几波开始出现
@@ -479,6 +508,11 @@ const state = {
   enemyShots: [],    // 远程僵尸吐出来的酸液：{ id, x, z, tx, tz, speed, damage }
   floodLevel: 0,     // 当前水位 0~1，给画面层和僵尸减速共用
   chains: [],        // 锁链：{ id, x, z, width, xMin, xMax, nearZ, farZ }
+  pits: [],          // 地面坑洞：{ id, x, z, r, life }
+  pitTimer: 0,
+  pickups: [],       // 武器箱：{ id, x, z, y, landed, weapon }
+  pickupTimer: 0,
+  playerWeapon: null,// 捡到的临时武器，null = 用时代武器
   nextId: 1,
   spawnCounts: new Array(15).fill(0), // 调试用：统计每种僵尸刷了多少只（0-14）
 };
@@ -716,6 +750,11 @@ function resetState(opts = {}) {
   state.floodLevel = 0;
   setWaterLevel(0);
   state.chains.length = 0;
+  state.pits.length = 0;
+  state.pitTimer = CONFIG.pit.interval;
+  state.pickups.length = 0;
+  state.pickupTimer = CONFIG.pickup.firstDelay;
+  state.playerWeapon = null;
   state.nextId = 1;
   state.spawnCounts.fill(0);
   resetBarricade();
@@ -1952,6 +1991,11 @@ function update(dt) {
     // 锁链：第 6 波起每波重摆一条（位置随波次变，玩家每波都要重新找路）
     if (nextWave >= CONFIG.chain.startWave && !state.testMode) spawnChain(nextWave);
 
+    // 坑洞：进入起始波或之后，每波开头立刻塌一个，别让玩家白等一整个间隔
+    if (nextWave >= CONFIG.pit.startWave && !state.testMode) {
+      state.pitTimer = 0;
+    }
+
     // 每 2 波结束抽一次；测试模式不抽卡，避免打断观察
     if (
       !state.testMode &&
@@ -1979,12 +2023,14 @@ function update(dt) {
   updateFiring(dt);
   updateBarrelSpawn(dt);
   updateCrates(dt);
+  updatePickups(dt);
   updateEnemyShots(dt);
   updateBullets(dt);
   updateSlots(dt);
   updateBarriers(dt);
   updateVirusBombs(dt);
   updateFriendlyZombies(dt);
+  updatePits(dt);
   updateZombies(dt);
   updateSummoners(dt);
   updateSiegeShots(dt);
@@ -2014,11 +2060,25 @@ function updatePlayer(dt) {
   }
 
   if (dir !== 0) {
-    state.player.x = clamp(
+    const nextX = clamp(
       state.player.x + dir * CONFIG.player.speed * state.upgrades.moveSpeed * dt,
       -CONFIG.world.halfWidth,
       CONFIG.world.halfWidth
     );
+
+    // 坑洞挡人：目标点落在坑里就不让走（停在坑沿）。
+    // 但如果玩家已经在坑里（理论上不会，生成时避开脚下），
+    // 允许往外走，否则会被永久锁死。
+    const pz = state.player.z;
+    const pad = CONFIG.pit.playerPad;
+    let blocked = false;
+    let alreadyIn = false;
+    for (const pit of state.pits) {
+      if (pitBlocksPoint(pit, nextX, pz, pad)) blocked = true;
+      if (pitBlocksPoint(pit, state.player.x, pz, pad)) alreadyIn = true;
+    }
+
+    if (!blocked || alreadyIn) state.player.x = nextX;
   }
 }
 
@@ -2062,8 +2122,17 @@ function updateFiring(dt) {
   // 时代武器档位（点子池「时代规则」）：弩慢而重，冲锋枪快而轻。
   // 乘在升级倍率之后，所以玩家升级的收益在任何时代都成立，只是基数不同。
   const weapon = eraWeaponProfile(state.era);
+
+  // 捡到的临时武器盖在时代武器之上（点子池「掉落拾取」）。
+  // 只改射速/伤害/弹数/散布，不改 baseCount——那是「几个枪位」的结构，
+  // 动了会让整排气派的观感变样。
+  const picked = state.playerWeapon;
+  const pickIntervalMul = picked ? picked.intervalMul : 1;
+  const pickDamageMul = picked ? picked.damageMul : 1;
+  const pickBullets = picked ? picked.bullets : 1;
+
   const effInterval =
-    (baseInterval * weapon.fireIntervalMul) /
+    (baseInterval * weapon.fireIntervalMul * pickIntervalMul) /
     (state.upgrades.fireRate * commandMul * buffMul * boostRate);
   const totalRate = baseCount / effInterval; // 每秒多少发
   const interval = shooters / totalRate;
@@ -2089,22 +2158,29 @@ function updateFiring(dt) {
     if (timers[i] < 0) timers[i] = interval;
 
     const x = state.player.x + offsets[i];
-    const vx = (Math.random() * 2 - 1) * jitter;
 
-    state.bullets.push({
-      id: state.nextId++,
-      x,
-      z: state.player.z - 0.1,
-      vx,
-      vz: -CONFIG.player.bulletSpeed,
-      damage:
-        CONFIG.player.bulletDamage *
-        tier.damage *
-        state.upgrades.damage *
-        weapon.damageMul *
-        boostDamage,
-      pierces: 0,
-    });
+    // 霰弹枪一次喷三发：横向散开但总伤害受 damageMul 约束过，
+    // 不会因为弹数多就白赚输出
+    for (let k = 0; k < pickBullets; k++) {
+      const vx = (Math.random() * 2 - 1) * jitter +
+        (pickBullets > 1 ? (k - (pickBullets - 1) / 2) * picked.spread : 0);
+
+      state.bullets.push({
+        id: state.nextId++,
+        x,
+        z: state.player.z - 0.1,
+        vx,
+        vz: -CONFIG.player.bulletSpeed,
+        damage:
+          CONFIG.player.bulletDamage *
+          tier.damage *
+          state.upgrades.damage *
+          weapon.damageMul *
+          pickDamageMul *
+          boostDamage,
+        pierces: 0,
+      });
+    }
 
     origins.push({ x, z: state.player.z });
   }
@@ -2358,10 +2434,11 @@ function updateBullets(dt) {
     for (let j = state.zombies.length - 1; j >= 0; j--) {
       const z = state.zombies[j];
 
-      // Boss 体型是普通僵尸的 1.95 倍，判定跟着放大：否则贴着它身体边缘开枪，
-      // 画面上明明打中了却是空的，读起来像"厚血打不动"
-      const halfW = z.boss ? 1.35 : 0.72;
-      const halfZ = z.boss ? 0.95 : 0.7;
+      // Boss 体型是普通僵尸的 6 倍（约 9.3 个单位高、8 个单位宽，横宽造型），
+      // 判定跟着放大：否则贴着它身体边缘开枪，画面上明明打中了却是空的，
+      // 读起来像"厚血打不动"
+      const halfW = z.boss ? 1.9 : 0.72;
+      const halfZ = z.boss ? 1.2 : 0.7;
 
       if (Math.abs(b.x - z.x) < halfW && Math.abs(b.z - z.z) < halfZ) {
         z.hp -= b.damage * (z.armor ?? 1);
@@ -2373,10 +2450,12 @@ function updateBullets(dt) {
         }
 
         // 穿透器：小概率不消耗子弹，继续打后面的僵尸
+        // 狙击枪的穿透是「必穿」，不走概率；其余走穿透器那套
+        const alwaysPierce = !!(state.playerWeapon && state.playerWeapon.pierce);
         const pierced =
-          state.weapon.pierce &&
+          (alwaysPierce || state.weapon.pierce) &&
           (b.pierces || 0) < CONFIG.weapon.pierceMax &&
-          Math.random() < CONFIG.weapon.pierceChance;
+          (alwaysPierce || Math.random() < CONFIG.weapon.pierceChance);
 
         if (pierced) {
           b.pierces = (b.pierces || 0) + 1;
@@ -2792,6 +2871,9 @@ function updateZombies(dt) {
     }
 
     z.x = clamp(z.x, -CONFIG.world.halfWidth - 1, CONFIG.world.halfWidth + 1);
+
+    // 坑洞挡僵尸：横向让开，不从坑里穿过去
+    resolvePitCollision(z);
 
     // 撞链不穿模：停在链子近端（nearZ 已含僵尸半径，别自己再减）
     if (chain && isBlockedByChain(chain, z.x, z.z)) {
@@ -3511,11 +3593,202 @@ function spawnChain(wave) {
     ? laneMin + width / 2
     : laneMax - width / 2;
 
+  // 只换锁链本身。坑洞、武器箱、玩家手上的枪都不该被换链顺手清掉——
+  // 之前这里误插了清空语句，导致每波开始都会把捡到的枪悄悄收回
   state.chains.length = 0;
   const chain = createChain({ x, z: CONFIG.chain.z, width, laneMin, laneMax });
   state.chains.push(chain);
   emit('chainSpawn', { x: chain.x, z: chain.z, width: chain.width });
   return chain;
+}
+
+/* ----------------------------------------------------------
+ * 地面塌陷（点子池「地面塌陷」）：地面裂开坑洞，玩家和僵尸都过不去
+ *
+ * 两种落点，各有各的用处：
+ *   - 撒在僵尸通道里（z -16~4）：挡僵尸的路，逼它们绕行
+ *   - 撒在玩家那条线上（z 7~9.2）：挡玩家走位，压缩可选的站位
+ * 只撒一种的话，另一种"过不去"就是空话。
+ *
+ * 关键约束：坑的横向位置必须离通道边界留出绕行空间，
+ * 否则僵尸会横着让不开、堵在坑前把整条道堵死。
+ * ---------------------------------------------------------- */
+function pitBlocksPoint(pit, x, z, pad) {
+  const dx = x - pit.x;
+  const dz = z - pit.z;
+  const r = pit.r + pad;
+  return dx * dx + dz * dz < r * r;
+}
+
+function spawnPit() {
+  if (state.pits.length >= CONFIG.pit.max) return null;
+
+  const r = CONFIG.pit.radius;
+  const [laneMin, laneMax] = CONFIG.world.rightZone;
+  const laneW = laneMax - laneMin;
+
+  // 六成撒在僵尸通道，四成撒在玩家线上——两种"过不去"都得真的出现
+  let x;
+  let z;
+  if (Math.random() < 0.6) {
+    // 通道里：左右都留够绕行宽度，僵尸一定能从旁边挤过去
+    const lo = laneMin + r + 0.9;
+    const hi = laneMax - r - 0.9;
+    x = lo + Math.random() * (hi - lo);
+    z = -16 + Math.random() * 20;
+  } else {
+    x = -CONFIG.world.halfWidth + r + 0.4 + Math.random() * (CONFIG.world.halfWidth * 2 - r * 2 - 0.8);
+    z = 7 + Math.random() * 2.2;
+  }
+
+  // 不塌在玩家脚下：塌了就等于把人锁死在坑中心
+  const px = state.player.x;
+  const pz = state.player.z;
+  if (Math.hypot(x - px, z - pz) < CONFIG.pit.avoidPlayer) return null;
+
+  const pit = { id: state.nextId++, x, z, r, life: 0, maxLife: CONFIG.pit.life };
+  state.pits.push(pit);
+  emit('pitSpawn', { x, z, r });
+  return pit;
+}
+
+function updatePits(dt) {
+  if (state.testMode) return;
+
+  // 回填：活够时间自己愈合，坑不会永久占场把玩家逼死
+  for (let i = state.pits.length - 1; i >= 0; i--) {
+    const p = state.pits[i];
+    p.life += dt;
+    if (p.life >= CONFIG.pit.life) {
+      state.pits.splice(i, 1);
+      emit('pitFill', { x: p.x, z: p.z, r: p.r });
+    }
+  }
+
+  // 计时器一直走，只是波次没到就先不塌。
+  // 之前写成"波次不够直接 return"，结果计时器被冻住，
+  // 进入起始波之后还要白等一整个 interval 才会出现第一个坑。
+  state.pitTimer -= dt;
+  if (state.pitTimer > 0) return;
+  state.pitTimer = CONFIG.pit.interval;
+  if (state.wave < CONFIG.pit.startWave) return;
+  spawnPit();
+}
+
+/* 僵尸被坑挡住时往旁边让。
+ * 只往横向推，不往纵向推：僵尸是往 +z 走的，纵向推会把它顶回去，
+ * 下一步又往前走，形成原地来回抖——和之前锁链那个坑是同一类问题。 */
+function resolvePitCollision(z) {
+  if (!state.pits.length) return;
+
+  for (const pit of state.pits) {
+    const minD = pit.r + 0.38;
+    const dx = z.x - pit.x;
+    const dz = z.z - pit.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 >= minD * minD) continue;
+
+    // 在坑中心（几乎不该发生）时统一往通道中间让，避免随机翻面
+    let side = dx >= 0 ? 1 : -1;
+    if (Math.abs(dx) < 0.02) side = z.x > 4.1 ? -1 : 1;
+
+    z.x = pit.x + side * minD;
+  }
+}
+
+/* ----------------------------------------------------------
+ * 掉落拾取（点子池「掉落拾取」）：场上掉武器箱，走过去换枪
+ *
+ * 和补给箱的区别（别混）：
+ *   - 补给箱是「打碎」，给兵/分，是资源
+ *   - 武器箱是「走过去」，临时换一把枪，是手感变化
+ *
+ * 换来的枪只持续 CONFIG.pickup.duration 秒，然后自动换回时代武器。
+ * 做成永久的话「时代规则」那套武器档位就永远被盖掉了——
+ * 中世纪捡到一把机枪之后，后面五个时代的武器差异全白做。
+ * ---------------------------------------------------------- */
+function spawnWeaponPickup() {
+  if (state.pickups.length >= CONFIG.pickup.max) return null;
+
+  const list = CONFIG.pickup.weapons;
+  const weapon = list[Math.floor(Math.random() * list.length)];
+
+  // 落在玩家走位圈里：这个箱子是"走过去捡"的，横向必须在可走范围
+  const halfW = CONFIG.world.halfWidth;
+  const x = (Math.random() * 2 - 1) * (halfW - 0.8);
+  // 纵向放在玩家线上方不远，走两步就能到，不用穿越僵尸阵
+  const z = state.player.z - 2.5 - Math.random() * 3.5;
+
+  const box = { id: state.nextId++, x, z, y: 11, landed: false, weapon };
+  state.pickups.push(box);
+  emit('pickupSpawn', { x, z, id: box.id, kind: weapon.kind });
+  return box;
+}
+
+function updatePickups(dt) {
+  if (state.testMode) return;
+
+  // 落地
+  for (const b of state.pickups) {
+    if (b.landed) continue;
+    b.y -= 10 * dt;
+    if (b.y <= 0) {
+      b.y = 0;
+      b.landed = true;
+      emit('pickupLand', { x: b.x, z: b.z, id: b.id });
+    }
+  }
+
+  // 捡起：落在玩家身位附近就换枪
+  for (let i = state.pickups.length - 1; i >= 0; i--) {
+    const b = state.pickups[i];
+    if (!b.landed) continue;
+    const dx = b.x - state.player.x;
+    const dz = b.z - state.player.z;
+    if (dx * dx + dz * dz > CONFIG.pickup.reach * CONFIG.pickup.reach) continue;
+
+    state.pickups.splice(i, 1);
+    equipWeapon(b.weapon);
+  }
+
+  // 倒计时：到点换回时代武器
+  if (state.playerWeapon) {
+    state.playerWeapon.remaining -= dt;
+    if (state.playerWeapon.remaining <= 0) {
+      const name = state.playerWeapon.name;
+      state.playerWeapon = null;
+      emit('weaponExpired', { name });
+    }
+  }
+
+  state.pickupTimer -= dt;
+  if (state.pickupTimer > 0) return;
+  state.pickupTimer = CONFIG.pickup.interval;
+  spawnWeaponPickup();
+}
+
+function equipWeapon(weapon) {
+  const prev = state.playerWeapon;
+  state.playerWeapon = {
+    kind: weapon.kind,
+    name: weapon.name,
+    desc: weapon.desc,
+    bullets: weapon.bullets || 1,
+    spread: weapon.spread || 0,
+    intervalMul: weapon.intervalMul || 1,
+    damageMul: weapon.damageMul || 1,
+    pierce: !!weapon.pierce,
+    tint: weapon.tint,
+    remaining: CONFIG.pickup.duration,
+    maxDuration: CONFIG.pickup.duration,
+  };
+  emit('weaponPickup', {
+    kind: weapon.kind,
+    name: weapon.name,
+    desc: weapon.desc,
+    tint: weapon.tint,
+    replaced: prev ? prev.name : null,
+  });
 }
 
 function damageArmy(amount, cause) {
