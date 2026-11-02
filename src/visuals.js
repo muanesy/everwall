@@ -1310,7 +1310,8 @@ export function syncScene(state, dt) {
   updateFloats(dt);
   updateBlood(dt);
   updateToast(dt);
-  updateBarrels(dt);
+  // 只在局内推进桶的落体和引信，避免菜单阶段桶就掉完了
+  if (state.status === 'playing') updateBarrels(dt);
   updateAmbientFx(dt);
   updateWater(dt);
   updateQuake(dt);

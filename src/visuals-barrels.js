@@ -30,13 +30,15 @@ import * as THREE from 'three';
 const BARREL_RADIUS = 0.55;      // 桶身半径（命中判定的基础）
 const BARREL_HEIGHT = 1.1;       // 桶高
 
-/* 一组桶是三只横排捆在一起的，整体半宽 = 0.62 + 0.55 ≈ 1.17
- * 子弹是垂直往上飞的（点屏幕只控制左右移动），玩家要打到桶必须站到桶正上方，
- * 所以把命中范围做宽一点，玩家稍微挪一步就能打中，不至于出现"瞄准了却打不到"。 */
-const BARREL_OFFSETS = [-0.62, 0, 0.62];
-export const BARREL_HIT_RADIUS = 1.15;
-/* 整组桶在横向上的半长：从中心到最外侧桶的外缘 */
-const BARREL_SPAN = BARREL_OFFSETS[BARREL_OFFSETS.length - 1] + BARREL_RADIUS;
+/* 单个桶。子弹垂直往上飞，玩家要站到桶正上方才能打中，
+ * 所以命中判定保留一点宽容量，但不再三只捆在一起。 */
+const BARREL_OFFSETS = [0];
+export const BARREL_HIT_RADIUS = 0.9;
+const BARREL_SPAN = BARREL_RADIUS;
+
+/* 从天而降：生成时从高处落下，落地后才可被击中 */
+const DROP_HEIGHT = 9;
+const DROP_GRAVITY = 32;
 
 const EXPLOSION_RADIUS = 3.2;    // 爆炸范围（数值需与甲确认）
 const EXPLOSION_DAMAGE = 3;      // 爆炸伤害（数值需与甲确认）
@@ -152,8 +154,8 @@ function ensureAssets() {
 function buildBarrel(x, z, index) {
   const a = ensureAssets();
   const group = new THREE.Group();
-  group.position.set(x, 0, z);
-  group.rotation.y = index * 0.7;   // 每组桶朝向错开一点，别像复制粘贴
+  group.position.set(x, DROP_HEIGHT, z); // 从高处落下
+  group.rotation.y = index * 0.7;   // 每个桶朝向错开一点，别像复制粘贴
 
   // 桶身：深绿 / 锈红交替；材质独立，爆炸前单独发光闪烁
   const bodyMat = new THREE.MeshStandardMaterial({
@@ -163,9 +165,7 @@ function buildBarrel(x, z, index) {
     emissive: 0x000000,
   });
 
-  // 三只桶并排捆成一组：单个桶只有 0.55 宽，很难打中，
-  // 横排之后整组的可命中范围宽了一倍多（子弹是垂直往上飞的，
-  // 玩家只要站到这组桶正上方就能打到）
+  // 单只桶，不再横排
   for (const ox of BARREL_OFFSETS) {
     const sub = new THREE.Group();
     sub.position.x = ox;
@@ -209,6 +209,9 @@ function buildBarrel(x, z, index) {
     hp: 1,
     fuse: 0,
     fuseActive: false,
+    dropping: true,
+    vy: 0,
+    dropDelay: index < DEFAULT_POSITIONS.length ? index * 0.18 : 0,
   };
 }
 
@@ -308,9 +311,29 @@ function bindEvents() {
 export function updateBarrels(dt) {
   const step = Math.min(dt || 0, 0.1);
 
-  // 引信
   for (let i = barrels.length - 1; i >= 0; i--) {
     const b = barrels[i];
+
+    // 从天而降：落地前不可被击中
+    if (b.dropping) {
+      if (b.dropDelay > 0) {
+        b.dropDelay -= step;
+        continue;
+      }
+
+      b.vy -= DROP_GRAVITY * step;
+      b.mesh.position.y += b.vy * step;
+
+      if (b.mesh.position.y <= 0) {
+        b.mesh.position.y = 0;
+        b.dropping = false;
+        b.vy = 0;
+        spawnHitFx(b.x, b.z); // 落地扬一小团尘
+      }
+      continue;
+    }
+
+    // 引信
     if (!b.fuseActive) continue;
 
     b.fuse -= step;
@@ -367,7 +390,7 @@ export function hitTestBarrel(x, z, tol = 0.45) {
 
   for (let i = 0; i < barrels.length; i++) {
     const b = barrels[i];
-    if (!b.alive || b.fuseActive) continue;
+    if (!b.alive || b.fuseActive || b.dropping) continue;
 
     // 桶是三只横排，整体是一段横线：用"点到线段"的胶囊判定，
     // 球形判定的话横排两端就打不到（子弹垂直上飞，正好从桶上面过）
