@@ -31,7 +31,7 @@ export const ERAS = [
     id: 0,
     name: '中世纪',
     map: 'jungle',                 // 默认地图，兼容旧代码
-    maps: ['jungle'],              // 这个时代可用的全部地图
+    maps: ['jungle', 'castle', 'village', 'abbey', 'swamp'],   // 雨林、城堡攻城、村庄、修道院、沼泽
     soldierTint: [1.12, 0.95, 0.62],   // 土黄麻衣
     zombieTint: [1.05, 1.00, 0.88],    // 灰白麻布
     bulletTint: [1.0, 0.80, 0.45],     // 火药暖黄
@@ -43,7 +43,7 @@ export const ERAS = [
     id: 1,
     name: '二战',
     map: 'city',
-    maps: ['city', 'base'],        // 废墟街道、军事基地
+    maps: ['city', 'base', 'trench', 'beach', 'warport'],      // 废墟、军事基地、战壕、登陆海滩、军港
     soldierTint: [0.58, 0.70, 1.00],   // 深蓝灰军服
     zombieTint: [1.00, 0.78, 0.62],    // 暗褐旧军装
     bulletTint: [1.0, 0.60, 0.30],     // 橙红曳光
@@ -55,7 +55,7 @@ export const ERAS = [
     id: 2,
     name: '现代',
     map: 'desert',
-    maps: ['desert', 'harbor'],    // 沙漠前哨、港口码头
+    maps: ['desert', 'harbor', 'highway', 'parking'],          // 沙漠、码头、城市高架、地下停车场
     soldierTint: [0.92, 1.05, 0.60],   // 橄榄军绿
     zombieTint: [0.72, 0.86, 0.95],    // 青灰战术装
     bulletTint: [0.95, 1.0, 0.95],     // 亮白曳光
@@ -67,7 +67,7 @@ export const ERAS = [
     id: 3,
     name: '后现代',
     map: 'snow',
-    maps: ['snow', 'lab'],         // 雪原、废弃医院（生化实验室）
+    maps: ['snow', 'lab', 'quarantine', 'biofactory'],         // 雪原、医院、隔离区、生化工厂
     soldierTint: [0.60, 0.78, 0.92],   // 冷灰战术
     zombieTint: [0.80, 0.92, 1.00],    // 白化感染体
     bulletTint: [0.80, 0.92, 1.0],     // 冷白
@@ -79,7 +79,7 @@ export const ERAS = [
     id: 4,
     name: '星际',
     map: 'moon',
-    maps: ['moon'],                // 目前只有月球，待补空间站/外星地表
+    maps: ['moon', 'station', 'alienwaste', 'orbitalpad'],     // 月球、空间站内部、外星荒漠、轨道平台
     soldierTint: [0.45, 0.85, 1.05],   // 冷青金属
     zombieTint: [0.80, 0.60, 1.05],    // 紫黑荧光
     bulletTint: [0.55, 0.85, 1.0],     // 青紫能量
@@ -91,7 +91,7 @@ export const ERAS = [
     id: 5,
     name: '终幕',
     map: 'lava',
-    maps: ['lava'],                // 目前只有熔岩，待补虚空/时间废墟
+    maps: ['lava', 'voidtemple', 'timeruins', 'blackhole'],    // 熔岩、虚空神殿、时间废墟、黑洞边缘
     soldierTint: [1.10, 0.48, 0.38],   // 墨黑赤纹
     zombieTint: [1.10, 0.50, 0.40],    // 熔岩缝合体
     bulletTint: [1.0, 0.45, 0.30],     // 赤金
