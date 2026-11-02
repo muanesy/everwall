@@ -471,6 +471,35 @@ function prepareZombieType(rawProto, look) {
   return proto;
 }
 
+/* 从一条长动画里截一个片段。
+ * Boss 的 Bite_Action 是 4.8 秒的完整动捕，里面其实咬了三次；
+ * 一次出拳只截其中一段，否则每拳会连咬三下，看起来像抽搐。 */
+function sliceClip(clip, start, end, name) {
+  if (!clip) return clip;
+
+  const tracks = [];
+  for (const track of clip.tracks) {
+    const stride = track.getValueSize();
+    const times = [];
+    const values = [];
+
+    for (let i = 0; i < track.times.length; i++) {
+      const t = track.times[i];
+      if (t < start - 1e-4 || t > end + 1e-4) continue;
+      times.push(t - start);
+      for (let k = 0; k < stride; k++) {
+        values.push(track.values[i * stride + k]);
+      }
+    }
+
+    if (times.length < 2) continue;
+    const Ctor = track.constructor;
+    tracks.push(new Ctor(track.name, times, values));
+  }
+
+  return new THREE.AnimationClip(name || clip.name, end - start, tracks);
+}
+
 function loadModels() {
   const loader = new GLTFLoader();
   const base = new URL('../assets/models/', import.meta.url).href;
@@ -569,6 +598,13 @@ function loadModels() {
       list.forEach((gltf, i) => {
         if (gltf) raw[extraKeys[i]] = grab(gltf, /walk/i);
       });
+
+      // Boss 的撕咬动画一次 4.8 秒里咬了三次，出拳只要中间那一段
+      const bossClip = raw.boss && raw.boss.userData.attackClip;
+      if (bossClip && bossClip.duration > 4 && /bite/i.test(bossClip.name)) {
+        raw.boss.userData.attackClip = sliceClip(bossClip, 1.5, 3.0, 'BiteOnce');
+      }
+
       ZOMBIE_LOOKS.forEach((look, i) => {
         if (!raw[look.src]) return;
         try {
@@ -3408,6 +3444,20 @@ function syncZombies(state, dt) {
       entry = null;
     }
 
+    // 专属模型晚到时，Boss 可能先用普通僵尸顶替；等专属模型就绪后重建一次
+    if (entry && entry.bossFallback && modelLib.zombies[10]) {
+      if (entry.hpBar) {
+        disposeHpBar(entry.hpBar);
+        entry.hpBar = null;
+      }
+      if (entry.isModel) despawnModel(entry.vis);
+      else {
+        scene.remove(entry.mesh);
+        disposeMesh(entry.mesh);
+      }
+      entry = null;
+    }
+
     if (!entry) {
       if (modelLib.loaded && modelLib.zombies.length) {
         // 原型下标 = z.type（0-4），约定见 docs/僵尸类型.md；越界兜底回普通
@@ -3423,8 +3473,8 @@ function syncZombies(state, dt) {
         // 记下 id：出拳动作演完时要用它派 bossAttackDone 回玩法层
         if (vis) vis.zombieId = z.id;
         entry = vis
-          ? { isModel: true, vis }
-          : { isModel: false, mesh: makeZombieMesh(z.type) };
+          ? { isModel: true, vis, bossFallback: z.type === 10 && proto !== modelLib.zombies[10] }
+          : { isModel: false, mesh: makeZombieMesh(z.type), bossFallback: z.type === 10 };
 
         // 精英和 Boss 头顶挂血条；普通僵尸不显示，避免满屏血条
         const look = ZOMBIE_LOOKS[z.type];
@@ -3454,7 +3504,11 @@ function syncZombies(state, dt) {
           playBossRoar();
         }
       } else {
-        entry = { isModel: false, mesh: makeZombieMesh(z.type) };
+        entry = {
+          isModel: false,
+          mesh: makeZombieMesh(z.type),
+          bossFallback: z.type === 10,
+        };
       }
       scene.add(entry.isModel ? entry.vis.root : entry.mesh);
       zombieMeshes.set(z.id, entry);
