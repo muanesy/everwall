@@ -863,8 +863,10 @@ export function initVisuals(container, events) {
   backdropMesh.position.set(0, 30, GROUND_Z - GROUND_H / 2);
   scene.add(backdropMesh);
 
-  // 背景物：每张地图一套，全部是程序化生成的低面数道具，不占下载体积
-  buildProps();
+  // 背景物：每张地图一套，全部是程序化生成的低面数道具，不占下载体积。
+  // 必须接住返回值：后面 switchMapLook 切图时靠 propsGroup 引用把旧的拆掉。
+  // 不接的话这里会多出一份永远删不掉的副本，切几次图就叠几层。
+  propsGroup = buildProps();
 
   // 空气感：每张地图自己的粒子（雨丝/萤火虫/风沙/星尘/飘雪/火星）
   initAmbientFx();
@@ -4230,28 +4232,33 @@ function buildProps(mapId = MAP_ID) {
     harbor: { color: 0x101a20, count: 7 },
   }[mapId] || { color: 0x11151b, count: 7 };
 
-  // 新地图的剪影在各自的 build 里处理（每张的暗带色调不同），这里跳过
-  if (isNewMap(mapId)) return group;
-
-  const silMat = mat(silhouette.color, { flat: true, rough: 1 });
-  for (let i = 0; i < silhouette.count; i++) {
-    const side = i % 2 ? 1 : -1;
-    const h = 0.7 + rng() * 1.3;
-    const w = 0.8 + rng() * 1.8;
-    const block = new THREE.Mesh(new THREE.BoxGeometry(w, h, w * 0.8), silMat);
-    block.position.set(
-      side * (4.2 + rng() * 7.5),
-      h / 2 - 0.15,
-      16.5 + rng() * 3.5
-    );
-    block.rotation.y = rng() * Math.PI;
-    block.rotation.z = (rng() - 0.5) * 0.12;
-    group.add(block);
+  // 新地图的剪影在各自的 build 里处理（每张的暗带色调不同），这里跳过。
+  // 注意这里**不能 return**：下面还有 scene.add，提前 return 会让新地图
+  // 的背景物只存在于内存里、从来没渲染出来（踩过，表现就是"看不见背景物"）。
+  if (!isNewMap(mapId)) {
+    const silMat = mat(silhouette.color, { flat: true, rough: 1 });
+    for (let i = 0; i < silhouette.count; i++) {
+      const side = i % 2 ? 1 : -1;
+      const h = 0.7 + rng() * 1.3;
+      const w = 0.8 + rng() * 1.8;
+      const block = new THREE.Mesh(new THREE.BoxGeometry(w, h, w * 0.8), silMat);
+      block.position.set(
+        side * (4.2 + rng() * 7.5),
+        h / 2 - 0.15,
+        16.5 + rng() * 3.5
+      );
+      block.rotation.y = rng() * Math.PI;
+      block.rotation.z = (rng() - 0.5) * 0.12;
+      group.add(block);
+    }
   }
 
-  // 这个 return 之前漏了：只有新地图那条分支有 `if (isNewMap) return group`，
-  // 原有 9 张图走到这里直接把函数结束，返回 undefined。
-  // 后果是 propsGroup 拿不到引用 → 切图时旧背景物删不掉、一层层叠上去。
+  /* 加进场景 + 返回引用，两件事必须都在这里，一处都不能少：
+   *   - 少了 scene.add：道具全在内存里，画面上什么都没有（之前就是这个状态）
+   *   - 少了 return：调用方拿不到引用，切图时旧道具删不掉，会一层层叠加
+   * 之前两句都缺：新地图分支提前 return 跳过了 scene.add，
+   * 原有地图的 return 是缺的，而 scene.add 又在上一轮修 return 时被我一起替换掉了。 */
+  scene.add(group);
   return group;
 }
 

@@ -3105,7 +3105,14 @@ function updateZombies(dt) {
     } else {
       // 水里走不动：水位漫过脚踝后整场僵尸都慢下来
       const waterMul = state.floodLevel >= CONFIG.flood.slowFrom ? CONFIG.flood.slowMul : 1;
-      z.z += z.speed * dt * slowMul * waterMul;
+
+      // Boss 入场加速：新出生点在 z=-34（画面外），到进屏线 -21.5 有 12.5 个单位。
+      // 按原速 1.6/秒要走 7.8 秒，玩家长时间看不到威胁、只听见声音，会以为卡住了。
+      // 离屏阶段给 1.9 倍，约 4 秒走进画面；进屏后立刻恢复正常速度，
+      // 所以不影响它进场之后的压迫节奏和平衡。
+      const introMul = z.boss && z.z < CONFIG.world.screenTopZ ? 1.9 : 1;
+
+      z.z += z.speed * dt * slowMul * waterMul * introMul;
     }
 
     z.x = clamp(z.x, -CONFIG.world.halfWidth - 1, CONFIG.world.halfWidth + 1);
@@ -3833,7 +3840,16 @@ function spawnEraBoss(eraIndex) {
     id: state.nextId++,
     // 从通道正中来，正对士兵，不走边缘
     x: (minX + maxX) / 2,
-    z: CONFIG.world.spawnZ - 2,
+    // 出生点必须比普通僵尸更远。
+    //
+    // 普通僵尸身高 1.55，在 spawnZ(-26) 出生时头顶屏幕 y≈205，虽然已在画面里，
+    // 但只占很小一块，看不出来"凭空冒出"。
+    // Boss 身高 9.3（6 倍体型），在 -28 出生时头顶 y=5、脚底 218 —— 一出生就
+    // 有整条身子露在画面里，玩家看到的就是"从半路长出来"。
+    // 按投影算，只有 z ≤ -32 才完全出画；取 -34 留一点余量（头顶 y=-41）。
+    // 这段距离在雾里（各图 fogFar 最小 72，此处深度约 62），
+    // 所以效果是它从雾里一步步显形走过来，正是想要的压迫感。
+    z: CONFIG.world.spawnZ - 8,
     hp,
     maxHp: hp,          // 画面层靠这个显示头顶血条
     speed: Math.min(CONFIG.zombie.speedCap, CONFIG.zombie.baseSpeed * type.speed),
