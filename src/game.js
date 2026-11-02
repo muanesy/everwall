@@ -178,6 +178,17 @@ const CONFIG = {
     mgDamage: 12,
     mgRange: 8,
   },
+  // 无人机蜂群：一波内陆续放出 10 架自杀式无人机，各自随机锁定一只僵尸
+  droneSwarm: {
+    count: 10,          // 一波总共 10 架
+    duration: 15,       // 持续一波，和 CONFIG.wave.duration 保持一致
+    speed: 13,          // 飞行速度
+    damage: 65,         // 命中爆炸伤害
+    aoeRadius: 2.2,     // 命中点的小范围
+    startZ: 10.6,       // 从士兵阵型后方起飞，看得见"从屏幕下方出发"
+    despawnZ: -24,      // 没目标一直往上游，飞出这条线就撤
+    lockPad: 0.75,      // 离目标多近算命中
+  },
   carrierDrones: {
     count: 4,
     life: 15,          // 持续一波，和 CONFIG.wave.duration 保持一致
@@ -194,9 +205,11 @@ const CONFIG = {
     beamWidth: 3.0,
   },
   weaponDrop: {
-    duration: 12,      // 空投重武器持续时间
+    duration: 12,      // 空投重武器持续时间（从箱子被打中那一刻开始算）
     damageMul: 2.0,
     rateMul: 1.5,
+    fallSpeed: 9,      // 箱子从天而降的速度
+    offsetZ: 3.0,      // 落在玩家正前方，不然子弹从头顶飞过去打不到
   },
   virusBomb: {
     count: 2,
@@ -298,8 +311,9 @@ const CONFIG = {
       { id: 14, name: '召唤者', hp: 2.2, speed: 0.72, touchLoss: 2, score: 8, baseWeight: 0, growth: 0, minWave: 999, summoner: true },
       // 时代 Boss：不参与随机抽签（minWave 999 + boss 标记双保险），
       // 只由 spawnEraBoss() 在切换时代时单独刷一只
-      // hp 9 = 同波普通僵尸的 9 倍（第 5 波约 470 血），40 兵对准约 20 秒能打完
-      { id: 10, name: '时代Boss', hp: 9, speed: 0.5, touchLoss: 6, score: 40, baseWeight: 0, growth: 0, minWave: 999, boss: true },
+      // hp 26 = 同波普通僵尸的 26 倍（第 5 波约 1350 血、第 21 波约 4680 血）。
+      // 原来 9 倍在中后期几秒就被打穿，Boss 完全没有"分段节点"的分量
+      { id: 10, name: '时代Boss', hp: 26, speed: 0.5, touchLoss: 6, score: 40, baseWeight: 0, growth: 0, minWave: 999, boss: true },
     ],
   },
   wave: {
@@ -345,23 +359,25 @@ const CONFIG = {
   },
   // 掉落拾取（点子池「掉落拾取」）：场上掉武器箱，走过去换枪
   pickup: {
-    interval: 14,
-    firstDelay: 12,
-    duration: 18,      // 换来的枪能用多少秒，到点自动换回时代武器
-    reach: 1.05,       // 走到多近算捡到
-    max: 2,
-    hitW: 0.72,        // 子弹命中的横向半宽（打中也能捡，不用非得走过去）
+    interval: 26,      // 以前 14 秒一个，掉得太勤，拉到 26 秒
+    firstDelay: 16,
+    duration: 9,       // 换来的枪只能用 9 秒（原来 18 秒的一半），到点换回时代武器
+    max: 1,            // 场上最多一个，以前是两个
+    life: 24,          // 打不中就在场上待 24 秒自动消失，不然会一直占着刷新位
+    hitW: 0.72,        // 子弹命中的横向半宽
     hitZ: 0.66,        // 子弹命中的纵向半宽
     weapons: [
+      // 三发扇形：打单体目标只有中间一发能中（实测 0.39×），
+      // 但打群体是 1.85×，这是它的定位，别为了单体好看把散布收窄
       { kind: 'shotgun', name: '霰弹枪', bullets: 3, spread: 2.8,
         intervalMul: 1.45, damageMul: 0.55, tint: 0xffb04a,
-        desc: '三发扇形，近身压制' },
+        desc: '三发扇形，近身压制（群体 ×1.85 / 单体 ×0.39）' },
       { kind: 'sniper', name: '狙击枪', bullets: 1, spread: 0.12,
         intervalMul: 2.2, damageMul: 3.2, pierce: true, tint: 0x9ad0ff,
         desc: '单发重击，必穿透' },
       { kind: 'mg', name: '机枪', bullets: 1, spread: 1.0,
-        intervalMul: 0.45, damageMul: 0.42, tint: 0x8affc0,
-        desc: '泼水射速，单发轻' },
+        intervalMul: 0.42, damageMul: 0.58, tint: 0x8affc0,
+        desc: '泼水射速，单发偏轻（DPS ×1.38）' },
     ],
   },
   // 锁链路障（点子池「锁链路障」）：挡半条通道，僵尸必须绕过去
@@ -498,6 +514,8 @@ const state = {
   tankSupport: null, // { x, z, shotsLeft, timer, retreating, retreatDelay }
   apcCharges: [],    // { id, x, z, speed, damage, hit, mgTimer }
   carrierDrones: [], // { id, x, z, baseX, baseZ, life, mgTimer, phase }
+  swarmDrones: [],   // 无人机蜂群：{ id, x, z, targetId, life, heading }
+  swarm: { until: 0, left: 0, timer: 0 }, // 蜂群的结束时间、还剩几架没放、下一架倒计时
   friendlyZombies: [], // { id, x, z, hp, maxHp, speed, damage, attackTimer, life, converted }
   virusBombs: [],    // { id, x, z, timeLeft, radius, maxConvert }
   usedSkills: [],    // 一局只能用一次的技能 id，目前是轨道轰炸
@@ -746,6 +764,10 @@ function resetState(opts = {}) {
   state.tankSupport = null;
   state.apcCharges.length = 0;
   state.carrierDrones.length = 0;
+  state.swarmDrones.length = 0;
+  state.swarm.until = 0;
+  state.swarm.left = 0;
+  state.swarm.timer = 0;
   state.friendlyZombies.length = 0;
   state.virusBombs.length = 0;
 
@@ -798,6 +820,10 @@ function revive() {
   state.tankSupport = null;
   state.apcCharges.length = 0;
   state.carrierDrones.length = 0;
+  state.swarmDrones.length = 0;
+  state.swarm.until = 0;
+  state.swarm.left = 0;
+  state.swarm.timer = 0;
   state.friendlyZombies.length = 0;
   state.virusBombs.length = 0;
   state.weaponBoostUntil = 0;
@@ -1238,7 +1264,7 @@ const SKILL_DEFS = [
   { id: 'tank', name: '坦克支援', era: 1, type: 'tank', color: 0xb0b8a0 },
   // 2 现代
   { id: 'precision', name: '精确打击', era: 2, type: 'aoe', damage: 110, radius: 2.2, color: 0x9fe3ff },
-  { id: 'droneSwarm', name: '无人机蜂群', era: 2, type: 'aoe', damage: 60, radius: 4.5, color: 0x7fd4ff },
+  { id: 'droneSwarm', name: '无人机蜂群', era: 2, type: 'droneSwarm', color: 0x7fd4ff },
   { id: 'emp', name: '电磁脉冲', era: 2, type: 'freeze', duration: 2, color: 0x6fa8ff },
   { id: 'apc', name: '装甲车冲锋', era: 2, type: 'apc', color: 0x8f9a7a },
   { id: 'supplyDrop', name: '空投补给', era: 2, type: 'weaponDrop', color: 0x5adf7a },
@@ -1317,7 +1343,7 @@ const SKILL_DESCS = {
   paratroopers: '立刻 +10 兵',
   tank: '左下出现坦克，打 3 发范围炮（每发 60、半径 3）后撤退',
   precision: '最密处半径 2.2 内 110 伤害',
-  droneSwarm: '最密处半径 4.5 内 60 伤害',
+  droneSwarm: '一波内陆续放出 10 架无人机，从屏幕下方起飞、各自随机锁定僵尸，命中造成 65 点小范围伤害',
   emp: '全场僵尸原地停顿 2 秒',
   apc: '慢速向上冲锋，撞到每只僵尸 90 伤害，同时机枪点射最近僵尸',
   supplyDrop: '空投重武器：12 秒内子弹伤害 ×2、射速 ×1.5',
@@ -1574,6 +1600,13 @@ function castSkill(id) {
     case 'carrierDrones':
       spawnCarrierDrones();
       break;
+    case 'droneSwarm': {
+      const cfg = CONFIG.droneSwarm;
+      state.swarm.until = state.time + cfg.duration;
+      state.swarm.left = cfg.count;
+      state.swarm.timer = 0; // 立刻起飞第一架
+      break;
+    }
     case 'orbital': {
       const band = bombardNearestFraction(CONFIG.orbital.killFraction);
       // 清完之后留一口真空，不然下一只几乎立刻补上，看起来像没打
@@ -1605,13 +1638,27 @@ function castSkill(id) {
       spawnKnightCharge();
       break;
     case 'weaponDrop': {
+      // 不再"放了就生效"：箱子落在玩家正前方，必须用子弹打中才开
       const cfg = CONFIG.weaponDrop;
-      state.weaponBoostUntil = state.time + cfg.duration;
-      state.weaponBoostDamage = cfg.damageMul;
-      state.weaponBoostRate = cfg.rateMul;
       target.x = state.player.x;
-      target.z = state.player.z;
-      emit('skillNotice', { text: '空投重武器 · 子弹伤害 ×2、射速 ×1.5', kind: 'skill' });
+      target.z = state.player.z - cfg.offsetZ;
+
+      state.pickups.push({
+        id: state.nextId++,
+        x: target.x,
+        z: target.z,
+        y: 11,
+        landed: false,
+        kind: 'boost',
+        life: 999, // 技能箱不自动消失，等玩家打
+        boost: {
+          name: '空投重武器',
+          damageMul: cfg.damageMul,
+          rateMul: cfg.rateMul,
+          duration: cfg.duration,
+        },
+      });
+      emit('skillNotice', { text: '空投重武器已投下 · 打中箱子才生效', kind: 'skill' });
       break;
     }
     case 'virusBomb':
@@ -2111,6 +2158,7 @@ function update(dt) {
   updateTankSupport(dt);
   updateApcCharges(dt);
   updateCarrierDrones(dt);
+  updateSwarmDrones(dt);
   updateRollingLogs(dt);
   updateKnightCharges(dt);
   updateCampfireZones(dt);
@@ -2224,39 +2272,53 @@ function updateFiring(dt) {
   const origins = [];
   const offsets = shooterOffsets(shooters, width);
 
+  // 一帧最多补几枪：低帧率（尤其手机）时 interval 比 dt 还小，
+  // 原来"每帧最多一发"会把机枪这类高射速武器直接压成 1/fps 发，
+  // 看起来就是"机枪伤害特别低"
+  const MAX_SHOTS_PER_FRAME = 6;
+
   for (let i = 0; i < shooters; i++) {
     timers[i] -= dt;
     if (timers[i] > 0) continue;
 
-    timers[i] += interval;
-    if (timers[i] < 0) timers[i] = interval;
-
     const x = state.player.x + offsets[i];
+    let shots = 0;
 
-    // 霰弹枪一次喷三发：横向散开但总伤害受 damageMul 约束过，
-    // 不会因为弹数多就白赚输出
-    for (let k = 0; k < pickBullets; k++) {
-      const vx = (Math.random() * 2 - 1) * jitter +
-        (pickBullets > 1 ? (k - (pickBullets - 1) / 2) * picked.spread : 0);
+    while (timers[i] <= 0 && shots < MAX_SHOTS_PER_FRAME) {
+      timers[i] += interval;
+      shots += 1;
 
-      state.bullets.push({
-        id: state.nextId++,
-        x,
-        z: state.player.z - 0.1,
-        vx,
-        vz: -CONFIG.player.bulletSpeed,
-        damage:
-          CONFIG.player.bulletDamage *
-          tier.damage *
-          state.upgrades.damage *
-          weapon.damageMul *
-          pickDamageMul *
-          boostDamage,
-        pierces: 0,
-      });
+      // 同一帧补出来的几发错开一点 z，别叠在同一个点上
+      const zOffset = (shots - 1) * 0.06;
+
+      // 霰弹枪一次喷三发：横向散开但总伤害受 damageMul 约束过，
+      // 不会因为弹数多就白赚输出
+      for (let k = 0; k < pickBullets; k++) {
+        const vx = (Math.random() * 2 - 1) * jitter +
+          (pickBullets > 1 ? (k - (pickBullets - 1) / 2) * picked.spread : 0);
+
+        state.bullets.push({
+          id: state.nextId++,
+          x,
+          z: state.player.z - 0.1 - zOffset,
+          vx,
+          vz: -CONFIG.player.bulletSpeed,
+          damage:
+            CONFIG.player.bulletDamage *
+            tier.damage *
+            state.upgrades.damage *
+            weapon.damageMul *
+            pickDamageMul *
+            boostDamage,
+          pierces: 0,
+        });
+      }
+
+      origins.push({ x, z: state.player.z });
     }
 
-    origins.push({ x, z: state.player.z });
+    // 掉帧太久拖下了一堆没打完：不无限追帧，直接对齐到下一发
+    if (timers[i] < 0) timers[i] = interval;
   }
 
   if (origins.length) {
@@ -2387,6 +2449,21 @@ function hitPickup(bx, bz, prevZ = bz) {
     if (b.z < zMin || b.z > zMax) continue;
 
     state.pickups.splice(i, 1);
+
+    // 空投补给掉下来的重武器箱：打中才开，buff 从这一刻开始计时
+    if (b.kind === 'boost') {
+      const boost = b.boost;
+      state.weaponBoostUntil = state.time + boost.duration;
+      state.weaponBoostDamage = boost.damageMul;
+      state.weaponBoostRate = boost.rateMul;
+      emit('pickupHit', { x: b.x, z: b.z, id: b.id, kind: 'boost', name: boost.name });
+      emit('skillNotice', {
+        text: `${boost.name} · 子弹 ×${boost.damageMul}、射速 ×${boost.rateMul}，持续 ${boost.duration} 秒`,
+        kind: 'skill',
+      });
+      return true;
+    }
+
     emit('pickupHit', {
       x: b.x, z: b.z, id: b.id,
       kind: b.weapon.kind, name: b.weapon.name,
@@ -3375,6 +3452,82 @@ function updateCarrierDrones(dt) {
   }
 }
 
+// 无人机蜂群：一波内陆续放出，每架从屏幕下方起飞，随机锁定一只僵尸后自爆
+function spawnSwarmDrone() {
+  const cfg = CONFIG.droneSwarm;
+  // 横向贴着玩家当前站位起飞，纵向在阵型后方（屏幕更下方）
+  const x = state.player.x + (Math.random() * 2 - 1) * 2.2;
+
+  state.swarmDrones.push({
+    id: state.nextId++,
+    x,
+    z: cfg.startZ,
+    targetId: 0,
+    life: 0,
+    heading: 0,
+  });
+  emit('swarmLaunch', { x, z: cfg.startZ });
+}
+
+function pickRandomZombie() {
+  if (!state.zombies.length) return null;
+  return state.zombies[Math.floor(Math.random() * state.zombies.length)];
+}
+
+function updateSwarmDrones(dt) {
+  const cfg = CONFIG.droneSwarm;
+
+  // 起飞排队：一波内匀速放完 10 架
+  if (state.swarm.left > 0) {
+    state.swarm.timer -= dt;
+    if (state.swarm.timer <= 0) {
+      spawnSwarmDrone();
+      state.swarm.left -= 1;
+      state.swarm.timer = cfg.duration / cfg.count;
+    }
+  }
+
+  for (let i = state.swarmDrones.length - 1; i >= 0; i--) {
+    const d = state.swarmDrones[i];
+    d.life += dt;
+
+    // 目标死了就重新随机锁一个
+    let target = d.targetId
+      ? state.zombies.find((z) => z.id === d.targetId)
+      : null;
+    if (!target) {
+      target = pickRandomZombie();
+      d.targetId = target ? target.id : 0;
+    }
+
+    if (target) {
+      const dx = target.x - d.x;
+      const dz = target.z - d.z;
+      const dist = Math.hypot(dx, dz) || 1;
+      d.heading = Math.atan2(dx, dz);
+
+      // 撞上目标：小范围爆炸后自毁
+      if (dist < cfg.lockPad) {
+        emit('swarmHit', { x: target.x, z: target.z, radius: cfg.aoeRadius });
+        damageZombiesInRadius(target.x, target.z, cfg.aoeRadius, cfg.damage);
+        state.swarmDrones.splice(i, 1);
+        continue;
+      }
+
+      const step = Math.min(dist, cfg.speed * dt);
+      d.x += (dx / dist) * step;
+      d.z += (dz / dist) * step;
+    } else {
+      // 场上没僵尸：慢慢往上游，别停在半路
+      d.z -= cfg.speed * dt * 0.6;
+    }
+
+    if (d.z < cfg.despawnZ || d.life > cfg.duration + 8) {
+      state.swarmDrones.splice(i, 1);
+    }
+  }
+}
+
 // 攻城：炮弹飞行结束后，在落点结算伤害
 function updateSiegeShots(dt) {
   for (let i = state.siegeShots.length - 1; i >= 0; i--) {
@@ -3831,7 +3984,10 @@ function spawnWeaponPickup() {
   // 纵向放在玩家线上方不远，走两步就能到，不用穿越僵尸阵
   const z = state.player.z - 2.5 - Math.random() * 3.5;
 
-  const box = { id: state.nextId++, x, z, y: 11, landed: false, weapon };
+  const box = {
+    id: state.nextId++, x, z, y: 11, landed: false,
+    kind: 'weapon', weapon, life: CONFIG.pickup.life,
+  };
   state.pickups.push(box);
   emit('pickupSpawn', { x, z, id: box.id, kind: weapon.kind });
   return box;
@@ -3851,16 +4007,16 @@ function updatePickups(dt) {
     }
   }
 
-  // 捡起：落在玩家身位附近就换枪
+  // 箱子不再"走过去自动生效"：掉下来的箱子一律要用子弹打中才算数。
+  // 打不中就在场上待 pickup.life 秒自动消失，否则会一直占着刷新位
   for (let i = state.pickups.length - 1; i >= 0; i--) {
     const b = state.pickups[i];
     if (!b.landed) continue;
-    const dx = b.x - state.player.x;
-    const dz = b.z - state.player.z;
-    if (dx * dx + dz * dz > CONFIG.pickup.reach * CONFIG.pickup.reach) continue;
-
-    state.pickups.splice(i, 1);
-    equipWeapon(b.weapon);
+    b.life -= dt;
+    if (b.life <= 0) {
+      state.pickups.splice(i, 1);
+      emit('pickupExpired', { x: b.x, z: b.z, id: b.id });
+    }
   }
 
   // 倒计时：到点换回时代武器

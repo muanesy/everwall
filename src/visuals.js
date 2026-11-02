@@ -729,6 +729,7 @@ const rollingLogMeshes = new Map();
 const knightChargeMeshes = new Map();
 const apcMeshes = new Map();
 const carrierDroneMeshes = new Map();
+const swarmDroneMeshes = new Map();
 const friendlyZombieMeshes = new Map();
 const virusBombMeshes = new Map();
 let tankSupportMesh = null;
@@ -1043,6 +1044,23 @@ export function initVisuals(container, events) {
     });
   });
 
+  // 无人机蜂群起飞：脚下一小圈推进器光
+  events.addEventListener('swarmLaunch', (e) => {
+    const d = e.detail;
+    spawnRing(d.x, d.z, 0x7fd4ff, 0.28);
+  });
+
+  // 无人机蜂群命中：小范围爆炸，力度比普通 AOE 轻
+  events.addEventListener('swarmHit', (e) => {
+    const d = e.detail;
+    spawnImpact(d.x, d.z, {
+      radius: d.radius || 2.2,
+      color: 0x7fd4ff,
+      power: 0.55,
+      dust: false,
+    });
+  });
+
   events.addEventListener('friendlySpawn', (e) => {
     spawnRing(e.detail.x, e.detail.z, 0x5adf7a, 0.45);
   });
@@ -1110,7 +1128,8 @@ export function initVisuals(container, events) {
       // 黑洞 / 宇宙坍缩：不是炸开，是往里吸
       spawnImplosion(d.x, d.z, d.color || 0x6a4dff, d.radius || 4);
     } else if (d.type === 'weaponDrop') {
-      spawnWeaponDropFx(d.x, d.z);
+      // 箱子已经是实体（state.pickups 里的 boost 箱），由 syncPickups 负责画
+      spawnRing(d.x, d.z, 0xffd27a, 0.5);
     } else if (d.type === 'friendlyLegion') {
       spawnRing(0, 8.5, 0x9c6bff, 0.8);
     } else if (d.type === 'execute') {
@@ -1126,6 +1145,7 @@ export function initVisuals(container, events) {
       d.type === 'tank' ||
       d.type === 'apc' ||
       d.type === 'carrierDrones' ||
+      d.type === 'droneSwarm' ||
       d.type === 'virusBomb'
     ) {
       // 持续实体由各自的 sync 负责画
@@ -1339,6 +1359,18 @@ export function initVisuals(container, events) {
       speed: 2.2, up: 1.8, spread: 0.45, life: 0.5, gravity: -6,
     });
     shake = Math.max(shake, 0.14);
+  });
+
+  // 箱子没被打中，自己在场上待够了时间：一小圈灰光提示它没了
+  events.addEventListener('pickupExpired', (e) => {
+    const d = e.detail || {};
+    const x = Number(d.x);
+    const z = Number(d.z);
+    if (!isFinite(x) || !isFinite(z)) return;
+    spawnRing(x, z, 0x8a8f99, 0.28);
+    spawnBurst(x, 0.4, z, 0x8a8f99, 6, {
+      speed: 1.2, up: 0.8, spread: 0.35, life: 0.4, gravity: -4,
+    });
   });
 
   // 捡到武器：一圈武器色光爆 + 提示条，让"换枪了"这件事被看见
@@ -2714,6 +2746,7 @@ export function syncScene(state, dt) {
   syncTankSupport(state);
   syncApcs(state);
   syncCarrierDrones(state);
+  syncSwarmDrones(state);
   syncFriendlyZombies(state);
   syncVirusBombs(state);
 
@@ -3631,6 +3664,36 @@ function syncCarrierDrones(state) {
       disposeMesh(mesh);
       carrierDroneMeshes.delete(id);
     }
+  }
+}
+
+// 无人机蜂群：小型自杀机，贴着地面往目标飞，带一点倾斜
+function syncSwarmDrones(state) {
+  const alive = new Set();
+
+  for (const d of state.swarmDrones || []) {
+    alive.add(d.id);
+    let entry = swarmDroneMeshes.get(d.id);
+    if (!entry) {
+      entry = { group: makeCarrierDroneMesh() };
+      // 木机只有 0.32 宽，缩太小在竖屏上就是个点；1.0 才看得清是四旋翼
+      entry.group.scale.setScalar(1.0);
+      entry.group.traverse((o) => {
+        if (o.material && o.material.color) o.material = o.material.clone();
+      });
+      scene.add(entry.group);
+      swarmDroneMeshes.set(d.id, entry);
+    }
+    entry.group.position.set(d.x, 1.45 + Math.sin(d.life * 6) * 0.1, d.z);
+    entry.group.rotation.y = d.heading || 0;
+    entry.group.rotation.z = Math.sin(d.life * 9) * 0.12;
+  }
+
+  for (const [id, entry] of swarmDroneMeshes) {
+    if (alive.has(id)) continue;
+    scene.remove(entry.group);
+    disposeMesh(entry.group);
+    swarmDroneMeshes.delete(id);
   }
 }
 
@@ -6484,33 +6547,6 @@ function spawnRebootFx(removed = []) {
   for (const p of thin(removed, 26)) {
     spawnRing(p.x, p.z, 0xbfe9ff, 0.3);
   }
-}
-
-/* 空投补给：金色武器箱落到玩家脚边 */
-function spawnWeaponDropFx(x, z) {
-  const crate = new THREE.Mesh(
-    new THREE.BoxGeometry(0.5, 0.4, 0.5),
-    new THREE.MeshBasicMaterial({ color: 0xffd27a })
-  );
-  crate.position.set(x, 8, z);
-  scene.add(crate);
-  effects.push({
-    mesh: crate,
-    life: 0,
-    maxLife: 0.6,
-    type: 'arc',
-    from: { x, y: 8, z },
-    to: { x, y: 0.3, z },
-    arc: 0,
-  });
-
-  spawnRing(x, z, 0xffd27a, 0.8);
-  spawnBurst(x, 0.4, z, 0xffd27a, 14, {
-    speed: 2.2,
-    up: 2,
-    spread: 0.5,
-    life: 0.6,
-  });
 }
 
 /* 地面范围圈：给圆形技能标出覆盖范围 */
