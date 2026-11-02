@@ -21,10 +21,6 @@ import {
 } from './visuals.js';
 import { initUI, updateUI } from './ui.js';
 
-// 测试开关：true = 五个槽位默认解锁（含路障），方便逐个测试
-// 测试完改回 false，槽位就会重新走抽卡解锁
-const UNLOCK_ALL_SLOTS_FOR_TEST = true;
-
 // 起始地图：开始页传入的 ?map=，默认废墟街道
 const START_MAP =
   new URLSearchParams(window.location.search).get('map') || 'city';
@@ -73,11 +69,49 @@ const CONFIG = {
     duration: 10,        // 选择时间，秒
   },
   slots: {
-    siege: { x: 4.5, z: 15, interval: 6, radius: 2.6, damage: 30 },        // 攻城，后排右
-    support: { x: -4.5, z: 15, interval: 10, heal: 1 },                    // 支援，后排左
-    command: { x: 0, z: 15, fireRate: 0.05 },                              // 指挥，后排中
-    closeDefense: { x: 5.5, z: 4.5, interval: 0.5, radius: 3.0, damage: 8 },// 近防，前排右
-    // 工事就是路障本身，位置在 CONFIG.barricade
+    // 每个槽位 1-5 级。等级只改规模：伤害倍率、半径、间隔、回兵数。
+    // 时代倍率和欠级折扣在 CONFIG.era，结算时再乘。
+    siege: {
+      x: 4.5, z: 15, baseDamage: 30,
+      levels: [
+        { damageMul: 1.00, radius: 2.6, interval: 6.0 },
+        { damageMul: 1.25, radius: 2.9, interval: 5.7 },
+        { damageMul: 1.55, radius: 3.2, interval: 5.4 },
+        { damageMul: 1.90, radius: 3.5, interval: 5.1 },
+        { damageMul: 2.30, radius: 3.8, interval: 4.8 },
+      ],
+    },
+    support: {
+      x: -4.5, z: 15, baseHeal: 1,
+      levels: [
+        { healMul: 1, interval: 10.0 },
+        { healMul: 1, interval: 9.0 },
+        { healMul: 2, interval: 8.5 },
+        { healMul: 2, interval: 8.0 },
+        { healMul: 3, interval: 7.0 },
+      ],
+    },
+    command: {
+      x: 0, z: 15, baseRate: 0.05,
+      levels: [
+        { mul: 1.00 },
+        { mul: 1.30 },
+        { mul: 1.60 },
+        { mul: 2.00 },
+        { mul: 2.50 },
+      ],
+    },
+    closeDefense: {
+      x: 5.5, z: 4.5, baseDamage: 8,
+      levels: [
+        { damageMul: 1.00, radius: 3.0, interval: 0.50 },
+        { damageMul: 1.20, radius: 3.2, interval: 0.47 },
+        { damageMul: 1.45, radius: 3.4, interval: 0.44 },
+        { damageMul: 1.75, radius: 3.6, interval: 0.41 },
+        { damageMul: 2.10, radius: 3.8, interval: 0.38 },
+      ],
+    },
+    // 工事就是路障本身，位置和等级在 CONFIG.barricade
   },
   barrel: {
     damageBase: 20,      // 炸药桶爆炸伤害的基础值
@@ -166,8 +200,27 @@ const CONFIG = {
   era: {
     count: 6,          // 六个时代
     everyWaves: 4,     // 每 4 波进一个时代
+    names: ['中世纪', '二战', '现代', '后现代', '星际', '终幕'],
+    // 槽位等级模型：最终值 = 基础值 × 时代倍率 × 等级倍率 × 欠级折扣
+    attackPower: [1.00, 1.30, 1.70, 2.20, 2.80, 3.50],
+    healPower: [1.00, 1.20, 1.50, 1.90, 2.40, 3.00],
+    commandPower: [1.00, 1.20, 1.40, 1.70, 2.00, 2.40],
+    hpPower: [1.00, 1.25, 1.55, 1.90, 2.30, 2.80],
+    recommendedLevel: [1, 2, 3, 4, 4, 5],
+    underLevelStep: 0.15, // 每差 1 级 -15%
+    underLevelMin: 0.55,  // 最多 -45%
   },
 };
+
+const SLOT_IDS = ['siege', 'closeDefense', 'support', 'command'];
+const SLOT_NAMES = {
+  siege: '攻城',
+  closeDefense: '近防',
+  support: '支援',
+  command: '指挥',
+  barricade: '工事',
+};
+const SLOT_MAX_LEVEL = 5;
 
 /* ----------------------------------------------------------
  * 游戏状态
@@ -183,6 +236,9 @@ const state = {
   era: 0,
   mapId: START_MAP,
   usedMaps: [START_MAP],
+
+  // 测试模式：主界面开关打开后进入，左侧面板控制槽位和技能
+  testMode: false,
 
   player: {
     x: 0,
@@ -216,13 +272,19 @@ const state = {
     version: 0,
   },
   timeScale: 1,
-  // 槽位默认全部锁定，抽到对应卡才生效
+  // 槽位默认全部锁定，抽到对应卡才生效；level 0 = 未解锁，1-5 = 等级
   slots: { siege: false, support: false, closeDefense: false, command: false },
+  slotLevels: { siege: 0, support: 0, closeDefense: 0, command: 0 },
   slotTimers: { siege: 3, support: 6, closeDefense: 0 },
   slowUntil: 0,
   slowMul: 1,
   buffUntil: 0,
   buffMul: 1,
+  // 电磁脉冲：冻结期间僵尸不移动、不啃墙
+  freezeUntil: 0,
+  // 熵增：持续掉血的截止时间和每秒伤害
+  entropyUntil: 0,
+  entropyDps: 0,
 
   // 路障：抽到卡才出现，挡在前排，有血量，碎了冷却后重建
   barricade: {
@@ -297,13 +359,6 @@ const emit = (name, detail = {}) =>
  * ---------------------------------------------------------- */
 initVisuals(document.getElementById('game-container'), events);
 
-initUI(state, {
-  start: startGame,
-  restart: startGame,
-  revive: revive,
-  chooseCard,
-});
-
 // 炸药桶爆炸：乙负责画面，这里按半径结算僵尸伤害
 events.addEventListener('barrelExploded', (e) => {
   const detail = e.detail || {};
@@ -372,12 +427,13 @@ window.addEventListener('pointercancel', () => {
 /* ----------------------------------------------------------
  * 开局 / 复活
  * ---------------------------------------------------------- */
-function resetState() {
+function resetState(opts = {}) {
   state.status = 'playing';
+  state.testMode = !!opts.testMode;
   state.time = 0;
   state.wave = 1;
   state.score = 0;
-  state.soldiers = 5;
+  state.soldiers = state.testMode ? 120 : 5;
   state.player.x = 0;
   state.era = 0;
   state.mapId = START_MAP;
@@ -401,6 +457,7 @@ function resetState() {
   state.slots.support = false;
   state.slots.closeDefense = false;
   state.slots.command = false;
+  state.slotLevels = { siege: 0, support: 0, closeDefense: 0, command: 0 };
 
   state.slotTimers.siege = 3;
   state.slotTimers.support = 6;
@@ -409,6 +466,9 @@ function resetState() {
   state.slowMul = 1;
   state.buffUntil = 0;
   state.buffMul = 1;
+  state.freezeUntil = 0;
+  state.entropyUntil = 0;
+  state.entropyDps = 0;
 
   state.bullets.length = 0;
   state.barriers.length = 0;
@@ -421,20 +481,18 @@ function resetState() {
   state.spawnCounts.fill(0);
   resetBarricade();
 
-  if (UNLOCK_ALL_SLOTS_FOR_TEST) {
-    state.slots.siege = true;
-    state.slots.support = true;
-    state.slots.closeDefense = true;
-    state.slots.command = true;
-    unlockBarricade();
+  // 测试模式：五个槽位全部 1 级，弹药和兵都管够
+  if (state.testMode) {
+    for (const id of SLOT_IDS) setSlotLevel(id, 1);
+    setSlotLevel('barricade', 1);
   }
 
   // 把画面拉回第一个时代和起始地图，静默切换，不弹提示
   switchEra(0, START_MAP, { fade: false, silent: true });
 }
 
-function startGame() {
-  resetState();
+function startGame(opts = {}) {
+  resetState(opts);
 }
 
 function revive() {
@@ -459,10 +517,76 @@ function revive() {
   }
 }
 
-function barricadeStats(level) {
+// 低于当前时代推荐等级时的折扣：每差 1 级 -15%，最多 -45%
+function underLevelMul(level, era = state.era) {
+  const cfg = CONFIG.era;
+  const recommended = cfg.recommendedLevel[era] || 1;
+  const behind = Math.max(0, recommended - level);
+  return Math.max(
+    cfg.underLevelMin,
+    1 - cfg.underLevelStep * behind
+  );
+}
+
+// 槽位在某个等级、某个时代下的实际数值（不读 state，方便卡面和测试面板预览）
+function slotStatsAt(id, level, era = state.era) {
+  const cfg = CONFIG.slots[id];
+  if (!cfg) return null;
+
+  const lv = Math.min(cfg.levels.length, Math.max(1, Math.floor(level)));
+  const row = cfg.levels[lv - 1];
+  const under = underLevelMul(lv, era);
+
+  if (id === 'support') {
+    return {
+      heal: Math.max(1, Math.round(cfg.baseHeal * CONFIG.era.healPower[era] * row.healMul * under)),
+      interval: row.interval,
+    };
+  }
+
+  if (id === 'command') {
+    return {
+      bonus: cfg.baseRate * CONFIG.era.commandPower[era] * row.mul * under,
+    };
+  }
+
+  return {
+    damage: Math.round(cfg.baseDamage * CONFIG.era.attackPower[era] * row.damageMul * under),
+    radius: row.radius,
+    interval: row.interval,
+  };
+}
+
+function slotStats(id) {
+  return slotStatsAt(id, state.slotLevels[id] || 1);
+}
+
+// 一行文字描述，卡面和测试面板共用
+function slotSummary(id, level, era = state.era) {
+  if (id === 'barricade') {
+    const s = barricadeStatsAt(level, era);
+    return `${s.hp} 血 / 反击 ${s.damage} / 宽 ${s.width}`;
+  }
+
+  const s = slotStatsAt(id, level, era);
+  if (!s) return '';
+
+  if (id === 'support') return `${s.heal} 兵 / ${s.interval.toFixed(1)}s`;
+  if (id === 'command') return `射速 +${(s.bonus * 100).toFixed(1)}%`;
+  return `${s.damage} 伤 / 半径 ${s.radius} / ${s.interval.toFixed(1)}s`;
+}
+
+function barricadeStatsAt(level, era = state.era) {
   const levels = CONFIG.barricade.levels;
   const i = Math.min(levels.length - 1, Math.max(0, Math.floor(level) - 1));
-  return levels[i];
+  const row = levels[i];
+  const under = underLevelMul(i + 1, era);
+
+  return {
+    hp: Math.round(row.hp * CONFIG.era.hpPower[era] * under),
+    damage: Math.round(row.damage * CONFIG.era.attackPower[era] * under),
+    width: row.width,
+  };
 }
 
 function applyBarricadeLevel(level, opts = {}) {
@@ -471,8 +595,9 @@ function applyBarricadeLevel(level, opts = {}) {
     CONFIG.barricade.levels.length,
     Math.max(1, Math.floor(level))
   );
-  const stats = barricadeStats(next);
+  const stats = barricadeStatsAt(next);
   const prevMax = b.maxHp || stats.hp;
+  const hpRatio = prevMax > 0 ? b.hp / prevMax : 1;
 
   b.unlocked = true;
   b.level = next;
@@ -483,6 +608,7 @@ function applyBarricadeLevel(level, opts = {}) {
   b.damage = stats.damage;
 
   if (opts.full) b.hp = b.maxHp;
+  else if (opts.keepRatio) b.hp = Math.round(b.maxHp * hpRatio);
   else b.hp = Math.min(b.maxHp, b.hp + Math.max(0, stats.hp - prevMax));
 }
 
@@ -520,6 +646,115 @@ function upgradeBarricade() {
   emit('barricadeUpgrade', { level: state.barricade.level });
 }
 
+// 设置槽位等级：0 = 未解锁，1-5 = 对应等级。抽卡和测试面板都走这里。
+function setSlotLevel(id, level) {
+  if (id === 'barricade') {
+    const lv = Math.max(0, Math.min(SLOT_MAX_LEVEL, Math.floor(level)));
+    if (lv === 0) {
+      resetBarricade();
+      return;
+    }
+
+    const firstTime = state.barricade.level === 0;
+    applyBarricadeLevel(lv, firstTime ? { full: true } : { keepRatio: true });
+    state.barricade.active = true;
+    state.barricade.cooldown = 0;
+    emit('barricadeUpgrade', { level: state.barricade.level });
+    return;
+  }
+
+  if (!SLOT_IDS.includes(id)) return;
+
+  const lv = Math.max(0, Math.min(SLOT_MAX_LEVEL, Math.floor(level)));
+  state.slotLevels[id] = lv;
+  state.slots[id] = lv > 0;
+
+  if (lv > 0) {
+    // 刚解锁时尽快打一次，方便看效果
+    state.slotTimers[id] = Math.min(state.slotTimers[id] ?? 0.5, 0.5);
+    emit('slotUnlock', { id });
+  }
+}
+
+// 换时代后重新算路障血量和反击伤害；槽位数值是每帧算的，不用刷新
+function refreshSlotsForEra() {
+  if (state.barricade.unlocked) {
+    applyBarricadeLevel(state.barricade.level, { keepRatio: true });
+  }
+}
+
+function getSlotInfo() {
+  return [
+    ...SLOT_IDS.map((id) => ({
+      id,
+      name: SLOT_NAMES[id],
+      level: state.slotLevels[id] || 0,
+      max: SLOT_MAX_LEVEL,
+      desc: state.slotLevels[id] > 0
+        ? slotSummary(id, state.slotLevels[id])
+        : '未解锁',
+    })),
+    {
+      id: 'barricade',
+      name: SLOT_NAMES.barricade,
+      level: state.barricade.unlocked ? state.barricade.level : 0,
+      max: SLOT_MAX_LEVEL,
+      desc: state.barricade.unlocked
+        ? slotSummary('barricade', state.barricade.level)
+        : '未解锁',
+    },
+  ];
+}
+
+function getTestData() {
+  return {
+    eras: CONFIG.era.names,
+    slots: [
+      ...SLOT_IDS.map((id) => ({ id, name: SLOT_NAMES[id] })),
+      { id: 'barricade', name: SLOT_NAMES.barricade },
+    ],
+    skills: SKILL_DEFS.map((s) => ({
+      id: s.id,
+      name: s.name,
+      era: s.era,
+    })),
+  };
+}
+
+// 测试模式：切时代不走波次逻辑，避免下一波又被拽回去
+function setEraForTest(index) {
+  if (!state.testMode) return;
+
+  const eraIndex = Math.max(
+    0,
+    Math.min(CONFIG.era.count - 1, Math.floor(index))
+  );
+  if (eraIndex === state.era) return;
+
+  const map = pickEraMap(eraIndex, state.usedMaps) || state.mapId || START_MAP;
+  state.era = eraIndex;
+  state.mapId = map;
+  state.usedMaps.push(map);
+
+  switchEra(eraIndex, map);
+  refreshSlotsForEra();
+}
+
+function spawnTestZombies(count = 20) {
+  if (!state.testMode) return;
+
+  for (let i = 0; i < count; i++) {
+    spawnZombie();
+    const z = state.zombies[state.zombies.length - 1];
+    if (z) z.z = -16 + Math.random() * 14; // 直接放在中场，方便技能命中
+  }
+}
+
+function clearTestZombies() {
+  if (!state.testMode) return;
+  state.zombies.length = 0;
+}
+
 if (typeof window !== 'undefined') {
   window.__setBarricadeLevel = (n) => {
     applyBarricadeLevel(n, { full: true });
@@ -527,6 +762,8 @@ if (typeof window !== 'undefined') {
   };
   window.__upgradeBarricade = upgradeBarricade;
   window.__castSkill = castSkill;
+  window.__setSlotLevel = setSlotLevel;
+  window.__slotInfo = getSlotInfo;
 }
 
 /* ----------------------------------------------------------
@@ -551,42 +788,58 @@ const CARD_POOL = [
   {
     id: 'slotSiege',
     name: '攻城槽',
-    desc: '解锁攻城：每 6 秒范围炮击',
-    can: () => !state.slots.siege,
-    apply: () => {
-      state.slots.siege = true;
-      emit('slotUnlock', { id: 'siege' });
-    },
+    desc: () => `解锁攻城 1 级：${slotSummary('siege', 1)}`,
+    can: () => !state.slotLevels.siege,
+    apply: () => setSlotLevel('siege', 1),
+  },
+  {
+    id: 'slotSiegeUpgrade',
+    name: '攻城升级',
+    desc: () => `攻城 ${state.slotLevels.siege} → ${state.slotLevels.siege + 1} 级，${slotSummary('siege', state.slotLevels.siege + 1)}`,
+    can: () => state.slotLevels.siege > 0 && state.slotLevels.siege < SLOT_MAX_LEVEL,
+    apply: () => setSlotLevel('siege', state.slotLevels.siege + 1),
   },
   {
     id: 'slotClose',
     name: '近防槽',
-    desc: '解锁近防：持续打身边的僵尸',
-    can: () => !state.slots.closeDefense,
-    apply: () => {
-      state.slots.closeDefense = true;
-      emit('slotUnlock', { id: 'closeDefense' });
-    },
+    desc: () => `解锁近防 1 级：${slotSummary('closeDefense', 1)}`,
+    can: () => !state.slotLevels.closeDefense,
+    apply: () => setSlotLevel('closeDefense', 1),
+  },
+  {
+    id: 'slotCloseUpgrade',
+    name: '近防升级',
+    desc: () => `近防 ${state.slotLevels.closeDefense} → ${state.slotLevels.closeDefense + 1} 级，${slotSummary('closeDefense', state.slotLevels.closeDefense + 1)}`,
+    can: () => state.slotLevels.closeDefense > 0 && state.slotLevels.closeDefense < SLOT_MAX_LEVEL,
+    apply: () => setSlotLevel('closeDefense', state.slotLevels.closeDefense + 1),
   },
   {
     id: 'slotSupport',
     name: '支援槽',
-    desc: '解锁支援：每 10 秒回兵',
-    can: () => !state.slots.support,
-    apply: () => {
-      state.slots.support = true;
-      emit('slotUnlock', { id: 'support' });
-    },
+    desc: () => `解锁支援 1 级：${slotSummary('support', 1)}`,
+    can: () => !state.slotLevels.support,
+    apply: () => setSlotLevel('support', 1),
+  },
+  {
+    id: 'slotSupportUpgrade',
+    name: '支援升级',
+    desc: () => `支援 ${state.slotLevels.support} → ${state.slotLevels.support + 1} 级，${slotSummary('support', state.slotLevels.support + 1)}`,
+    can: () => state.slotLevels.support > 0 && state.slotLevels.support < SLOT_MAX_LEVEL,
+    apply: () => setSlotLevel('support', state.slotLevels.support + 1),
   },
   {
     id: 'slotCommand',
     name: '指挥槽',
-    desc: '解锁指挥：全队射速 +5%',
-    can: () => !state.slots.command,
-    apply: () => {
-      state.slots.command = true;
-      emit('slotUnlock', { id: 'command' });
-    },
+    desc: () => `解锁指挥 1 级：${slotSummary('command', 1)}`,
+    can: () => !state.slotLevels.command,
+    apply: () => setSlotLevel('command', 1),
+  },
+  {
+    id: 'slotCommandUpgrade',
+    name: '指挥升级',
+    desc: () => `指挥 ${state.slotLevels.command} → ${state.slotLevels.command + 1} 级，${slotSummary('command', state.slotLevels.command + 1)}`,
+    can: () => state.slotLevels.command > 0 && state.slotLevels.command < SLOT_MAX_LEVEL,
+    apply: () => setSlotLevel('command', state.slotLevels.command + 1),
   },
   {
     id: 'damage',
@@ -635,9 +888,11 @@ const CARD_POOL = [
 /* 一次性技能：抽到就立刻释放，按效果类型走通用逻辑 */
 const SKILL_DEFS = [
   // 0 中世纪
-  { id: 'arrowRain', name: '箭雨', era: 0, type: 'line', damage: 40, radius: 2.6, color: 0xd9b36c },
+  // 半径 4 = 屏幕半宽，直径 8 刚好是屏幕宽度的一半
+  // 50 伤害：中世纪 1-4 波普通僵尸最高 44 血，保证能秒杀
+  { id: 'arrowRain', name: '箭雨', era: 0, type: 'aoe', damage: 50, radius: 4.0, color: 0xd9b36c },
   { id: 'rollingLog', name: '滚木', era: 0, type: 'line', damage: 60, radius: 2.0, color: 0x9c6b3f },
-  { id: 'holyWater', name: '圣水', era: 0, type: 'heal', soldiers: 2, color: 0x8fe3b0 },
+  { id: 'holyWater', name: '圣水', era: 0, type: 'heal', soldiers: 20, color: 0x8fe3b0 },
   { id: 'knightCharge', name: '骑士冲锋', era: 0, type: 'aoe', damage: 50, radius: 3.0, color: 0xc9d4e0 },
   { id: 'campfire', name: '篝火', era: 0, type: 'aoe', damage: 30, radius: 3.5, color: 0xff9a4d },
   // 1 二战
@@ -649,7 +904,7 @@ const SKILL_DEFS = [
   // 2 现代
   { id: 'precision', name: '精确打击', era: 2, type: 'aoe', damage: 110, radius: 2.2, color: 0x9fe3ff },
   { id: 'droneSwarm', name: '无人机蜂群', era: 2, type: 'aoe', damage: 60, radius: 4.5, color: 0x7fd4ff },
-  { id: 'emp', name: '电磁脉冲', era: 2, type: 'slow', duration: 2, mul: 0.05, color: 0x6fa8ff },
+  { id: 'emp', name: '电磁脉冲', era: 2, type: 'freeze', duration: 2, color: 0x6fa8ff },
   { id: 'apc', name: '装甲车冲锋', era: 2, type: 'line', damage: 70, radius: 3.0, color: 0x8f9a7a },
   { id: 'supplyDrop', name: '空投补给', era: 2, type: 'heal', soldiers: 15, color: 0x5adf7a },
   // 3 后现代
@@ -660,49 +915,49 @@ const SKILL_DEFS = [
   { id: 'memory', name: '记忆植入', era: 3, type: 'upgradeSlot', color: 0xd0a0ff },
   // 4 星际
   { id: 'orbital', name: '轨道轰炸', era: 4, type: 'line', damage: 130, radius: 3.5, color: 0x7fe3ff },
-  { id: 'blackHole', name: '黑洞', era: 4, type: 'pull', damage: 40, radius: 4.0, color: 0x6a4dff },
+  { id: 'blackHole', name: '黑洞', era: 4, type: 'pull', damage: 40, radius: 4.0, pullRadius: 12, pullFactor: 0.85, color: 0x6a4dff },
   { id: 'wormhole', name: '虫洞', era: 4, type: 'warp', color: 0xb06bff },
   { id: 'fleetSalvo', name: '舰队齐射', era: 4, type: 'line', damage: 100, radius: 3.0, color: 0x9fe3ff },
   { id: 'timeDilation', name: '时间膨胀', era: 4, type: 'slow', duration: 3, mul: 0.4, color: 0x8fb6ff },
   // 5 终幕
   { id: 'finalJudgment', name: '终焉审判', era: 5, type: 'aoe', damage: 200, radius: 6.0, color: 0xffffff },
-  { id: 'cosmicCollapse', name: '宇宙坍缩', era: 5, type: 'pull', damage: 80, radius: 6.0, color: 0x6a4dff },
-  { id: 'sacrifice', name: '献祭', era: 5, type: 'sacrifice', damage: 300, soldiers: 20, color: 0xff5a5a },
+  { id: 'cosmicCollapse', name: '宇宙坍缩', era: 5, type: 'pull', damage: 80, radius: 6.0, pullRadius: 14, pullFactor: 0.85, color: 0x6a4dff },
+  { id: 'sacrifice', name: '献祭', era: 5, type: 'sacrifice', damage: 300, soldiers: 20, requiresSoldiers: 20, color: 0xff5a5a },
   { id: 'reboot', name: '重启', era: 5, type: 'clear', color: 0xffffff },
-  { id: 'entropy', name: '熵增', era: 5, type: 'slow', duration: 5, mul: 0.5, damage: 8, color: 0x8a8f99 },
+  { id: 'entropy', name: '熵增', era: 5, type: 'slow', duration: 5, mul: 0.5, dps: 8, color: 0x8a8f99 },
 ];
 
 const SKILL_DESCS = {
-  arrowRain: '横排箭雨，对一整条线造成 40 点伤害',
-  rollingLog: '滚木横扫一条线，60 点伤害',
-  holyWater: '圣水回复 2 个兵',
-  knightCharge: '骑士冲锋，对最密的一群造成 50 点伤害',
-  campfire: '篝火点燃一片区域，30 点伤害',
-  airStrike: '空袭，对最密的一群造成 90 点伤害',
-  barrage: '炮火覆盖一整条横线，70 点伤害',
-  napalm: '燃烧弹，45 点范围伤害',
-  paratroopers: '空降 10 个兵',
-  tank: '坦克碾过一条横线，80 点伤害',
-  precision: '精确打击，110 点范围伤害',
-  droneSwarm: '无人机蜂群，60 点大范围伤害',
-  emp: '电磁脉冲，全场僵尸减速 2 秒',
-  apc: '装甲车冲锋，一条横线 70 点伤害',
-  supplyDrop: '空投补给，增加 15 个兵',
-  virusBomb: '病毒炸弹，80 点范围伤害',
-  bioLegion: '生物人军团，增加 8 个兵',
-  geneBurst: '基因爆发，全队射速翻倍 5 秒',
-  timeSlow: '时间减速，全场僵尸减速 50%，持续 4 秒',
-  memory: '记忆植入，路障 +1 级',
-  orbital: '轨道轰炸，横排 130 点伤害',
-  blackHole: '黑洞把周围僵尸吸到一点，并造成 40 点伤害',
-  wormhole: '虫洞把最靠前的僵尸送回屏幕顶端',
-  fleetSalvo: '舰队齐射，横排 100 点伤害',
-  timeDilation: '时间膨胀，全场慢放 3 秒',
-  finalJudgment: '终焉审判，200 点大范围伤害',
-  cosmicCollapse: '宇宙坍缩，把大范围僵尸拉向中心，80 点伤害',
-  sacrifice: '献祭 20 个兵，对全场僵尸造成 300 点伤害',
-  reboot: '重启，清空场上所有僵尸',
-  entropy: '熵增，全场僵尸减速并持续掉 8 点血',
+  arrowRain: '圆形箭雨：半径 4 内 50 伤害（直径 8，约屏幕宽度一半）',
+  rollingLog: '横排滚木：半宽 2 的整条横线 60 伤害',
+  holyWater: '立刻 +20 兵',
+  knightCharge: '最密处半径 3 内 50 伤害',
+  campfire: '最密处半径 3.5 内 30 伤害',
+  airStrike: '最密处半径 4 内 90 伤害',
+  barrage: '横排炮火：半宽 3 的整条横线 70 伤害',
+  napalm: '最密处半径 3.5 内 45 伤害',
+  paratroopers: '立刻 +10 兵',
+  tank: '横排碾压：半宽 3 的整条横线 80 伤害',
+  precision: '最密处半径 2.2 内 110 伤害',
+  droneSwarm: '最密处半径 4.5 内 60 伤害',
+  emp: '全场僵尸原地停顿 2 秒',
+  apc: '横排冲锋：半宽 3 的整条横线 70 伤害',
+  supplyDrop: '立刻 +15 兵',
+  virusBomb: '最密处半径 4 内 80 伤害',
+  bioLegion: '立刻 +8 兵',
+  geneBurst: '全队射速 ×2，持续 5 秒',
+  timeSlow: '全场僵尸移速 ×0.5，持续 4 秒',
+  memory: '路障 +1 级；未解锁则直接解锁 1 级',
+  orbital: '横排轨道轰炸：半宽 3.5 的整条横线 130 伤害',
+  blackHole: '半径 12 内僵尸吸向中心，中心半径 4 内 40 伤害',
+  wormhole: '最靠前的 1 只僵尸送回出生点',
+  fleetSalvo: '横排齐射：半宽 3 的整条横线 100 伤害',
+  timeDilation: '全场僵尸移速 ×0.4，持续 3 秒',
+  finalJudgment: '最密处半径 6 内 200 伤害',
+  cosmicCollapse: '半径 14 内僵尸吸向中心，中心半径 6 内 80 伤害',
+  sacrifice: '兵多于 20 时消耗 20 兵，全屏 300 伤害',
+  reboot: '清空场上所有僵尸，击杀照常计分',
+  entropy: '全场僵尸移速 ×0.5，每秒 8 伤害，持续 5 秒',
 };
 
 function densestPoint() {
@@ -785,7 +1040,15 @@ function castSkill(id) {
     case 'slow':
       state.slowUntil = state.time + def.duration;
       state.slowMul = def.mul;
-      if (def.damage) damageZombiesInRadius(target.x, target.z, 30, def.damage);
+      if (def.dps) {
+        state.entropyUntil = state.time + def.duration;
+        state.entropyDps = def.dps;
+      }
+      // 保险：以后有减速带即时伤害的技能，范围按全屏算
+      if (def.damage) damageZombiesInRadius(0, -6, 60, def.damage);
+      break;
+    case 'freeze':
+      state.freezeUntil = state.time + def.duration;
       break;
     case 'buff':
       state.buffUntil = state.time + def.duration;
@@ -797,32 +1060,40 @@ function castSkill(id) {
     case 'upgradeSlot':
       upgradeBarricade();
       break;
-    case 'pull':
+    case 'pull': {
+      // 只吸 pullRadius 内的僵尸，按 pullFactor 拉向落点；吸到中心的才吃伤害
+      const pullR2 = (def.pullRadius || 12) ** 2;
+      const factor = def.pullFactor ?? 0.85;
       for (const zb of state.zombies) {
         const dx = target.x - zb.x;
         const dz = target.z - zb.z;
-        const d = Math.hypot(dx, dz) || 1;
-        const step = Math.min(d, 2.5);
+        const d2 = dx * dx + dz * dz;
+        if (d2 > pullR2) continue;
+
+        const d = Math.sqrt(d2) || 1;
+        const step = d * factor;
         zb.x += (dx / d) * step;
         zb.z += (dz / d) * step;
+        zb.aggro = false;
       }
       damageZombiesInRadius(target.x, target.z, def.radius, def.damage);
       break;
+    }
     case 'warp': {
       const front = state.zombies.reduce(
         (a, b) => (b.z > a.z ? b : a),
         state.zombies[0]
       );
       if (front) {
-        front.z = -20;
+        front.z = CONFIG.world.spawnZ;
         front.aggro = false;
       }
       break;
     }
     case 'sacrifice':
       if (state.soldiers > def.soldiers) {
-        applySoldiers(-def.soldiers);
-        damageZombiesInRadius(0, -6, 40, def.damage);
+        applySoldiers(-def.soldiers, { force: true });
+        damageZombiesInRadius(0, -6, 60, def.damage);
       }
       break;
     case 'clear':
@@ -836,18 +1107,33 @@ function castSkill(id) {
   return true;
 }
 
+// 一次性技能也有出现条件：兵不够不能献祭，路障满级就不用再出记忆植入
+function skillCanAppear(def) {
+  if (def.requiresSoldiers) return state.soldiers > def.requiresSoldiers;
+  if (def.id === 'memory') {
+    return !state.barricade.unlocked ||
+      state.barricade.level < CONFIG.barricade.levels.length;
+  }
+  return true;
+}
+
 function buildCardPool() {
+  const base = CARD_POOL.map((c) => ({
+    ...c,
+    desc: typeof c.desc === 'function' ? c.desc() : c.desc,
+  }));
+
   const skills = SKILL_DEFS
     .filter((s) => s.era === state.era)
     .map((s) => ({
       id: 'skill_' + s.id,
       name: s.name,
       desc: SKILL_DESCS[s.id] || '一次性技能，抽到立刻释放',
-      can: () => true,
+      can: () => skillCanAppear(s),
       apply: () => castSkill(s.id),
     }));
 
-  return CARD_POOL.concat(skills);
+  return base.concat(skills);
 }
 
 function startCardDraw() {
@@ -903,6 +1189,9 @@ function updateCard(realDt) {
  * ---------------------------------------------------------- */
 // 每 4 波进一个时代：换配色和地图，场上实体全部保留
 function syncEraWithWave(wave) {
+  // 测试模式的时代由左侧面板控制，波次不再自动换
+  if (state.testMode) return;
+
   const eraIndex = Math.min(
     CONFIG.era.count - 1,
     Math.floor((wave - 1) / CONFIG.era.everyWaves)
@@ -917,6 +1206,7 @@ function syncEraWithWave(wave) {
 
   // 只换时代配色和地图，场上僵尸、子弹、屏障全部保留
   switchEra(eraIndex, map);
+  refreshSlotsForEra();
 }
 
 function update(dt) {
@@ -929,8 +1219,12 @@ function update(dt) {
     syncEraWithWave(nextWave);
     emit('waveStart', { wave: nextWave });
 
-    // 每 2 波结束抽一次
-    if (completed > 0 && completed % CONFIG.card.everyWaves === 0) {
+    // 每 2 波结束抽一次；测试模式不抽卡，避免打断观察
+    if (
+      !state.testMode &&
+      completed > 0 &&
+      completed % CONFIG.card.everyWaves === 0
+    ) {
       startCardDraw();
     }
   }
@@ -1002,7 +1296,7 @@ function updateFiring(dt) {
     CONFIG.player.baseFireInterval / Math.max(1, state.soldiers)
   );
   const commandMul = state.slots.command
-    ? 1 + CONFIG.slots.command.fireRate * (1 + state.era * 0.2)
+    ? 1 + slotStats('command').bonus
     : 1;
   const buffMul = state.time < state.buffUntil ? state.buffMul : 1;
   const effInterval = baseInterval / (state.upgrades.fireRate * commandMul * buffMul);
@@ -1055,6 +1349,9 @@ function updateFiring(dt) {
  * ---------------------------------------------------------- */
 // 动态补桶：场上最多 3 个，满了或位置太近时模块会拒绝
 function updateBarrelSpawn(dt) {
+  // 测试模式不生成炸药桶，避免爆炸伤害干扰观察
+  if (state.testMode) return;
+
   state.barrelTimer -= dt;
   if (state.barrelTimer > 0) return;
 
@@ -1079,7 +1376,7 @@ function updateBullets(dt) {
     }
 
     // 打中炸药桶：点燃引信，子弹消失，爆炸伤害由 barrelExploded 结算
-    if (hitBarrel(b.x, b.z, 0.45)) {
+    if (!state.testMode && hitBarrel(b.x, b.z, 0.45)) {
       state.bullets.splice(i, 1);
       continue;
     }
@@ -1152,6 +1449,12 @@ function updateBullets(dt) {
       const z = state.zombies[j];
 
       if (Math.abs(b.x - z.x) < 0.72 && Math.abs(b.z - z.z) < 0.7) {
+        // 测试模式：子弹命中但不掉血，子弹仍然消耗
+        if (state.testMode) {
+          state.bullets.splice(i, 1);
+          break;
+        }
+
         z.hp -= b.damage;
 
         if (z.hp <= 0) {
@@ -1339,23 +1642,22 @@ function makeSpecialBarrier(kind, x, z, wave) {
  * 僵尸：从右侧大量压下来
  * ---------------------------------------------------------- */
 function updateSlots(dt) {
-  const eraMul = 1 + state.era * 0.25;
-
   if (state.slots.siege) {
-    const siege = CONFIG.slots.siege;
+    const cfg = CONFIG.slots.siege;
+    const stats = slotStats('siege');
     state.slotTimers.siege -= dt;
     if (state.slotTimers.siege <= 0) {
-      state.slotTimers.siege = siege.interval;
+      state.slotTimers.siege = stats.interval;
       const target = densestPoint();
       if (target) {
-        damageZombiesInRadius(target.x, target.z, siege.radius, siege.damage * eraMul);
+        damageZombiesInRadius(target.x, target.z, stats.radius, stats.damage);
         emit('slotStrike', {
           kind: 'siege',
-          fromX: siege.x,
-          fromZ: siege.z,
+          fromX: cfg.x,
+          fromZ: cfg.z,
           x: target.x,
           z: target.z,
-          radius: siege.radius,
+          radius: stats.radius,
           color: 0xffa64d,
         });
       }
@@ -1363,21 +1665,22 @@ function updateSlots(dt) {
   }
 
   if (state.slots.closeDefense) {
-    const close = CONFIG.slots.closeDefense;
+    const cfg = CONFIG.slots.closeDefense;
+    const stats = slotStats('closeDefense');
     state.slotTimers.closeDefense -= dt;
     if (state.slotTimers.closeDefense <= 0) {
-      state.slotTimers.closeDefense = close.interval;
-      damageZombiesInRadius(close.x, close.z, close.radius, close.damage * eraMul);
+      state.slotTimers.closeDefense = stats.interval;
+      damageZombiesInRadius(cfg.x, cfg.z, stats.radius, stats.damage);
 
       // 找最近的僵尸，画一条曳光过去
-      let tx = close.x;
-      let tz = close.z;
+      let tx = cfg.x;
+      let tz = cfg.z;
       let best = Infinity;
       for (const zb of state.zombies) {
-        const dx = zb.x - close.x;
-        const dz = zb.z - close.z;
+        const dx = zb.x - cfg.x;
+        const dz = zb.z - cfg.z;
         const d2 = dx * dx + dz * dz;
-        if (d2 < close.radius * close.radius && d2 < best) {
+        if (d2 < stats.radius * stats.radius && d2 < best) {
           best = d2;
           tx = zb.x;
           tz = zb.z;
@@ -1386,23 +1689,24 @@ function updateSlots(dt) {
 
       emit('slotStrike', {
         kind: 'closeDefense',
-        fromX: close.x,
-        fromZ: close.z,
+        fromX: cfg.x,
+        fromZ: cfg.z,
         x: tx,
         z: tz,
-        radius: close.radius,
+        radius: stats.radius,
         color: 0xff6a4a,
       });
     }
   }
 
   if (state.slots.support) {
-    const support = CONFIG.slots.support;
+    const cfg = CONFIG.slots.support;
+    const stats = slotStats('support');
     state.slotTimers.support -= dt;
     if (state.slotTimers.support <= 0) {
-      state.slotTimers.support = support.interval;
-      applySoldiers(support.heal + Math.floor(state.era / 2));
-      emit('slotHeal', { x: support.x, z: support.z });
+      state.slotTimers.support = stats.interval;
+      applySoldiers(stats.heal);
+      emit('slotHeal', { x: cfg.x, z: cfg.z });
     }
   }
 }
@@ -1425,6 +1729,14 @@ function updateZombies(dt) {
   updateBarricade(dt);
   state.zombieTimer -= dt;
 
+  // 熵增：持续掉血，按秒结算，游戏慢放时也跟着变慢
+  if (state.time < state.entropyUntil && state.entropyDps > 0) {
+    damageZombiesInRadius(0, -6, 60, state.entropyDps * dt);
+  }
+
+  // 电磁脉冲：冻结期间所有僵尸原地不动，也不啃路障
+  const frozen = state.time < state.freezeUntil;
+
   const spawnInterval = Math.max(
     CONFIG.zombie.minSpawnInterval,
     CONFIG.zombie.spawnInterval - (state.wave - 1) * CONFIG.zombie.intervalPerWave
@@ -1441,6 +1753,8 @@ function updateZombies(dt) {
 
   // 移动：进入下半场且离士兵够近时，开始横向追人
   for (const z of state.zombies) {
+    if (frozen) continue;
+
     const bar = state.barricade;
     const cfg = CONFIG.barricade;
 
@@ -1458,7 +1772,8 @@ function updateZombies(dt) {
           z.attackTimer += cfg.attackInterval;
           const dmg =
             cfg.hitDamage * (z.type === 10 ? cfg.bossMultiplier : 1);
-          bar.hp = Math.max(0, bar.hp - dmg);
+          // 测试模式：僵尸啃不动路障
+          if (!state.testMode) bar.hp = Math.max(0, bar.hp - dmg);
 
           // 路障反击：等级 1 没有伤害
           if (bar.damage > 0) z.hp -= bar.damage;
@@ -1511,7 +1826,7 @@ function updateZombies(dt) {
     z.x = clamp(z.x, -CONFIG.world.halfWidth - 1, CONFIG.world.halfWidth + 1);
   }
 
-  separateZombies();
+  if (!frozen) separateZombies();
 
   // 路障反击打死的僵尸在这里统一结算
   for (let i = state.zombies.length - 1; i >= 0; i--) {
@@ -1531,6 +1846,9 @@ function updateZombies(dt) {
       z.z >= CONFIG.world.touchZ &&
       Math.abs(z.x - state.player.x) < formationHalfWidth()
     ) {
+      // 测试模式：僵尸贴到士兵也不消失，方便继续测试技能
+      if (state.testMode) continue;
+
       state.zombies.splice(i, 1);
       damageArmy(z.touchLoss, 'touch');
       continue;
@@ -1620,6 +1938,8 @@ function spawnZombie() {
 
 function damageArmy(amount, cause) {
   if (state.status !== 'playing') return;
+  // 测试模式：僵尸和负数屏障都不扣兵，方便反复观察技能
+  if (state.testMode) return;
 
   // 护甲按概率挡掉每一滴伤害，避免 1 点伤害被取整吃掉
   let dmg = amount;
@@ -1643,8 +1963,10 @@ function damageArmy(amount, cause) {
 }
 
 // 屏障数值生效：正数加兵，负数扣兵
-function applySoldiers(delta) {
+// testMode 下负数不生效；献祭这类主动扣兵用 force 绕过
+function applySoldiers(delta, opts = {}) {
   if (state.status !== 'playing') return;
+  if (state.testMode && delta < 0 && !opts.force) return;
 
   state.soldiers += delta;
 
@@ -1659,6 +1981,24 @@ function applySoldiers(delta) {
     state.timeScale = 1;
   }
 }
+
+/* ----------------------------------------------------------
+ * 初始化 UI
+ * 放在文件末尾：buildDom 会立刻读取 SKILL_DEFS，提前调用会触发 TDZ 报错
+ * ---------------------------------------------------------- */
+initUI(state, {
+  start: (opts) => startGame(opts),
+  restart: () => startGame({ testMode: state.testMode }),
+  revive: revive,
+  chooseCard,
+  castSkill,
+  setSlotLevel,
+  setEra: setEraForTest,
+  spawnTestZombies,
+  clearZombies: clearTestZombies,
+  getTestData,
+  getSlotInfo,
+});
 
 /* ----------------------------------------------------------
  * 主循环

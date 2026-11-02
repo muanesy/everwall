@@ -14,6 +14,7 @@ import { getModelLoadProgress } from './visuals.js';
 
 let els = null;
 let actions = null;
+let currentState = null;
 
 const MAP_LIST = [
   { id: 'city', name: '废墟街道' },
@@ -84,6 +85,7 @@ function addFavicon() {
 
 export function updateUI(state) {
   if (!els) return;
+  currentState = state;
 
   els.soldiersText.textContent = state.soldiers;
   els.waveText.textContent = state.wave;
@@ -98,6 +100,7 @@ export function updateUI(state) {
   updateLoadingBox();
   updateWaveCountdown(state);
   updateCards(state);
+  updateTestPanel(state);
 
   els.hud.classList.toggle('hidden', state.status !== 'playing');
   els.startScreen.classList.toggle('hidden', state.status !== 'menu');
@@ -215,9 +218,52 @@ function renderCards(choices) {
   });
 }
 
+/* ---------- 测试模式面板 ---------- */
+
+function slotLevelOf(state, id) {
+  if (id === 'barricade') {
+    return state.barricade.unlocked ? state.barricade.level : 0;
+  }
+  return state.slotLevels[id] || 0;
+}
+
+function updateTestPanel(state) {
+  if (!els.testPanel) return;
+
+  const show = state.status === 'playing' && state.testMode;
+  els.testPanel.classList.toggle('hidden', !show);
+  if (!show) return;
+
+  const eraName = els.testEraNames[state.era] || '';
+  if (els.testEraName.textContent !== eraName) {
+    els.testEraName.textContent = eraName;
+  }
+
+  els.testEraBtns.forEach((btn, i) => {
+    btn.classList.toggle('is-active', i === state.era);
+  });
+
+  const info = actions && actions.getSlotInfo ? actions.getSlotInfo() : [];
+  for (const row of info) {
+    const refs = els.testSlotRefs[row.id];
+    if (!refs) continue;
+
+    const levelText = row.level > 0 ? `Lv${row.level}` : '未解锁';
+    if (refs.level.textContent !== levelText) refs.level.textContent = levelText;
+    if (refs.desc.textContent !== row.desc) refs.desc.textContent = row.desc;
+
+    refs.plus.disabled = row.level >= row.max;
+    refs.minus.disabled = row.level <= 0;
+  }
+}
+
 /* ---------- 内部 ---------- */
 
 function buildDom() {
+  const testData = actions && actions.getTestData
+    ? actions.getTestData()
+    : { eras: [], slots: [], skills: [] };
+
   const hud = document.createElement('div');
   hud.className = 'hud hidden';
   hud.innerHTML = `
@@ -261,6 +307,10 @@ function buildDom() {
           `).join('')}
         </div>
       </div>
+      <button class="test-toggle" type="button" data-test-toggle>
+        <span class="test-toggle__dot"></span>
+        <span data-test-toggle-label>测试模式：关</span>
+      </button>
       <div class="loading" data-loading>
         <div class="loading__bar"><div class="loading__fill" data-loading-fill></div></div>
         <p class="loading__text" data-loading-text>正在加载角色模型…</p>
@@ -304,6 +354,61 @@ function buildDom() {
     </div>
   `;
   document.body.appendChild(cardLayer);
+
+  // 测试模式面板：只在主界面打开测试开关、进游戏后出现
+  const testPanel = document.createElement('aside');
+  testPanel.className = 'test-panel hidden';
+
+  const eraButtons = testData.eras.map((name, i) => `
+    <button class="test-chip" type="button" data-test-era-btn="${i}">${name}</button>
+  `).join('');
+
+  const slotRows = testData.slots.map((s) => `
+    <div class="test-slot">
+      <div class="test-slot__top">
+        <span class="test-slot__name">${s.name}</span>
+        <span class="test-slot__level" data-test-level="${s.id}">Lv0</span>
+        <button class="test-step" type="button" data-test-minus="${s.id}" aria-label="${s.name} 降一级">−</button>
+        <button class="test-step" type="button" data-test-plus="${s.id}" aria-label="${s.name} 升一级">+</button>
+      </div>
+      <p class="test-slot__desc" data-test-desc="${s.id}">未解锁</p>
+    </div>
+  `).join('');
+
+  const skillGroups = testData.eras.map((name, era) => {
+    const list = testData.skills.filter((s) => s.era === era);
+    if (!list.length) return '';
+    return `
+      <p class="test-skill-era">${name}</p>
+      <div class="test-skill-grid">
+        ${list.map((s) => `<button class="test-skill" type="button" data-test-skill="${s.id}">${s.name}</button>`).join('')}
+      </div>
+    `;
+  }).join('');
+
+  testPanel.innerHTML = `
+    <div class="test-panel__head">
+      <strong>测试模式</strong>
+      <span data-test-era-name></span>
+    </div>
+    <div class="test-panel__section">
+      <p class="test-panel__label">时代</p>
+      <div class="test-era-grid" data-test-eras>${eraButtons}</div>
+    </div>
+    <div class="test-panel__section">
+      <p class="test-panel__label">槽位</p>
+      <div class="test-slots" data-test-slots>${slotRows}</div>
+    </div>
+    <div class="test-panel__section">
+      <p class="test-panel__label">一次性技能</p>
+      <div data-test-skills>${skillGroups}</div>
+    </div>
+    <div class="test-panel__section test-panel__actions">
+      <button type="button" data-test-spawn>刷 20 只僵尸</button>
+      <button type="button" data-test-clear>清空僵尸</button>
+    </div>
+  `;
+  document.body.appendChild(testPanel);
 
   // 静音开关：不影响游戏，只控制声音。现场演示嫌吵可以按一下。
   const soundBtn = document.createElement('button');
@@ -351,14 +456,45 @@ function buildDom() {
     cardTimer: cardLayer.querySelector('[data-card-timer]'),
     cardRow: cardLayer.querySelector('[data-card-row]'),
     cardVersion: -1,
+    testToggle: startScreen.querySelector('[data-test-toggle]'),
+    testToggleLabel: startScreen.querySelector('[data-test-toggle-label]'),
+    testStartBtn: startScreen.querySelector('[data-start]'),
+    testPanel,
+    testEraName: testPanel.querySelector('[data-test-era-name]'),
+    testEraNames: testData.eras,
+    testEraBtns: [...testPanel.querySelectorAll('[data-test-era-btn]')],
+    testSlotRefs: Object.fromEntries(
+      testData.slots.map((s) => [s.id, {
+        level: testPanel.querySelector(`[data-test-level="${s.id}"]`),
+        desc: testPanel.querySelector(`[data-test-desc="${s.id}"]`),
+        plus: testPanel.querySelector(`[data-test-plus="${s.id}"]`),
+        minus: testPanel.querySelector(`[data-test-minus="${s.id}"]`),
+      }])
+    ),
   };
 }
 
 function bindEvents() {
-  els.startScreen.querySelector('[data-start]').addEventListener('click', () => {
+  // 测试模式开关：打开后开始按钮变成「开始测试」，进游戏出现左侧面板
+  let testModeEnabled =
+    new URLSearchParams(window.location.search).get('test') === '1';
+
+  const applyTestToggle = () => {
+    els.testToggle.classList.toggle('is-active', testModeEnabled);
+    els.testToggleLabel.textContent = testModeEnabled ? '测试模式：开' : '测试模式：关';
+    els.testStartBtn.textContent = testModeEnabled ? '开始测试' : '开始游戏';
+  };
+  applyTestToggle();
+
+  els.testToggle.addEventListener('click', () => {
+    testModeEnabled = !testModeEnabled;
+    applyTestToggle();
+  });
+
+  els.testStartBtn.addEventListener('click', () => {
     initAudio(); // 音频必须由用户点击触发，这里是最早的手势
     playClick();
-    actions.start();
+    actions.start({ testMode: testModeEnabled });
   });
 
   els.startScreen.querySelectorAll('[data-map]').forEach((btn) => {
@@ -366,6 +502,50 @@ function bindEvents() {
       window.location.search = `?map=${btn.dataset.map}`;
     });
   });
+
+  // 测试面板：切时代、升级槽位、放技能、刷/清僵尸
+  els.testEraBtns.forEach((btn, i) => {
+    btn.addEventListener('click', () => {
+      if (actions && actions.setEra) actions.setEra(i);
+    });
+  });
+
+  els.testPanel.querySelectorAll('[data-test-plus]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.testPlus;
+      const lv = currentState ? slotLevelOf(currentState, id) : 0;
+      if (actions && actions.setSlotLevel) actions.setSlotLevel(id, Math.min(5, lv + 1));
+    });
+  });
+
+  els.testPanel.querySelectorAll('[data-test-minus]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.testMinus;
+      const lv = currentState ? slotLevelOf(currentState, id) : 1;
+      if (actions && actions.setSlotLevel) actions.setSlotLevel(id, Math.max(0, lv - 1));
+    });
+  });
+
+  els.testPanel.querySelectorAll('[data-test-skill]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      initAudio();
+      if (actions && actions.castSkill) actions.castSkill(btn.dataset.testSkill);
+    });
+  });
+
+  const spawnBtn = els.testPanel.querySelector('[data-test-spawn]');
+  if (spawnBtn) {
+    spawnBtn.addEventListener('click', () => {
+      if (actions && actions.spawnTestZombies) actions.spawnTestZombies(20);
+    });
+  }
+
+  const clearBtn = els.testPanel.querySelector('[data-test-clear]');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      if (actions && actions.clearZombies) actions.clearZombies();
+    });
+  }
 
   els.overScreen.querySelector('[data-revive]').addEventListener('click', () => {
     initAudio();

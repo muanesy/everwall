@@ -690,3 +690,221 @@ canvas {
   line-height: 1.5;
   color: var(--muted);
 }
+
+/* ---------- 测试模式 ---------- */
+
+.test-toggle {
+  width: 100%;
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.test-toggle:hover {
+  border-color: rgba(255, 210, 122, 0.55);
+  color: var(--fg);
+}
+
+.test-toggle.is-active {
+  border-color: rgba(255, 210, 122, 0.8);
+  background: rgba(255, 210, 122, 0.14);
+  color: #ffe9b8;
+}
+
+.test-toggle__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.test-toggle.is-active .test-toggle__dot {
+  background: #ffd27a;
+  box-shadow: 0 0 10px #ffd27a;
+}
+
+.test-panel {
+  position: fixed;
+  z-index: 10;
+  top: calc(92px + env(safe-area-inset-top));
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  left: 12px;
+  width: 236px;
+  padding: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid rgba(255, 210, 122, 0.28);
+  border-radius: 14px;
+  background: rgba(8, 12, 18, 0.92);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.55);
+  font-size: 12px;
+  scrollbar-width: thin;
+}
+
+.test-panel__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.test-panel__head strong {
+  color: #ffd27a;
+  letter-spacing: 0.08em;
+}
+
+.test-panel__head span {
+  color: var(--muted);
+}
+
+.test-panel__section {
+  margin-top: 12px;
+}
+
+.test-panel__label {
+  margin: 0 0 6px;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: rgba(143, 163, 184, 0.8);
+}
+
+.test-era-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+}
+
+.test-chip,
+.test-skill,
+.test-step,
+.test-panel__actions button {
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+
+.test-chip {
+  padding: 6px 4px;
+  font-size: 11px;
+}
+
+.test-chip:hover,
+.test-skill:hover,
+.test-step:hover,
+.test-panel__actions button:hover {
+  border-color: rgba(78, 161, 255, 0.6);
+  color: var(--fg);
+}
+
+.test-chip.is-active {
+  border-color: rgba(255, 210, 122, 0.85);
+  background: rgba(255, 210, 122, 0.16);
+  color: #ffe9b8;
+}
+
+.test-slots {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.test-slot {
+  padding: 6px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.test-slot__top {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.test-slot__name {
+  flex: 1;
+  color: var(--fg);
+}
+
+.test-slot__level {
+  min-width: 42px;
+  text-align: right;
+  color: #ffd27a;
+  font-variant-numeric: tabular-nums;
+}
+
+.test-step {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.test-step:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.test-slot__desc {
+  margin: 4px 0 0;
+  font-size: 10px;
+  line-height: 1.4;
+  color: rgba(143, 163, 184, 0.85);
+}
+
+.test-skill-era {
+  margin: 8px 0 4px;
+  font-size: 10px;
+  color: rgba(143, 163, 184, 0.7);
+}
+
+.test-skill-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px;
+}
+
+.test-skill {
+  padding: 6px 4px;
+  font-size: 11px;
+}
+
+.test-panel__actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.test-panel__actions button {
+  padding: 8px 4px;
+  font-size: 11px;
+}
+
+@media (max-width: 720px) {
+  .test-panel {
+    width: min(52vw, 236px);
+    font-size: 11px;
+  }
+}

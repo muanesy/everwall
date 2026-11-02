@@ -934,6 +934,8 @@ export function initVisuals(container, events) {
       spawnBar(d.z, d.color || 0xffffff);
     } else if (d.type === 'heal') {
       spawnRing(d.x, d.z, d.color || 0x5adf7a, 0.7);
+    } else if (d.id === 'arrowRain') {
+      spawnArrowRain(d.x, d.z, d.radius || 4, d.color || 0xd9b36c);
     } else {
       spawnSkyStrike(d.x, d.z, d.color || 0xffffff);
     }
@@ -3426,6 +3428,70 @@ function spawnSkyStrike(x, z, color) {
   });
 }
 
+/* 地面范围圈：给圆形技能标出覆盖范围 */
+function spawnGroundArea(x, z, radius, color, maxLife = 0.7) {
+  const disc = new THREE.Mesh(
+    new THREE.CircleGeometry(radius, 48),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.14,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    })
+  );
+  disc.rotation.x = -Math.PI / 2;
+  disc.position.set(x, 0.045, z);
+  scene.add(disc);
+  effects.push({ mesh: disc, life: 0, maxLife, type: 'areaDisc' });
+
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(Math.max(0.1, radius - 0.12), radius, 56),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.85,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.set(x, 0.05, z);
+  scene.add(ring);
+  effects.push({ mesh: ring, life: 0, maxLife, type: 'fade' });
+}
+
+/* 箭雨：圆形覆盖区 + 一批箭矢从上方落进圈里 */
+function spawnArrowRain(x, z, radius, color) {
+  spawnGroundArea(x, z, radius, color, 0.75);
+
+  const count = 16;
+  for (let i = 0; i < count; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.sqrt(Math.random()) * radius * 0.92;
+    const ax = x + Math.cos(a) * r;
+    const az = z + Math.sin(a) * r;
+    const fall = 0.32 + Math.random() * 0.28;
+
+    const arrow = new THREE.Mesh(
+      new THREE.ConeGeometry(0.075, 0.55, 5),
+      new THREE.MeshBasicMaterial({ color })
+    );
+    arrow.rotation.x = Math.PI; // 尖端朝下
+    arrow.position.set(ax, 8.5, az);
+    scene.add(arrow);
+    effects.push({
+      mesh: arrow,
+      life: 0,
+      maxLife: fall,
+      type: 'arrow',
+      from: { x: ax, y: 8.5, z: az },
+      to: { x: ax, y: 0.18, z: az },
+      arc: 0,
+    });
+  }
+}
+
 /* 近防：从炮塔拉一条曳光到目标 */
 function spawnTracer(fromX, fromZ, toX, toZ, color) {
   const dx = toX - fromX;
@@ -3536,7 +3602,9 @@ function updateEffects(dt) {
     } else if (fx.type === 'dust') {
       fx.mesh.scale.setScalar(0.7 + t * 0.8);
       fx.mesh.material.opacity = (1 - t) * 0.32;
-    } else if (fx.type === 'arc') {
+    } else if (fx.type === 'areaDisc') {
+      fx.mesh.material.opacity = (1 - t) * 0.14;
+    } else if (fx.type === 'arc' || fx.type === 'arrow') {
       const x = fx.from.x + (fx.to.x - fx.from.x) * t;
       const z = fx.from.z + (fx.to.z - fx.from.z) * t;
       const y =
