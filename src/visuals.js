@@ -683,6 +683,7 @@ const effects = [];
 let muzzleLight = null;
 let fxBanner = null;
 let fxHurt = null;
+let fxSlow = null;
 let fxFloats = null;   // 击杀飘字的容器（绝对定位，位置每帧由相机投影算）
 let fxToast = null;
 let fxFade = null;        // 换图用的全屏淡入淡出遮罩
@@ -868,6 +869,7 @@ export function initVisuals(container, events) {
   fxLayer.innerHTML = `
     <div class="fx-banner"><div class="fx-banner__title"></div><div class="fx-banner__sub"></div></div>
     <div class="fx-hurt"></div>
+    <div class="fx-slow"></div>
     <div class="fx-floats"></div>
     <div class="fx-toast"></div>
     <div class="fx-bloodmoon"></div>
@@ -875,6 +877,7 @@ export function initVisuals(container, events) {
   document.body.appendChild(fxLayer);
   fxBanner = fxLayer.querySelector('.fx-banner');
   fxHurt = fxLayer.querySelector('.fx-hurt');
+  fxSlow = fxLayer.querySelector('.fx-slow');
   fxFloats = fxLayer.querySelector('.fx-floats');
   fxToast = fxLayer.querySelector('.fx-toast');
   fxFade = fxLayer.querySelector('.fx-fade');
@@ -963,6 +966,17 @@ export function initVisuals(container, events) {
   events.addEventListener('droneShot', (e) => {
     const d = e.detail;
     spawnTracer(d.fromX, d.fromZ, d.x, d.z, 0x7fe3ff, 2.6);
+  });
+
+  events.addEventListener('droneStrike', (e) => {
+    const d = e.detail;
+    spawnRing(d.x, d.z, 0x7fe3ff, 0.4);
+    spawnBurst(d.x, 0.8, d.z, 0x7fe3ff, 6, {
+      speed: 1.8,
+      up: 1.6,
+      spread: d.radius || 1.8,
+      life: 0.4,
+    });
   });
 
   events.addEventListener('friendlySpawn', (e) => {
@@ -2454,6 +2468,14 @@ export function syncScene(state, dt) {
 
   currentState = state;
 
+  // 时间减速/时间膨胀/熵增生效时，叠一层蓝色慢放滤镜
+  if (fxSlow) {
+    fxSlow.classList.toggle(
+      'show',
+      state.status === 'playing' && state.time < state.slowUntil
+    );
+  }
+
   // 僵尸低吼的氛围音：交给音频层自己计时，这里只报数量和是否在局内
   updateAudio(dt, state.zombies ? state.zombies.length : 0, state.status === 'playing');
 
@@ -3404,6 +3426,7 @@ function syncCarrierDrones(state) {
     let mesh = carrierDroneMeshes.get(d.id);
     if (!mesh) {
       mesh = makeCarrierDroneMesh();
+      mesh.scale.setScalar(1.8);
       scene.add(mesh);
       carrierDroneMeshes.set(d.id, mesh);
     }

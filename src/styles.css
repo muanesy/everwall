@@ -378,6 +378,26 @@ canvas {
   100% { opacity: 0; }
 }
 
+/* 时间类减速：蓝色边缘滤镜，持续到减速结束 */
+.fx-slow {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 6;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+  background: radial-gradient(
+    circle at 50% 55%,
+    rgba(70, 130, 255, 0) 38%,
+    rgba(70, 130, 255, 0.16) 100%
+  );
+  box-shadow: inset 0 0 120px 20px rgba(70, 130, 255, 0.22);
+}
+
+.fx-slow.show {
+  opacity: 1;
+}
+
 /* ---------- 击杀飘字（大块头 / 精英） ---------- */
 
 .fx-floats {

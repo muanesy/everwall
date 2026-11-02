@@ -181,10 +181,11 @@ const CONFIG = {
   carrierDrones: {
     count: 4,
     life: 15,          // 持续一波，和 CONFIG.wave.duration 保持一致
-    damage: 10,
-    interval: 0.5,
+    damage: 20,        // 每发小范围伤害
+    interval: 0.45,
     range: 16,
     radius: 1.6,       // 无人机绕最密点转的半径
+    aoeRadius: 1.8,    // 每发命中的小范围
   },
   orbital: {
     beamZMax: 6.9,     // 光柱最高到这条线，留出士兵阵型
@@ -467,6 +468,7 @@ const state = {
 
   barrierTimer: 0,
   zombieTimer: 0,
+  zombieSpawnPauseUntil: 0,
   barrelTimer: 0,
   crateTimer: 0,
   crates: [],        // 补给箱：{ id, x, z, y, landed, reward }
@@ -701,6 +703,7 @@ function resetState(opts = {}) {
 
   state.barrierTimer = 0.6;
   state.zombieTimer = 1.0;
+  state.zombieSpawnPauseUntil = 0;
   state.barrelTimer = CONFIG.barrel.spawnInterval;
   state.crateTimer = CONFIG.crate.firstDelay;
   state.crates.length = 0;
@@ -749,6 +752,7 @@ function revive() {
   state.weaponBoostRate = 1;
   state.barrierTimer = 0.4;
   state.zombieTimer = 0.8;
+  state.zombieSpawnPauseUntil = 0;
 
   // 复活保留已经解锁的路障，并把它修好；没解锁就保持没有
   const b = state.barricade;
@@ -1240,18 +1244,18 @@ const SKILL_DESCS = {
   virusBomb: '最密处投放 2 枚病毒炸弹，范围内僵尸变成己方单位反冲（每枚最多 8 只）',
   bioLegion: '瞬间生成 20 名己方僵尸，向前对冲',
   geneBurst: '全队射速 ×2，持续 5 秒',
-  timeSlow: '全场僵尸移速 ×0.5，持续 4 秒',
+  timeSlow: '全场僵尸所有移动 ×0.5，持续 4 秒',
   memory: '路障 +1 级；未解锁则直接解锁 1 级',
   orbital: '横向轨道光柱，直接清空全场僵尸；一局只能使用一次',
   blackHole: '半径 12 内僵尸吸向中心，中心半径 4 内 40 伤害',
-  wormhole: '最靠前的 1 只僵尸送回出生点',
-  carrierDrones: '召唤 4 架舰载无人机，绕最密点持续射击一波（15 秒）',
-  timeDilation: '全场僵尸移速 ×0.4，持续 3 秒',
+  wormhole: '全场僵尸一起送回出生点',
+  carrierDrones: '召唤 4 架大型舰载无人机，持续一波（15 秒），每 0.45 秒造成 20 点小范围伤害',
+  timeDilation: '全场僵尸所有移动 ×0.4，持续 3 秒',
   finalJudgment: '最密处半径 6 内 200 伤害',
   cosmicCollapse: '半径 14 内僵尸吸向中心，中心半径 6 内 80 伤害',
   sacrifice: '兵多于 20 时消耗 20 兵，全屏 300 伤害',
   reboot: '清空场上所有僵尸，击杀照常计分',
-  entropy: '全场僵尸移速 ×0.5，每秒 8 伤害，持续 5 秒',
+  entropy: '全场僵尸所有移动 ×0.5，每秒 8 伤害，持续 5 秒',
 };
 
 function densestPoint() {
@@ -1397,6 +1401,9 @@ function castSkill(id) {
       break;
     case 'orbital':
       clearZombies();
+      // 清屏后短暂停止刷怪，不然下一只几乎立刻补上，看起来像没清
+      state.zombieSpawnPauseUntil = state.time + 1.5;
+      state.zombieTimer = Math.max(state.zombieTimer, 1.5);
       target.z = Math.min(target.z, CONFIG.orbital.beamZMax);
       break;
     case 'rollingLog':
@@ -1485,13 +1492,11 @@ function castSkill(id) {
       break;
     }
     case 'warp': {
-      const front = state.zombies.reduce(
-        (a, b) => (b.z > a.z ? b : a),
-        state.zombies[0]
-      );
-      if (front) {
-        front.z = CONFIG.world.spawnZ;
-        front.aggro = false;
+      // 全场僵尸一起送回出生点
+      for (const zb of state.zombies) {
+        zb.z = CONFIG.world.spawnZ - Math.random() * 2;
+        zb.aggro = false;
+        if (zb.ranged) zb.shotTimer = Math.max(zb.shotTimer || 0, 0.5);
       }
       break;
     }
@@ -2514,7 +2519,10 @@ function updateZombies(dt) {
       nightDensity
   );
 
-  if (state.zombieTimer <= 0) {
+  if (state.time < state.zombieSpawnPauseUntil) {
+    // 轨道轰炸清屏后的短暂真空期
+    state.zombieTimer = Math.max(state.zombieTimer, 0.2);
+  } else if (state.zombieTimer <= 0) {
     if (state.zombies.length < CONFIG.zombie.maxAlive) {
       // 第一波只刷一只，之后才是 1 到 2 只
       const count = state.wave === 1 ? 1 : 1 + Math.floor(Math.random() * 2);
@@ -2524,6 +2532,8 @@ function updateZombies(dt) {
   }
 
   // 移动：进入下半场且离士兵够近时，开始横向追人
+  const slowMul = state.time < state.slowUntil ? state.slowMul : 1;
+
   for (const z of state.zombies) {
     if (frozen) continue;
 
@@ -2538,13 +2548,13 @@ function updateZombies(dt) {
 
     // 路障挡在前排：范围内的僵尸停下来啃墙
     if (bar.active && z.z < cfg.z && z.x >= bar.xMin && z.x <= bar.xMax) {
-      z.z = Math.min(cfg.blockZ, z.z + z.speed * dt);
+      z.z = Math.min(cfg.blockZ, z.z + z.speed * dt * slowMul);
 
       if (z.z >= cfg.blockZ - 0.05) {
         if (z.attackTimer == null) {
           z.attackTimer = Math.random() * cfg.attackInterval;
         }
-        z.attackTimer -= dt;
+        z.attackTimer -= dt * slowMul;
 
         if (z.attackTimer <= 0) {
           z.attackTimer += cfg.attackInterval;
@@ -2589,9 +2599,9 @@ function updateZombies(dt) {
     const detour = chain ? chainDetour(chain, z.x, z.z) : null;
 
     if (detour && detour.dir !== 0) {
-      z.x += detour.dir * CONFIG.zombie.turnSpeed * dt;
+      z.x += detour.dir * CONFIG.zombie.turnSpeed * dt * slowMul;
     } else if (z.aggro && Math.abs(dx) > 0.12) {
-      z.x += Math.sign(dx) * CONFIG.zombie.turnSpeed * dt;
+      z.x += Math.sign(dx) * CONFIG.zombie.turnSpeed * dt * slowMul;
     }
 
     // 远程僵尸：走到半场就停，隔着距离往阵型吐酸液
@@ -2602,7 +2612,7 @@ function updateZombies(dt) {
       z.x = clamp(z.x, -CONFIG.world.halfWidth - 1, CONFIG.world.halfWidth + 1);
 
       // 测试模式下也照常吐：伤害由 damageArmy 内部挡掉，弹道该看还是能看
-      z.shotTimer -= dt;
+      z.shotTimer -= dt * slowMul;
       if (z.shotTimer <= 0) {
         z.shotTimer = z.ranged.interval;
         fireEnemyShot(z);
@@ -2617,10 +2627,9 @@ function updateZombies(dt) {
       z.aggro = true;
 
       if (Math.abs(dx) > 0.05) {
-        z.x += Math.sign(dx) * CONFIG.zombie.lineSlideSpeed * dt;
+        z.x += Math.sign(dx) * CONFIG.zombie.lineSlideSpeed * dt * slowMul;
       }
     } else {
-      const slowMul = state.time < state.slowUntil ? state.slowMul : 1;
       // 水里走不动：水位漫过脚踝后整场僵尸都慢下来
       const waterMul = state.floodLevel >= CONFIG.flood.slowFrom ? CONFIG.flood.slowMul : 1;
       z.z += z.speed * dt * slowMul * waterMul;
@@ -3004,7 +3013,8 @@ function updateCarrierDrones(dt) {
       if (idx >= 0) {
         const zb = state.zombies[idx];
         emit('droneShot', { fromX: d.x, fromZ: d.z, x: zb.x, z: zb.z });
-        damageZombieAt(idx, cfg.damage);
+        emit('droneStrike', { x: zb.x, z: zb.z, radius: cfg.aoeRadius });
+        damageZombiesInRadius(zb.x, zb.z, cfg.aoeRadius, cfg.damage);
         d.mgTimer = cfg.interval;
       } else {
         d.mgTimer = 0.15;
