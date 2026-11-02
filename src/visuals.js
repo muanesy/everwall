@@ -297,6 +297,9 @@ const ZOMBIE_LOOKS = [
   { src: 'male',   scale: 1.2,  tint: [0.72, 0.76, 0.82], walkSpeed: 0.9, attackSpeed: 0.95, score: 4, color: 0x8a95a4 },
   // 13 远程：紫绿自发光——它吐酸液，颜色要和普通僵尸拉开，才好在人群里认出来优先点掉
   { src: 'male',   scale: 1.05, tint: [0.78, 1.15, 0.62], walkSpeed: 0.95, attackSpeed: 1.1, score: 5, emissive: 0.26, color: 0x8ce05a },
+  // 14 召唤者：偏紫的自发光 + 体型略大。它是"刷怪源"，必须比普通怪更显眼，
+  // 否则玩家不会意识到"要先杀这个"——这是这个类型的全部玩法意义
+  { src: 'male',   scale: 1.25, tint: [0.92, 0.62, 1.15], walkSpeed: 0.72, attackSpeed: 1.0, score: 8, emissive: 0.34, color: 0xb060e0 },
 ];
 
 /* 地图 → 僵尸模型覆盖：换地图时，同一种 type 换上本地图专属的模型。
@@ -2437,6 +2440,7 @@ export function syncScene(state, dt) {
     resetBarrels();                      // 桶全部复原
     clearHazards();                      // 陨石坑、地上的火一起清掉
     clearCrates();                       // 补给箱模型也清掉，别留到新局
+    clearChains();                       // 锁链也清掉
     quakeTime = 0;
     quakeCycle = 10 + Math.random() * 6; // 新局第一震别来得太急
     if (dayNight) dayNight.setNight(false, true); // 立刻回到白天，不要跨局慢慢过渡
@@ -2486,6 +2490,7 @@ export function syncScene(state, dt) {
   syncBarricade(state);
   syncSlots(state);
   syncCrates(state);
+  syncChains(state);
   updateBossPresence(state);
   updateZombieHitFeedback(state);
 
@@ -4597,7 +4602,7 @@ function makeZombieMesh(type) {
   // 色块版的五色：和 ZOMBIE_LOOKS 的 tint 方向一致（普通绿/暗红灰/黄绿/灰白/灰绿）
   // 11 自爆=橙红、12 护甲=金属灰，按 type 取，取不到回落到普通
   const colors = [0x6f8f6a, 0x8f5a4a, 0x9aa04a, 0xb8bcc4, 0x647f68];
-  const COLOR_BY_TYPE = { 10: 0x6b6068, 11: 0xd85a2a, 12: 0x8a95a4, 13: 0x7ac850 };
+  const COLOR_BY_TYPE = { 10: 0x6b6068, 11: 0xd85a2a, 12: 0x8a95a4, 13: 0x7ac850, 14: 0xa050cc };
   const look = ZOMBIE_LOOKS[type] || ZOMBIE_LOOKS[0];
 
   const mesh = new THREE.Mesh(
@@ -4910,6 +4915,108 @@ function clearCrates() {
     entry.flag.material.dispose();
   }
   crateVisuals.clear();
+}
+
+/* ----------------------------------------------------------
+ * 锁链路障（点子池「锁链路障」）
+ *
+ * 玩法层（game-chainbarricade.js）算判定和绕行，这里只负责画。
+ * 形状：两根铁桩 + 中间一条下垂的铁链 + 一串小环，一眼能读出"这儿过不去"。
+ * 铁链做下垂是必须的：一条笔直的横杠会读成"栏杆"，玩家会以为能撞开。
+ * ---------------------------------------------------------- */
+const chainVisuals = new Map();
+let chainGeos = null;
+let chainMats = null;
+
+function ensureChainAssets() {
+  if (chainGeos) return;
+  chainGeos = {
+    post: new THREE.CylinderGeometry(0.09, 0.11, 1.15, 7),
+    link: new THREE.TorusGeometry(0.1, 0.028, 5, 10),
+    shadow: new THREE.PlaneGeometry(1, 0.5),
+  };
+  chainMats = {
+    iron: new THREE.MeshStandardMaterial({
+      color: 0x5a6068, roughness: 0.55, metalness: 0.75,
+    }),
+    link: new THREE.MeshStandardMaterial({
+      color: 0x7a828c, roughness: 0.45, metalness: 0.85,
+      emissive: 0x101418, emissiveIntensity: 0.6,
+    }),
+  };
+}
+
+function makeChainMesh(width) {
+  ensureChainAssets();
+  const g = new THREE.Group();
+  const half = width / 2;
+
+  // 两端铁桩
+  for (const sx of [-1, 1]) {
+    const post = new THREE.Mesh(chainGeos.post, chainMats.iron);
+    post.position.set(sx * half, 0.575, 0);
+    g.add(post);
+  }
+
+  // 中间一串环，按宽度铺，越靠中间越往下垂
+  const n = Math.max(3, Math.round(width / 0.26));
+  const links = [];
+  for (let i = 0; i < n; i++) {
+    const t = (i + 0.5) / n;           // 0~1
+    const x = -half + t * width;
+    // 抛物线下垂：两头贴住铁桩顶，中间最低
+    const sag = Math.sin(t * Math.PI) * 0.22;
+    const link = new THREE.Mesh(chainGeos.link, chainMats.link);
+    link.position.set(x, 0.95 - sag, 0);
+    link.rotation.y = i % 2 ? Math.PI / 2 : 0;  // 环交替转向，读起来才像链条
+    link.rotation.x = Math.PI / 2;
+    g.add(link);
+    links.push(link);
+  }
+
+  return { group: g, links };
+}
+
+function syncChains(state) {
+  if (!scene) return;
+  const list = state.chains || [];
+  const alive = new Set();
+
+  for (const c of list) {
+    alive.add(c.id);
+    let entry = chainVisuals.get(c.id);
+    // 宽度变了（升级/改数值）就重建，比每帧改几何体省事
+    if (entry && entry.width !== c.width) {
+      scene.remove(entry.group);
+      chainVisuals.delete(c.id);
+      entry = null;
+    }
+    if (!entry) {
+      entry = makeChainMesh(c.width);
+      entry.width = c.width;
+      scene.add(entry.group);
+      chainVisuals.set(c.id, entry);
+    }
+    entry.group.position.set(c.x, 0, c.z);
+
+    // 铁链轻微晃动：静止的铁链看着像贴图，晃一下才有重量感
+    const t = performance.now() * 0.0018;
+    for (let i = 0; i < entry.links.length; i++) {
+      entry.links[i].rotation.z = Math.sin(t + i * 0.6) * 0.09;
+    }
+  }
+
+  // 几何体和材质全链共享，只摘 mesh
+  for (const [id, entry] of chainVisuals) {
+    if (alive.has(id)) continue;
+    scene.remove(entry.group);
+    chainVisuals.delete(id);
+  }
+}
+
+function clearChains() {
+  for (const [, entry] of chainVisuals) scene.remove(entry.group);
+  chainVisuals.clear();
 }
 
 /* ----------------------------------------------------------
