@@ -70,14 +70,21 @@ const CONFIG = {
   },
   barricade: {
     xMin: -0.4,          // 路障左边界，避开左边屏障通道
-    xMax: 3.8,           // 路障右边界
-    z: 4.5,              // 路障所在纵深
-    blockZ: 3.9,         // 僵尸停在墙前的位置
-    hp: 240,
+    z: 3.5,              // 路障所在纵深
+    blockZ: 2.9,         // 僵尸停在墙前的位置
     hitDamage: 6,        // 僵尸每啃一口的伤害
     attackInterval: 0.9, // 每只僵尸的啃咬间隔
     cooldown: 10,        // 碎掉后多久重建
     bossMultiplier: 3,   // Boss 对路障的伤害倍率
+    // 等级 1-5：血量、每次反击伤害、横向宽度
+    // 满级宽度 8.0，左边界 -0.4，右边界 7.6，刚好盖住僵尸的整条路
+    levels: [
+      { hp: 240, damage: 0,  width: 4.2 },
+      { hp: 300, damage: 8,  width: 5.2 },
+      { hp: 360, damage: 16, width: 6.2 },
+      { hp: 420, damage: 26, width: 7.1 },
+      { hp: 480, damage: 40, width: 8.0 },
+    ],
   },
   barrier: {
     speed: 6.5,            // 压下来的速度
@@ -180,10 +187,15 @@ const state = {
 
   // 路障：挡在前排，有血量，碎了冷却后重建
   barricade: {
-    hp: CONFIG.barricade.hp,
-    maxHp: CONFIG.barricade.hp,
+    level: 1,
+    hp: 240,
+    maxHp: 240,
     active: true,
     cooldown: 0,
+    xMin: -0.4,
+    xMax: 3.8,
+    width: 4.2,
+    damage: 0,
   },
 
   bullets: [],  // { id, x, z, vz, damage }
@@ -360,11 +372,50 @@ function revive() {
   resetBarricade();
 }
 
+function barricadeStats(level) {
+  const levels = CONFIG.barricade.levels;
+  const i = Math.min(levels.length - 1, Math.max(0, Math.floor(level) - 1));
+  return levels[i];
+}
+
+function applyBarricadeLevel(level, opts = {}) {
+  const b = state.barricade;
+  const next = Math.min(
+    CONFIG.barricade.levels.length,
+    Math.max(1, Math.floor(level))
+  );
+  const stats = barricadeStats(next);
+  const prevMax = b.maxHp || stats.hp;
+
+  b.level = next;
+  b.maxHp = stats.hp;
+  b.width = stats.width;
+  b.xMin = CONFIG.barricade.xMin;
+  b.xMax = CONFIG.barricade.xMin + stats.width;
+  b.damage = stats.damage;
+
+  if (opts.full) b.hp = b.maxHp;
+  else b.hp = Math.min(b.maxHp, b.hp + Math.max(0, stats.hp - prevMax));
+}
+
 function resetBarricade() {
-  state.barricade.hp = CONFIG.barricade.hp;
-  state.barricade.maxHp = CONFIG.barricade.hp;
+  applyBarricadeLevel(1, { full: true });
   state.barricade.active = true;
   state.barricade.cooldown = 0;
+}
+
+// 以后抽卡升级路障时调用；先暴露到 window 方便调试
+function upgradeBarricade() {
+  applyBarricadeLevel(state.barricade.level + 1);
+  emit('barricadeUpgrade', { level: state.barricade.level });
+}
+
+if (typeof window !== 'undefined') {
+  window.__setBarricadeLevel = (n) => {
+    applyBarricadeLevel(n, { full: true });
+    emit('barricadeUpgrade', { level: state.barricade.level });
+  };
+  window.__upgradeBarricade = upgradeBarricade;
 }
 
 /* ----------------------------------------------------------
@@ -831,7 +882,7 @@ function updateZombies(dt) {
     const cfg = CONFIG.barricade;
 
     // 路障挡在前排：范围内的僵尸停下来啃墙
-    if (bar.active && z.z < cfg.z && z.x >= cfg.xMin && z.x <= cfg.xMax) {
+    if (bar.active && z.z < cfg.z && z.x >= bar.xMin && z.x <= bar.xMax) {
       z.z = Math.min(cfg.blockZ, z.z + z.speed * dt);
 
       if (z.z >= cfg.blockZ - 0.05) {
@@ -845,6 +896,10 @@ function updateZombies(dt) {
           const dmg =
             cfg.hitDamage * (z.type === 10 ? cfg.bossMultiplier : 1);
           bar.hp = Math.max(0, bar.hp - dmg);
+
+          // 路障反击：等级 1 没有伤害
+          if (bar.damage > 0) z.hp -= bar.damage;
+
           emit('barricadeHit', {
             hp: bar.hp,
             maxHp: bar.maxHp,
@@ -893,6 +948,16 @@ function updateZombies(dt) {
   }
 
   separateZombies();
+
+  // 路障反击打死的僵尸在这里统一结算
+  for (let i = state.zombies.length - 1; i >= 0; i--) {
+    const z = state.zombies[i];
+    if (z.hp > 0) continue;
+
+    state.zombies.splice(i, 1);
+    state.score += CONFIG.zombie.types[z.type]?.score || 1;
+    emit('zombieDie', { x: z.x, z: z.z, type: z.type });
+  }
 
   // 结算：碰到士兵扣 1
   for (let i = state.zombies.length - 1; i >= 0; i--) {

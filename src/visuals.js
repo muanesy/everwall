@@ -195,7 +195,7 @@ const GROUND_Z = -14;
 
 // 路障位置和尺寸：和 game.js 的 CONFIG.barricade 保持一致
 const BARRICADE_X = 1.7;
-const BARRICADE_Z = 4.5;
+const BARRICADE_Z = 3.5;
 const BARRICADE_WIDTH = 4.2;
 
 let renderer = null;
@@ -923,7 +923,8 @@ export function initVisuals(container, events) {
   });
 
   events.addEventListener('barricadeBreak', () => {
-    spawnBurst(BARRICADE_X, 0.5, BARRICADE_Z, 0x8a7a5a, 14, {
+    const bx = barricadeGroup ? barricadeGroup.position.x : BARRICADE_X;
+    spawnBurst(bx, 0.5, BARRICADE_Z, 0x8a7a5a, 14, {
       speed: 2.4,
       up: 1.8,
       spread: 0.5,
@@ -933,7 +934,8 @@ export function initVisuals(container, events) {
   });
 
   events.addEventListener('barricadeRebuild', () => {
-    spawnRing(BARRICADE_X, BARRICADE_Z, 0x5adf7a, 0.4);
+    const bx = barricadeGroup ? barricadeGroup.position.x : BARRICADE_X;
+    spawnRing(bx, BARRICADE_Z, 0x5adf7a, 0.4);
   });
 
   events.addEventListener('armyHurt', (e) => {
@@ -3035,6 +3037,15 @@ function initBarricade() {
 function syncBarricade(state) {
   const b = state.barricade;
   if (!b || !barricadeGroup) return;
+
+  // 等级会改宽度：左边界不动，向右长；整段墙和 UI 一起缩放
+  const center = b.xMin + b.width / 2;
+  const scale = b.width / BARRICADE_WIDTH;
+  barricadeGroup.position.x = center;
+  barricadeGroup.scale.x = scale;
+  barricadeHpBar.group.position.x = center;
+  barricadeHpBar.group.scale.x = scale;
+  barricadeCountdown.position.x = center;
 
   const active = !!b.active;
   barricadeGroup.visible = active;
