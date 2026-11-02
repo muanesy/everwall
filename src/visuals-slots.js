@@ -148,15 +148,72 @@ function addChargeRing(g, m, radius, y, tube = 0.045) {
  * ---------------------------------------------------------- */
 
 /* 攻城：投石机 → 车厢炮 → 履带炮塔 → 生物喷射罐 → 能量轨道 → 引力球 */
-function buildSiege(g, m, era) {
+function buildSiege(g, m, era, lv = 1) {
   if (era === 0) {
-    // 木架投石机：A 形木架 + 配重箱 + 抛臂
-    add(g, new THREE.BoxGeometry(1.0, 0.16, 0.7), m.main, 0, 0.08, 0);
-    for (const sx of [-1, 1]) {
-      add(g, new THREE.BoxGeometry(0.1, 0.86, 0.1), m.main, sx * 0.34, 0.56, 0, 0, 0, sx * 0.2);
+    // 木架投石机：等级决定臂长、单/双联、有没有底盘
+    const twin = lv >= 3;                       // 3 级起双联抛臂
+    const wheeled = lv >= 4;                    // 4 级起带轮底盘
+    const armLen = 0.78 + (lv - 1) * 0.12;      // 0.78 → 1.26
+    const pivotY = 0.74 + (lv - 1) * 0.04;      // 0.74 → 0.90
+    const legH = pivotY + 0.1;
+
+    if (wheeled) {
+      // 带轮底盘：四个木轮 + 车架
+      add(g, new THREE.BoxGeometry(1.0, 0.12, 0.72), m.dark, 0, 0.2, 0);
+      for (const sx of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+          add(g, new THREE.CylinderGeometry(0.13, 0.13, 0.07, 10), m.accent,
+            sx * 0.4, 0.13, sz * 0.26, 0, 0, Math.PI / 2);
+        }
+      }
+    } else {
+      // 落地木底座
+      add(g, new THREE.BoxGeometry(0.96, 0.14, 0.64), m.main, 0, 0.07, 0);
     }
-    add(g, new THREE.BoxGeometry(0.3, 0.26, 0.3), m.accent, 0, 0.95, 0.26);  // 配重
-    add(g, new THREE.BoxGeometry(0.09, 0.09, 1.15), m.accent, 0, 1.06, -0.32, -0.42, 0, 0); // 抛臂
+
+    // 3 级起加转盘：双联抛臂要能左右扫
+    if (twin) {
+      const ring = add(g, new THREE.TorusGeometry(0.33, 0.028, 6, 20), m.accent,
+        0, wheeled ? 0.27 : 0.15, 0, Math.PI / 2, 0, 0);
+      ring.name = 'siegeTurntable';
+    }
+
+    // A 形木架：左右两侧各两根内倾立柱 + 顶部横梁
+    const baseY = wheeled ? 0.26 : 0.14;
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        add(g, new THREE.BoxGeometry(0.07, legH, 0.07), m.main,
+          sx * 0.32, baseY + legH * 0.5, sz * 0.17,
+          sz * 0.22, 0, -sx * 0.16);
+      }
+    }
+    add(g, new THREE.BoxGeometry(0.74, 0.06, 0.06), m.main, 0, baseY + legH, 0);
+
+    // 横轴 + 抛臂。抛臂整体挂在一个 Group 上，后坐动画不会把轴带歪
+    const armGroup = new THREE.Group();
+    armGroup.position.set(0, baseY + pivotY, 0);
+    armGroup.rotation.x = -0.3;                 // 长臂朝 -z 抬起
+    const armZ = twin ? [-0.1, 0.1] : [0];
+    for (const ox of armZ) {
+      add(armGroup, new THREE.BoxGeometry(0.07, 0.07, armLen), m.accent,
+        ox, 0, -armLen * 0.12);
+      // 配重箱挂在短臂一侧，石块/皮兜在长臂尽头
+      add(armGroup, new THREE.BoxGeometry(0.22, 0.22, 0.2), m.dark,
+        ox, -0.18, armLen * 0.32);
+      add(armGroup, new THREE.SphereGeometry(0.075, 8, 6), m.dark,
+        ox, 0.02, -armLen * 0.62);
+    }
+    g.add(armGroup);
+
+    // 5 级：顶部再起一层塔架，远处看是"攻城塔"而不是放大版投石机
+    if (lv >= 5) {
+      for (const sx of [-1, 1]) {
+        add(g, new THREE.BoxGeometry(0.06, 0.46, 0.06), m.main,
+          sx * 0.36, baseY + legH + 0.2, 0.16, 0, 0, -sx * 0.06);
+      }
+      add(g, new THREE.BoxGeometry(0.8, 0.06, 0.34), m.accent,
+        0, baseY + legH + 0.44, 0.16);
+    }
     return;
   }
   if (era === 1) {
@@ -464,7 +521,7 @@ export function buildSlotStructure(id, era, level) {
   const lv = clampLevel(level);
   const builder = BUILDERS[id];
 
-  if (builder) builder(g, m, clampEra(era));
+  if (builder) builder(g, m, clampEra(era), lv);
 
   // 等级附件：2 级起逐级叠加，5 级一起全有
   if (lv >= 2) addBraces(g, m, 0.95, 0.7);
