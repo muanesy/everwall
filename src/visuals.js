@@ -357,6 +357,7 @@ function prepareZombieType(rawProto, look) {
   proto.userData.attackClip = rawProto.userData.attackClip;
   proto.userData.deathClip = rawProto.userData.deathClip;
   proto.userData.roarClip = rawProto.userData.roarClip;
+  proto.userData.damageClip = rawProto.userData.damageClip;
   proto.traverse((o) => {
     if ((o.isMesh || o.isSkinnedMesh) && o.material) {
       o.material = Array.isArray(o.material)
@@ -414,6 +415,9 @@ function loadModels() {
     // 咆哮动画：只有 Boss 有，出场登场用
     proto.userData.roarClip =
       clips.find((c) => /roar/i.test(c.name)) || null;
+    // 受击动画：被打中时抖一下（UA 系列叫 RecieveHit，Boss 那套叫 Damage_Action）
+    proto.userData.damageClip =
+      clips.find((c) => /recievehit|receivehit|damage|hit_/i.test(c.name)) || null;
     return proto;
   };
 
@@ -578,6 +582,7 @@ function spawnModel(proto, faceDir) {
     let attackAction = null;
     let deathAction = null;
     let roarAction = null;
+    let damageAction = null;
     const clip = proto.userData.clip;
     if (clip) {
       mixer = new THREE.AnimationMixer(root);
@@ -598,6 +603,13 @@ function spawnModel(proto, faceDir) {
         roarAction.clampWhenFinished = true;
         roarAction.paused = true;
       }
+      // 受击动作待命：被打中时抖一下
+      if (proto.userData.damageClip) {
+        damageAction = mixer.clipAction(proto.userData.damageClip);
+        damageAction.setLoop(THREE.LoopOnce, 1);
+        damageAction.clampWhenFinished = true;
+        damageAction.paused = true;
+      }
       // 死亡动作待命：死的时候播一遍再消失
       if (proto.userData.deathClip) {
         deathAction = mixer.clipAction(proto.userData.deathClip);
@@ -607,7 +619,7 @@ function spawnModel(proto, faceDir) {
       }
       animMixers.add(mixer);
     }
-    return { root, mixer, walkAction, attackAction, deathAction, roarAction, attacking: false };
+    return { root, mixer, walkAction, attackAction, deathAction, roarAction, damageAction, attacking: false };
   } catch (err) {
     console.warn('[visuals] 模型克隆失败：', err);
     return null;
@@ -1301,6 +1313,7 @@ export function syncScene(state, dt) {
   // 僵尸
   syncZombies(state, dt);
   updateBossPresence(state);
+  updateZombieHitFeedback(state);
 
   // 子弹
   syncBullets(state);
@@ -1771,6 +1784,41 @@ function updateDeathQueue(dt) {
       despawnModel(d.vis);
       deathQueue.splice(i, 1);
     }
+  }
+}
+
+/* 僵尸受击反馈
+ * 玩法侧没有"被打中"的事件，但僵尸的血量会掉——视觉层自己盯着血量变化：
+ * 血一掉就播一下受击动画并溅一点血雾，不用等队长加事件。 */
+const zombieHpWatch = new Map();
+
+function updateZombieHitFeedback(state) {
+  const alive = new Set();
+  for (const z of state.zombies) {
+    alive.add(z.id);
+    const last = zombieHpWatch.get(z.id);
+    if (last !== undefined && z.hp < last - 0.001) {
+      onZombieHit(z);
+    }
+    zombieHpWatch.set(z.id, z.hp);
+  }
+  for (const id of zombieHpWatch.keys()) {
+    if (!alive.has(id)) zombieHpWatch.delete(id);
+  }
+}
+
+function onZombieHit(z) {
+  const entry = zombieMeshes.get(z.id);
+  // 小血雾：比死亡时少一半
+  spawnBurst(z.x, 1.0, z.z, 0x8a2f22, 7, { speed: 1.8, up: 1.8, spread: 0.35, life: 0.32 });
+
+  if (entry && entry.isModel && entry.vis.damageAction) {
+    const act = entry.vis.damageAction;
+    act.reset();
+    act.paused = false;
+    act.play();
+    // 受击动画播完停住，别一直抖
+    setTimeout(() => { act.paused = true; }, 320);
   }
 }
 
