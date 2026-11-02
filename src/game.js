@@ -20,6 +20,7 @@ import {
   pickEraMap,
   spawnCampfireFx,
   setWaterLevel,
+  preloadGroundTexture,
 } from './visuals.js';
 import { pickZombieTypeForEra, eraWeaponProfile } from './game-era-rules.js';
 import { SUMMONER, createSummonerState, updateSummoner } from './game-summoner.js';
@@ -598,6 +599,12 @@ const emit = (name, detail = {}) =>
  * ---------------------------------------------------------- */
 initVisuals(document.getElementById('game-container'), events);
 
+/* 玩家还在开始页选图时就把地面贴图预载进显存。
+ * 新地图的贴图是 2k 的（三件套约 3.7MB），不预载的话点开始会先看到一片灰地面。
+ * 失败不影响游戏——真加载不出来会退化成乘色纯地面。 */
+// 贴图名规则固定是 b-map-{地图id}，和 visuals.js 的 MAPS[].tex 一致
+preloadGroundTexture(`b-map-${START_MAP}`);
+
 // 炸药桶爆炸：乙负责画面，这里按半径结算僵尸伤害
 events.addEventListener('barrelExploded', (e) => {
   const detail = e.detail || {};
@@ -795,6 +802,10 @@ function resetState(opts = {}) {
     for (const id of SLOT_IDS) setSlotLevel(id, 1);
     setSlotLevel('barricade', 1);
   }
+
+  // 开局用的地图也要预载贴图：玩家在开始页已经选好图了，
+  // 这里如果还没加载完，会先出现灰地面。预载是幂等的，重复调没代价。
+  preloadGroundTexture(`b-map-${START_MAP}`);
 
   // 把画面拉回第一个时代和起始地图，静默切换，不弹提示
   switchEra(0, START_MAP, { fade: false, silent: true });
