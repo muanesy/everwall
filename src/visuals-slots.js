@@ -343,7 +343,9 @@ function buildCommand(g, m, era) {
   }
   if (era === 3) {
     // 神经链接舱：横躺舱体 + 神经线
-    add(g, new THREE.CapsuleGeometry
+    // 注意别写成 `new THREE.CapsuleGeometry ? ...`：那会先真造一个默认胶囊
+    // 再当条件用，每次重建都泄漏一份几何体
+    add(g, THREE.CapsuleGeometry
       ? new THREE.CapsuleGeometry(0.22, 0.5, 6, 10)
       : new THREE.CylinderGeometry(0.22, 0.22, 0.7, 10),
       m.main, 0, 0.36, 0, 0, 0, Math.PI / 2);
@@ -408,7 +410,7 @@ function buildSummon(g, m, era) {
     add(g, new THREE.CylinderGeometry(0.38, 0.44, 0.18, 14), m.main, 0, 0.09, 0);
     for (let i = 0; i < 3; i++) {
       const a = (i / 3) * Math.PI * 2;
-      add(g, new THREE.CapsuleGeometry
+      add(g, THREE.CapsuleGeometry
         ? new THREE.CapsuleGeometry(0.12, 0.28, 5, 9)
         : new THREE.CylinderGeometry(0.12, 0.12, 0.5, 9),
         m.main, Math.cos(a) * 0.2, 0.42, Math.sin(a) * 0.2);

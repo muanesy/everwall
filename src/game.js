@@ -2108,6 +2108,9 @@ function syncEraWithWave(wave) {
 function update(dt) {
   state.time += dt;
   if (state.soldiers > state.peakSoldiers) state.peakSoldiers = state.soldiers;
+  // 幂等兜底：以前只在换时代那一刻检查一次，测试面板把召唤降到 0 之后
+  // 同一时代内再也不会自动解锁，召唤槽就永久空着了
+  ensureSummonSlot();
   state.skillUseCd = Math.max(0, state.skillUseCd - dt);
 
   const nextWave = Math.floor(state.time / CONFIG.wave.duration) + 1;

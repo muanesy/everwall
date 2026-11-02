@@ -5141,6 +5141,10 @@ const SLOT_DEFS = [
 
 const slotVisuals = new Map();
 
+// 调试出口：和 game.js 的 window.__state 一套风格。
+// 槽位可见性出问题时只能靠它查（模型是在 renderer 内部建的，控制台拿不到）
+if (typeof window !== 'undefined') window.__slotVisuals = slotVisuals;
+
 function initSlots() {
   for (const s of SLOT_DEFS) {
     const pad = new THREE.Mesh(
@@ -5246,8 +5250,12 @@ function syncSlots(state, dt) {
   const t = performance.now() * 0.001;
 
   for (const [id, v] of slotVisuals) {
-    const eraLocked = id === 'summon' && era < 3;
     const on = !!(state.slots && state.slots[id]);
+    // 召唤槽「后现代起才显示」只作用于【还没解锁】的情况。
+    // 玩法层已经解锁（测试模式全开、或者面板手动拉等级）时必须以 state.slots 为准，
+    // 否则会出现「面板显示 Lv1、地图上连地基都没有」——画面层自己又判断一次解锁，
+    // 和玩法层的判断依据不是同一个，两边一不一致就凭空消失
+    const eraLocked = id === 'summon' && era < 3 && !on;
     const level = Math.max(0, Math.min(5, levels[id] | 0));
 
     // 时代或等级变了就重建：模型是按这两个参数造出来的，
