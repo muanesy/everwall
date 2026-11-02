@@ -29,7 +29,7 @@ import {
 } from './audio.js';
 // 三个乙层模块：兵种阶级外观表、昼夜轮转、炸药桶（新文件，按文件边界属乙）
 import { TIERS, getTier, getTierIndex } from './visuals-tiers.js';
-import { eraForWave, getEra, applyEraLook, tintMaterials } from './visuals-era.js';
+import { getEra, applyEraLook, tintMaterials } from './visuals-era.js';
 
 export { eraMaps, pickEraMap } from './visuals-era.js';
 import { createDayNight, nightForWave } from './visuals-daynight.js';
@@ -141,10 +141,6 @@ const MAPS = {
 // 当前地图：从地址参数读，默认废墟街道
 let MAP_ID = new URLSearchParams(window.location.search).get('map') || 'city';
 const MAP = MAPS[MAP_ID] || MAPS.city;
-
-/* 时代切换节奏：默认每 5 波一个时代。
- * URL 加 ?eraEvery=2 可以调快，方便调试和演示时看效果。 */
-const ERA_EVERY = Math.max(1, Number(new URLSearchParams(window.location.search).get('eraEvery')) || 5);
 
 /* 每张地图给僵尸套一层氛围色调（纯视觉，不改任何数值）
  * 同一批僵尸在城市是灰绿、在雪原偏冷白、在火山被岩浆照成暗红，
@@ -927,12 +923,7 @@ export function initVisuals(container, events) {
     if (dayNight) dayNight.setNight(night);
     if (night && !wasNight) pushToast('夜幕降临 · 僵尸加速', 'night');
 
-    // 时代皮肤：每 5 波换一个时代，只换配色不改数值
-    const era = getEra(eraForWave(wave, ERA_EVERY));
-    if (era !== currentEra) {
-      applyEra(era);
-      pushToast(`时代 · ${era.name}`, 'era');
-    }
+    // 时代切换由 game.js 调 switchEra 驱动，这里不再按波次自动换
 
     // 金色波次横幅：放大进场 → 停留 → 淡出
     if (fxBanner && wave) {
@@ -1126,7 +1117,7 @@ export function switchEra(eraIndex, mapId, opts = {}) {
     if (mapId && MAPS[mapId]) {
       doSwitchMapLook(mapId);       // 换战场（地面/背景/雾/灯/粒子/环境音）
     }
-    pushToast(`时代 · ${era.name}`, 'era');
+    if (!opts.silent) pushToast(`时代 · ${era.name}`, 'era');
   };
 
   if (!useFade) {

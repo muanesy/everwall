@@ -11,8 +11,19 @@
  * 这里不做任何画面渲染。想让特效出现，就 emit 一个事件。
  * ========================================================== */
 
-import { initVisuals, syncScene, hitBarrel, spawnBarrel } from './visuals.js';
+import {
+  initVisuals,
+  syncScene,
+  hitBarrel,
+  spawnBarrel,
+  switchEra,
+  pickEraMap,
+} from './visuals.js';
 import { initUI, updateUI } from './ui.js';
+
+// 起始地图：开始页传入的 ?map=，默认废墟街道
+const START_MAP =
+  new URLSearchParams(window.location.search).get('map') || 'city';
 
 /* ----------------------------------------------------------
  * 数值区：调难度和手感只改这里
@@ -118,6 +129,10 @@ const CONFIG = {
   wave: {
     duration: 15,
   },
+  era: {
+    count: 6,          // 六个时代
+    everyWaves: 4,     // 每 4 波进一个时代
+  },
 };
 
 /* ----------------------------------------------------------
@@ -130,6 +145,10 @@ const state = {
   wave: 1,
   score: 0,
   soldiers: 5,
+
+  era: 0,
+  mapId: START_MAP,
+  usedMaps: [START_MAP],
 
   player: {
     x: 0,
@@ -282,6 +301,9 @@ function resetState() {
   state.score = 0;
   state.soldiers = 5;
   state.player.x = 0;
+  state.era = 0;
+  state.mapId = START_MAP;
+  state.usedMaps = [START_MAP];
   state.weapon.lines = 1;
   state.weapon.pierce = false;
   state.weapon.timers = [0];
@@ -295,6 +317,9 @@ function resetState() {
   state.barrelTimer = CONFIG.barrel.spawnInterval;
   state.nextId = 1;
   state.spawnCounts.fill(0);
+
+  // 把画面拉回第一个时代和起始地图，静默切换，不弹提示
+  switchEra(0, START_MAP, { fade: false, silent: true });
 }
 
 function startGame() {
@@ -317,12 +342,31 @@ function revive() {
 /* ----------------------------------------------------------
  * 每帧更新
  * ---------------------------------------------------------- */
+// 每 4 波进一个时代：换配色和地图，场上实体全部保留
+function syncEraWithWave(wave) {
+  const eraIndex = Math.min(
+    CONFIG.era.count - 1,
+    Math.floor((wave - 1) / CONFIG.era.everyWaves)
+  );
+  if (eraIndex === state.era) return;
+
+  const map = pickEraMap(eraIndex, state.usedMaps) || state.mapId || START_MAP;
+
+  state.era = eraIndex;
+  state.mapId = map;
+  state.usedMaps.push(map);
+
+  // 只换时代配色和地图，场上僵尸、子弹、屏障全部保留
+  switchEra(eraIndex, map);
+}
+
 function update(dt) {
   state.time += dt;
 
   const nextWave = Math.floor(state.time / CONFIG.wave.duration) + 1;
   if (nextWave !== state.wave) {
     state.wave = nextWave;
+    syncEraWithWave(nextWave);
     emit('waveStart', { wave: nextWave });
   }
 
