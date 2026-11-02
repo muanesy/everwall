@@ -104,7 +104,8 @@ const CONFIG = {
       ],
     },
     command: {
-      x: 0, z: 15, baseRate: 0.05,
+      // 指挥改成集火标记：每 3 秒标记场上血量最高的敌人，子弹打中它时加伤
+      x: 0, z: 15, baseMark: 0.15, markInterval: 3,
       levels: [
         { mul: 1.00 },
         { mul: 1.30 },
@@ -562,6 +563,9 @@ const state = {
   slots: { siege: false, support: false, closeDefense: false, command: false, summon: false },
   slotLevels: { siege: 0, support: 0, closeDefense: 0, command: 0, summon: 0 },
   slotTimers: { siege: 3, support: 6, closeDefense: 0, summon: 2 },
+  commandMarkId: 0,     // 指挥槽集火目标
+  commandMarkBonus: 0,  // 对标记目标的伤害加成
+  commandMarkTimer: 0,  // 下次换标记的倒计时
 
   // 一次性技能栏：抽到卡后存次数，点左侧图标使用
   skillBag: [],        // [{ id, charges }]
@@ -936,6 +940,9 @@ function resetState(opts = {}) {
   state.slots.command = false;
   state.slots.summon = false;
   state.slotLevels = { siege: 0, support: 0, closeDefense: 0, command: 0, summon: 0 };
+  state.commandMarkId = 0;
+  state.commandMarkBonus = 0;
+  state.commandMarkTimer = 0;
   state.skillBag = [];
   state.skillBagVersion += 1;
   state.lastSkillId = null;
@@ -1182,7 +1189,7 @@ function slotStatsAt(id, level, era = state.era) {
 
   if (id === 'command') {
     return {
-      bonus: cfg.baseRate * CONFIG.era.commandPower[era] * row.mul * under,
+      markBonus: cfg.baseMark * CONFIG.era.commandPower[era] * row.mul * under,
     };
   }
 
@@ -1208,7 +1215,7 @@ function slotSummary(id, level, era = state.era) {
   if (!s) return '';
 
   if (id === 'support') return `${s.heal} 兵 / ${s.interval.toFixed(1)}s`;
-  if (id === 'command') return `射速 +${(s.bonus * 100).toFixed(1)}%`;
+  if (id === 'command') return `集火伤害 +${(s.markBonus * 100).toFixed(1)}%`;
   if (id === 'summon') {
     const mix = Object.entries(s.weights)
       .map(([key, w]) => `${s.units[key].short}${w}%`)
@@ -2838,9 +2845,7 @@ function updateFiring(dt) {
     tier.fireInterval,
     CONFIG.player.baseFireInterval / Math.max(1, state.soldiers)
   );
-  const commandMul = state.slots.command
-    ? 1 + slotStats('command').bonus
-    : 1;
+  // 指挥槽不再提供射速，改成集火标记；射速只由基础卡和技能提供
   const buffMul = state.time < state.buffUntil ? state.buffMul : 1;
   const boostActive = state.time < state.weaponBoostUntil;
   const boostRate = boostActive ? state.weaponBoostRate : 1;
@@ -2859,7 +2864,7 @@ function updateFiring(dt) {
 
   const effInterval =
     (baseInterval * weapon.fireIntervalMul * pickIntervalMul) /
-    (state.upgrades.fireRate * commandMul * buffMul * boostRate);
+    (state.upgrades.fireRate * buffMul * boostRate);
   const totalRate = baseCount / effInterval; // 每秒多少发
   const interval = shooters / totalRate;
 
@@ -3250,7 +3255,9 @@ function updateBullets(dt) {
       const halfZ = z.boss ? 1.2 : 0.7;
 
       if (Math.abs(b.x - z.x) < halfW && Math.abs(b.z - z.z) < halfZ) {
-        z.hp -= b.damage * (z.armor ?? 1);
+        const markMul =
+          z.id === state.commandMarkId ? 1 + state.commandMarkBonus : 1;
+        z.hp -= b.damage * (z.armor ?? 1) * markMul;
 
         if (z.hp <= 0) {
           state.zombies.splice(j, 1);
@@ -3448,7 +3455,46 @@ function makeSpecialBarrier(kind, x, z, wave) {
 /* ----------------------------------------------------------
  * 僵尸：从右侧大量压下来
  * ---------------------------------------------------------- */
+// 指挥槽：每 3 秒标记场上血量最高的敌人，子弹打中标记目标时加伤
+function updateCommandSlot(dt) {
+  if (!state.slots.command) {
+    state.commandMarkId = 0;
+    state.commandMarkBonus = 0;
+    return;
+  }
+
+  const stats = slotStats('command');
+  state.commandMarkBonus = stats.markBonus;
+
+  const current = state.zombies.find((z) => z.id === state.commandMarkId);
+  if (!current) state.commandMarkTimer = 0;
+
+  state.commandMarkTimer -= dt;
+  if (state.commandMarkTimer > 0) return;
+
+  state.commandMarkTimer = CONFIG.slots.command.markInterval;
+
+  let best = null;
+  for (const z of state.zombies) {
+    if (z.z < CONFIG.world.screenTopZ) continue;
+    const threat = z.hp + (z.boss ? 100000 : z.type === 3 ? 10000 : 0);
+    if (!best || threat > best.threat) best = { z, threat };
+  }
+
+  state.commandMarkId = best ? best.z.id : 0;
+  if (best) {
+    emit('commandMark', {
+      id: best.z.id,
+      x: best.z.x,
+      z: best.z.z,
+      bonus: stats.markBonus,
+    });
+  }
+}
+
 function updateSlots(dt) {
+  updateCommandSlot(dt);
+
   if (state.slots.siege) {
     const cfg = CONFIG.slots.siege;
     const stats = slotStats('siege');

@@ -242,6 +242,7 @@ let playerMesh = null;
 let playerShadow = null;
 let playerRing = null;     // 玩家脚下的指挥光环
 let buffRing = null;       // 基因爆发的绿色攻速光环
+let commandMarkGroup = null; // 指挥槽的集火标记
 let lastPlayerX = 0;
 let soldierMesh = null;
 let playerVisual = null; // 玩家的真模型（加载完成后替代蓝方块）
@@ -974,6 +975,41 @@ export function initVisuals(container, events) {
   buffRing.visible = false;
   scene.add(buffRing);
 
+  // 指挥槽集火标记：脚下橙环 + 头顶倒三角
+  commandMarkGroup = new THREE.Group();
+  const markRing = new THREE.Mesh(
+    new THREE.RingGeometry(0.85, 1.05, 32),
+    new THREE.MeshBasicMaterial({
+      color: 0xffc04a,
+      transparent: true,
+      opacity: 0.7,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  markRing.rotation.x = -Math.PI / 2;
+  markRing.position.y = 0.06;
+  commandMarkGroup.add(markRing);
+
+  const markCone = new THREE.Mesh(
+    new THREE.ConeGeometry(0.22, 0.42, 4),
+    new THREE.MeshBasicMaterial({
+      color: 0xffc04a,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+    })
+  );
+  markCone.position.y = 2.25;
+  markCone.rotation.x = Math.PI;
+  commandMarkGroup.add(markCone);
+
+  commandMarkGroup.visible = false;
+  commandMarkGroup.userData.ring = markRing;
+  commandMarkGroup.userData.cone = markCone;
+  scene.add(commandMarkGroup);
+
   playerShadow = makeBlobShadow(0.7);
   playerShadow.position.set(0, 0.02, 9);
   scene.add(playerShadow);
@@ -1352,6 +1388,11 @@ export function initVisuals(container, events) {
     } else {
       spawnSkyStrike(d.x, d.z, d.color || 0xffffff);
     }
+  });
+
+  // 指挥槽换集火目标：橙色闪环
+  events.addEventListener('commandMark', (e) => {
+    spawnRing(e.detail.x, e.detail.z, 0xffc04a, 0.65);
   });
 
   events.addEventListener('slotUnlock', (e) => {
@@ -3071,6 +3112,23 @@ export function syncScene(state, dt) {
       buffRing.rotation.z -= dt * 1.6;
       buffRing.scale.setScalar(1 + Math.sin(now * 0.008) * 0.07);
       buffRing.material.opacity = 0.3 + Math.sin(now * 0.01) * 0.12;
+    }
+  }
+
+  // 指挥集火标记：跟随被标记的僵尸
+  if (commandMarkGroup) {
+    const markTarget = state.commandMarkId
+      ? state.zombies.find((z) => z.id === state.commandMarkId)
+      : null;
+    commandMarkGroup.visible = !!(markTarget && state.slots.command);
+    if (markTarget) {
+      const now = performance.now();
+      commandMarkGroup.position.set(markTarget.x, 0, markTarget.z);
+      commandMarkGroup.scale.setScalar(1 + Math.sin(now * 0.01) * 0.08);
+      commandMarkGroup.userData.cone.position.y =
+        2.25 + Math.sin(now * 0.006) * 0.1;
+      commandMarkGroup.userData.ring.material.opacity =
+        0.55 + Math.sin(now * 0.008) * 0.15;
     }
   }
 
