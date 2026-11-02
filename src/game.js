@@ -118,17 +118,55 @@ const CONFIG = {
         { damageMul: 2.10, radius: 3.8, interval: 0.38 },
       ],
     },
-    // 后现代起自动解锁的第六槽位：制造友方僵尸对冲
+    // 第六槽位：后现代起抽卡解锁，星际起保底自动补 1 级。制造友方僵尸对冲。
+    // 五级五兵种：等级提升不仅加数值，还会解锁更凶的兵种；
+    // 预算按「小兵占 1、巨尸占 2」算，等级越高能同时在场越多。
     summon: {
-      x: -5.5, z: 4.5, baseHp: 60, baseDamage: 12, speed: 3.2,
+      x: -5.5, z: 4.5, speed: 3.2,
       recommendedByEra: [0, 0, 0, 1, 3, 5],
       levels: [
-        { hpMul: 1.00, damageMul: 1.00, interval: 8.0, maxAlive: 2 },
-        { hpMul: 1.25, damageMul: 1.20, interval: 7.2, maxAlive: 2 },
-        { hpMul: 1.55, damageMul: 1.45, interval: 6.4, maxAlive: 3 },
-        { hpMul: 1.90, damageMul: 1.75, interval: 5.6, maxAlive: 3 },
-        { hpMul: 2.30, damageMul: 2.10, interval: 4.8, maxAlive: 4 },
+        { hpMul: 1.00, damageMul: 1.00, interval: 8.0, budget: 2 },
+        { hpMul: 1.25, damageMul: 1.20, interval: 7.2, budget: 2 },
+        { hpMul: 1.55, damageMul: 1.45, interval: 6.4, budget: 3 },
+        { hpMul: 1.90, damageMul: 1.75, interval: 5.6, budget: 3 },
+        { hpMul: 2.30, damageMul: 2.10, interval: 4.8, budget: 4 },
       ],
+      // 兵种基础值。最终血量/伤害再乘时代倍率、等级倍率、欠级折扣。
+      units: {
+        shield: {
+          name: '盾尸', short: '盾',
+          hp: 80, damage: 14, speed: 3.0, attackInterval: 0.8, cost: 1,
+        },
+        runner: {
+          name: '疾尸', short: '疾',
+          hp: 50, damage: 9, speed: 5.2, attackInterval: 0.45, cost: 1,
+        },
+        bomber: {
+          name: '爆尸', short: '爆',
+          hp: 60, damage: 55, speed: 3.6, cost: 1,
+          explodeRadius: 1.8,
+        },
+        spitter: {
+          name: '酸吐尸', short: '酸',
+          hp: 55, damage: 8, speed: 3.0, attackInterval: 1.1, cost: 1,
+          range: 4.5,
+        },
+        giant: {
+          name: '巨尸', short: '巨',
+          hp: 220, damage: 35, speed: 2.3, attackInterval: 1.0, cost: 2, max: 1,
+          scale: 1.65,
+        },
+      },
+      // 每个等级的出怪权重（百分制，不在表里的兵种不出）
+      weights: [
+        { shield: 100 },
+        { shield: 65, runner: 35 },
+        { shield: 45, runner: 30, bomber: 25 },
+        { shield: 35, runner: 25, bomber: 22, spitter: 18 },
+        { shield: 30, runner: 20, bomber: 20, spitter: 15, giant: 15 },
+      ],
+      // 升到该等级时新解锁的兵种；升级会免费送一只，之后的第一只也优先出它
+      newUnitAtLevel: [null, null, 'runner', 'bomber', 'spitter', 'giant'],
     },
     // 工事就是路障本身，位置和等级在 CONFIG.barricade
   },
@@ -552,7 +590,8 @@ const state = {
   carrierDrones: [], // { id, x, z, baseX, baseZ, life, mgTimer, phase }
   swarmDrones: [],   // 无人机蜂群：{ id, x, z, targetId, life, heading }
   swarm: { until: 0, left: 0, timer: 0 }, // 蜂群的结束时间、还剩几架没放、下一架倒计时
-  friendlyZombies: [], // { id, x, z, hp, maxHp, speed, damage, attackTimer, life, converted }
+  friendlyZombies: [], // 见 docs/接口约定.md；召唤槽兵种额外带 unitType/cost/role/scale
+  summonNextPreferred: null, // 升级后下一只优先出的新兵种
   virusBombs: [],    // { id, x, z, timeLeft, radius, maxConvert }
   usedSkills: [],    // 一局只能用一次的技能 id，目前是轨道轰炸
   weaponBoostUntil: 0,
@@ -826,6 +865,7 @@ function resetState(opts = {}) {
   state.swarm.left = 0;
   state.swarm.timer = 0;
   state.friendlyZombies.length = 0;
+  state.summonNextPreferred = null;
   state.virusBombs.length = 0;
 
   state.barrierTimer = 0.6;
@@ -887,6 +927,7 @@ function revive() {
   state.swarm.left = 0;
   state.swarm.timer = 0;
   state.friendlyZombies.length = 0;
+  state.summonNextPreferred = null;
   state.virusBombs.length = 0;
   state.weaponBoostUntil = 0;
   state.weaponBoostDamage = 1;
@@ -918,6 +959,34 @@ function underLevelMul(level, era = state.era, recommendedOverride = null) {
   );
 }
 
+// 召唤槽某个兵种在某等级、某时代下的实际数值。
+// 和槽位共用同一套公式：基础值 × 时代倍率 × 等级倍率 × 欠级折扣。
+function summonUnitStatsAt(key, level, era = state.era) {
+  const cfg = CONFIG.slots.summon;
+  const unit = cfg.units[key];
+  if (!unit) return null;
+
+  const lv = Math.min(cfg.levels.length, Math.max(1, Math.floor(level)));
+  const row = cfg.levels[lv - 1];
+  const under = underLevelMul(lv, era, cfg.recommendedByEra);
+  const atkMul = CONFIG.era.attackPower[era] * row.damageMul * under;
+
+  return {
+    key,
+    name: unit.name,
+    short: unit.short,
+    hp: Math.round(unit.hp * CONFIG.era.hpPower[era] * row.hpMul * under),
+    damage: Math.round(unit.damage * atkMul),
+    speed: unit.speed,
+    attackInterval: unit.attackInterval || 0.7,
+    cost: unit.cost || 1,
+    max: unit.max || Infinity,
+    range: unit.range || 0,
+    explodeRadius: unit.explodeRadius || 0,
+    scale: unit.scale || 1,
+  };
+}
+
 // 槽位在某个等级、某个时代下的实际数值（不读 state，方便卡面和测试面板预览）
 function slotStatsAt(id, level, era = state.era) {
   const cfg = CONFIG.slots[id];
@@ -928,12 +997,16 @@ function slotStatsAt(id, level, era = state.era) {
   const under = underLevelMul(lv, era, cfg.recommendedByEra || null);
 
   if (id === 'summon') {
+    const units = {};
+    for (const key of Object.keys(cfg.units)) {
+      units[key] = summonUnitStatsAt(key, lv, era);
+    }
     return {
-      hp: Math.round(cfg.baseHp * CONFIG.era.hpPower[era] * row.hpMul * under),
-      damage: Math.round(cfg.baseDamage * CONFIG.era.attackPower[era] * row.damageMul * under),
       interval: row.interval,
-      maxAlive: row.maxAlive,
-      speed: cfg.speed,
+      budget: row.budget,
+      maxAlive: row.budget, // 兼容旧字段名
+      weights: cfg.weights[lv - 1],
+      units,
     };
   }
 
@@ -974,7 +1047,10 @@ function slotSummary(id, level, era = state.era) {
   if (id === 'support') return `${s.heal} 兵 / ${s.interval.toFixed(1)}s`;
   if (id === 'command') return `射速 +${(s.bonus * 100).toFixed(1)}%`;
   if (id === 'summon') {
-    return `${s.hp} 血 / ${s.damage} 伤 / ${s.interval.toFixed(1)}s / 最多 ${s.maxAlive}`;
+    const mix = Object.entries(s.weights)
+      .map(([key, w]) => `${s.units[key].short}${w}%`)
+      .join(' ');
+    return `${mix} · ${s.interval.toFixed(1)}s · 预算${s.budget}`;
   }
   return `${s.damage} 伤 / 半径 ${s.radius} / ${s.interval.toFixed(1)}s`;
 }
@@ -1068,6 +1144,7 @@ function setSlotLevel(id, level) {
 
   if (!SLOT_IDS.includes(id)) return;
 
+  const prevLv = state.slotLevels[id] || 0;
   const lv = Math.max(0, Math.min(SLOT_MAX_LEVEL, Math.floor(level)));
   state.slotLevels[id] = lv;
   state.slots[id] = lv > 0;
@@ -1076,6 +1153,17 @@ function setSlotLevel(id, level) {
     // 刚解锁时尽快打一次，方便看效果
     state.slotTimers[id] = Math.min(state.slotTimers[id] ?? 0.5, 0.5);
     emit('slotUnlock', { id });
+  }
+
+  // 召唤槽升级：免费送一只新兵种，之后的第一只也优先出它。
+  // 预算不够（比如场上已经塞满）就送不出来，等下一只按权重自然出。
+  if (id === 'summon' && lv > prevLv && lv >= 2) {
+    const newUnit = CONFIG.slots.summon.newUnitAtLevel[lv];
+    if (newUnit) {
+      const stats = slotStatsAt('summon', lv);
+      state.summonNextPreferred = newUnit;
+      trySpawnSummonUnit(stats, newUnit);
+    }
   }
 }
 
@@ -1263,7 +1351,7 @@ const CARD_POOL = [
   },
   {
     // 召唤是后现代（era >= 3）才登场的槽位：解锁卡和升级卡都只在这个时代之后出现。
-    // 前期抽到也没有意义（出来就一只 60 血小僵尸），不如让三选一的位置留给别的卡。
+    // 前期抽到也没有意义（只有一只盾尸），不如让三选一的位置留给别的卡。
     id: 'slotSummon',
     name: '召唤槽',
     desc: () => `解锁召唤 1 级：${slotSummary('summon', 1)}`,
@@ -3093,8 +3181,9 @@ function updateSlots(dt) {
     state.slotTimers.summon -= dt;
     if (state.slotTimers.summon <= 0) {
       state.slotTimers.summon = stats.interval;
-      if (state.friendlyZombies.length < stats.maxAlive) {
-        spawnFriendlyZombie(stats);
+      const preferred = state.summonNextPreferred;
+      if (trySpawnSummonUnit(stats, preferred)) {
+        state.summonNextPreferred = null;
       }
     }
   }
@@ -3372,23 +3461,81 @@ function advanceBossAttack(z) {
   });
 }
 
-// 召唤槽：造一个友方僵尸
-function spawnFriendlyZombie(stats) {
+// 召唤槽当前占用的预算。只算召唤槽自己造的兵，
+// 生物人军团和病毒转化的友军不占预算，免得技能替槽位养了一堆兵反而把槽位卡死。
+function summonBudgetUsed() {
+  let used = 0;
+  for (const f of state.friendlyZombies) {
+    if (f.slotUnit) used += f.cost || 1;
+  }
+  return used;
+}
+
+function summonUnitCount(key) {
+  let n = 0;
+  for (const f of state.friendlyZombies) {
+    if (f.slotUnit && f.unitType === key) n += 1;
+  }
+  return n;
+}
+
+// 按当前等级的权重挑一个能出的兵种。
+// 过滤条件：预算够、该兵种没到上限（巨尸最多 1 只）。
+// preferredKey 是新解锁的兵种，升级后第一只优先出它。
+function pickSummonUnit(stats, preferredKey = null) {
+  const budgetLeft = stats.budget - summonBudgetUsed();
+
+  const entries = Object.entries(stats.weights)
+    .map(([key, weight]) => ({ key, weight, def: stats.units[key] }))
+    .filter(({ key, def }) => (
+      def && def.cost <= budgetLeft && summonUnitCount(key) < def.max
+    ));
+
+  if (!entries.length) return null;
+
+  const pref = entries.find((e) => e.key === preferredKey);
+  if (pref) return pref.key;
+
+  const total = entries.reduce((sum, e) => sum + e.weight, 0);
+  let roll = Math.random() * total;
+  for (const e of entries) {
+    roll -= e.weight;
+    if (roll <= 0) return e.key;
+  }
+  return entries[entries.length - 1].key;
+}
+
+// 召唤槽：按预算造一个友方僵尸。返回是否真的造出来了
+function trySpawnSummonUnit(stats, preferredKey = null) {
+  const unitKey = pickSummonUnit(stats, preferredKey);
+  if (!unitKey) return false;
+
+  const def = stats.units[unitKey];
   const cfg = CONFIG.slots.summon;
   const x = cfg.x + (Math.random() * 2 - 1) * 0.35;
+  const z = cfg.z + 0.3;
 
   state.friendlyZombies.push({
     id: state.nextId++,
     x,
-    z: cfg.z + 0.3,
-    hp: stats.hp,
-    maxHp: stats.hp,
-    speed: stats.speed,
-    damage: stats.damage,
-    attackTimer: Math.random() * 0.5,
+    z,
+    hp: def.hp,
+    maxHp: def.hp,
+    speed: def.speed,
+    damage: def.damage,
+    attackTimer: Math.random() * 0.4,
+    attackInterval: def.attackInterval,
     life: 0,
+    unitType: unitKey,
+    role: unitKey,
+    cost: def.cost,
+    range: def.range,
+    explodeRadius: def.explodeRadius,
+    scale: def.scale,
+    slotUnit: true,
   });
-  emit('friendlySpawn', { x, z: cfg.z + 0.3 });
+  emit('friendlySpawn', { x, z, unitType: unitKey });
+  return true;
 }
 
 // 生物人军团：瞬间在阵型前沿生成 20 名友方僵尸
@@ -3481,7 +3628,16 @@ function updateVirusBombs(dt) {
   }
 }
 
-// 友方僵尸：冲向最近敌人，贴身互殴；12 秒后自然消失
+// 爆尸自爆：范围伤害 + 画面层的小爆炸
+function explodeFriendlyBomber(f) {
+  const radius = f.explodeRadius || 1.8;
+  damageZombiesInRadius(f.x, f.z, radius, f.damage);
+  emit('friendlyExplode', { x: f.x, z: f.z, radius });
+}
+
+// 友方僵尸：冲向最近敌人。召唤槽的兵种分三种打法：
+// 近战（盾/疾/巨）、贴身自爆（爆尸）、射程外吐酸（酸吐尸）；
+// 生物人军团和病毒转化的友军没有 role，照旧近战。12 秒后自然消失。
 function updateFriendlyZombies(dt) {
   const endZ = CONFIG.world.spawnZ - 2;
 
@@ -3502,19 +3658,29 @@ function updateFriendlyZombies(dt) {
       }
     }
 
+    let remove = false;
+
     if (targetIndex >= 0) {
       const zb = state.zombies[targetIndex];
       const dx = zb.x - f.x;
       const dz = zb.z - f.z;
       const dist = Math.sqrt(best) || 1;
+      // 酸吐尸停在射程边上，其他兵种贴身才开打
+      const stopDist = f.role === 'spitter' ? (f.range || 4.5) : 0.9;
 
-      if (dist > 0.9) {
+      if (dist > stopDist) {
         f.x += (dx / dist) * f.speed * dt;
         f.z += (dz / dist) * f.speed * dt;
+      } else if (f.role === 'bomber') {
+        explodeFriendlyBomber(f);
+        remove = true;
       } else {
         f.attackTimer -= dt;
         if (f.attackTimer <= 0) {
-          f.attackTimer = 0.7;
+          f.attackTimer = f.attackInterval || 0.7;
+          if (f.role === 'spitter') {
+            emit('friendlySpit', { fromX: f.x, fromZ: f.z, x: zb.x, z: zb.z });
+          }
           damageZombieAt(targetIndex, f.damage);
         }
       }
@@ -3523,18 +3689,26 @@ function updateFriendlyZombies(dt) {
       f.z -= f.speed * 0.65 * dt;
     }
 
-    // 被身边的敌人围殴
-    let contacts = 0;
-    for (const zb of state.zombies) {
-      if (Math.abs(zb.x - f.x) < 0.9 && Math.abs(zb.z - f.z) < 0.9) contacts += 1;
+    if (!remove) {
+      // 被身边的敌人围殴
+      let contacts = 0;
+      for (const zb of state.zombies) {
+        if (Math.abs(zb.x - f.x) < 0.9 && Math.abs(zb.z - f.z) < 0.9) contacts += 1;
+      }
+      if (contacts > 0) f.hp -= contacts * 14 * dt;
+
+      f.x = Math.max(-CONFIG.world.halfWidth, Math.min(CONFIG.world.halfWidth, f.x));
+
+      if (f.hp <= 0 || f.life > 12 || f.z < endZ) {
+        // 爆尸死也要炸，不然白占一个预算
+        if (f.role === 'bomber') explodeFriendlyBomber(f);
+        remove = true;
+      }
     }
-    if (contacts > 0) f.hp -= contacts * 14 * dt;
 
-    f.x = Math.max(-CONFIG.world.halfWidth, Math.min(CONFIG.world.halfWidth, f.x));
-
-    if (f.hp <= 0 || f.life > 12 || f.z < endZ) {
+    if (remove) {
       state.friendlyZombies.splice(i, 1);
-      emit('friendlyDie', { x: f.x, z: f.z });
+      emit('friendlyDie', { x: f.x, z: f.z, unitType: f.unitType });
     }
   }
 }

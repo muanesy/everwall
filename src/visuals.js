@@ -1150,7 +1150,25 @@ export function initVisuals(container, events) {
   });
 
   events.addEventListener('friendlySpawn', (e) => {
-    spawnRing(e.detail.x, e.detail.z, 0x5adf7a, 0.45);
+    const style = friendlyRoleStyle(e.detail.unitType);
+    spawnRing(e.detail.x, e.detail.z, style ? style.color : 0x5adf7a, 0.45);
+  });
+
+  // 爆尸自爆：黄绿色小爆炸，和敌方爆炸区分开
+  events.addEventListener('friendlyExplode', (e) => {
+    const d = e.detail;
+    spawnImpact(d.x, d.z, {
+      radius: d.radius || 1.8,
+      color: 0xd6e05a,
+      power: 0.7,
+      dust: true,
+    });
+  });
+
+  // 酸吐尸吐酸：一道绿色曳光打向目标
+  events.addEventListener('friendlySpit', (e) => {
+    const d = e.detail;
+    spawnTracer(d.fromX, d.fromZ, d.x, d.z, 0x8fe36a, 0.7);
   });
 
   events.addEventListener('friendlyDie', (e) => {
@@ -3962,11 +3980,12 @@ function syncSwarmDrones(state) {
   }
 }
 
-/* 友方僵尸：绿色单位，和敌方明显区分 */
-function makeFriendlyZombieMesh() {
+/* 友方僵尸：绿色单位，和敌方明显区分；召唤槽兵种按角色换颜色和体型 */
+function makeFriendlyZombieMesh(role = null) {
   const group = new THREE.Group();
+  const style = friendlyRoleStyle(role);
   const skin = new THREE.MeshStandardMaterial({
-    color: 0x5adf7a,
+    color: style ? style.color : 0x5adf7a,
     emissive: 0x1f6b3a,
     emissiveIntensity: 0.45,
     roughness: 0.7,
@@ -4052,20 +4071,34 @@ function makeFriendlyZombieMesh() {
  * ---------------------------------------------------------- */
 const FRIENDLY_TINT = new THREE.Color(0.42, 1.32, 0.72);
 
-function tintFriendly(root) {
+// 召唤槽五种兵种的外观区分：染色 + 体型。
+// 颜色都在绿色系里，保证一眼还是「自己人」，只是深浅和偏色不同。
+const FRIENDLY_ROLE_STYLES = {
+  shield: { tint: [0.42, 1.32, 0.72], color: 0x5adf7a, scale: 1.00 },
+  runner: { tint: [0.62, 1.55, 0.52], color: 0x8cf07a, scale: 0.84 },
+  bomber: { tint: [1.18, 1.20, 0.42], color: 0xd6e05a, scale: 0.92 },
+  spitter: { tint: [0.34, 1.28, 1.22], color: 0x5ae0c8, scale: 0.96 },
+  giant: { tint: [0.34, 1.10, 0.50], color: 0x3fbf5f, scale: 1.60 },
+};
+
+function friendlyRoleStyle(role) {
+  return FRIENDLY_ROLE_STYLES[role] || null;
+}
+
+function tintFriendly(root, tint = FRIENDLY_TINT) {
   root.traverse((o) => {
     if (!(o.isMesh || o.isSkinnedMesh)) return;
     const mats = Array.isArray(o.material) ? o.material : [o.material];
     o.material = Array.isArray(o.material)
       ? mats.map((m) => {
         const c = m.clone();
-        if (c.color) c.color.multiply(FRIENDLY_TINT);
+        if (c.color) c.color.multiply(tint);
         if (c.emissive) { c.emissive.setHex(0x1f6b3a); c.emissiveIntensity = 0.4; }
         return c;
       })
       : (() => {
         const c = mats[0].clone();
-        if (c.color) c.color.multiply(FRIENDLY_TINT);
+        if (c.color) c.color.multiply(tint);
         if (c.emissive) { c.emissive.setHex(0x1f6b3a); c.emissiveIntensity = 0.4; }
         return c;
       })();
@@ -4124,19 +4157,22 @@ function syncFriendlyZombies(state) {
 
     if (!entry) {
       // 有模型就上正式角色，没有退回几何体占位（保证功能不会因为模型没加载就消失）
+      const style = friendlyRoleStyle(f.role);
+      // 召唤槽兵种按角色定体型；转化的僵尸稍大一点，和"召来的"区分开
+      const scale = style ? style.scale : (f.converted ? 1.08 : 1);
       const proto = modelLib.zombies && modelLib.zombies[0];
       const vis = proto ? spawnModel(proto, 0) : null;
 
       if (vis) {
-        tintFriendly(vis.root);
+        const tint = style ? new THREE.Color(...style.tint) : FRIENDLY_TINT;
+        tintFriendly(vis.root, tint);
         addFriendlyMarks(vis.root, MODEL_TARGET.zombieHeight);
-        // 转化的僵尸稍大一点，和"召来的"区分开
-        if (f.converted) vis.root.scale.multiplyScalar(1.08);
+        vis.root.scale.multiplyScalar(scale);
         scene.add(vis.root);
         entry = { isModel: true, vis, root: vis.root };
       } else {
-        const mesh = makeFriendlyZombieMesh();
-        if (f.converted) mesh.scale.setScalar(1.08);
+        const mesh = makeFriendlyZombieMesh(f.role);
+        mesh.scale.setScalar(scale);
         scene.add(mesh);
         entry = { isModel: false, root: mesh };
       }
