@@ -295,6 +295,8 @@ const ZOMBIE_LOOKS = [
   { src: 'male',   scale: 1.15, tint: [1.15, 0.62, 0.42], walkSpeed: 1.0, attackSpeed: 1.0, score: 4, emissive: 0.30, color: 0xff6a3a },
   // 12 护甲：金属灰、体型略大，一眼看上去"很硬"
   { src: 'male',   scale: 1.2,  tint: [0.72, 0.76, 0.82], walkSpeed: 0.9, attackSpeed: 0.95, score: 4, color: 0x8a95a4 },
+  // 13 远程：紫绿自发光——它吐酸液，颜色要和普通僵尸拉开，才好在人群里认出来优先点掉
+  { src: 'male',   scale: 1.05, tint: [0.78, 1.15, 0.62], walkSpeed: 0.95, attackSpeed: 1.1, score: 5, emissive: 0.26, color: 0x8ce05a },
 ];
 
 /* 地图 → 僵尸模型覆盖：换地图时，同一种 type 换上本地图专属的模型。
@@ -1101,6 +1103,19 @@ export function initVisuals(container, events) {
     });
     // 地上留一小片烧痕，让人看得出这儿炸过
     spawnRing(x, z, 0x9a3010, 0.9);
+  });
+
+  // 酸液打到阵型：一小片绿雾 + 轻微震屏，让玩家知道"被远程点到了"
+  events.addEventListener('enemyShotHit', (e) => {
+    const d = e.detail || {};
+    const x = Number(d.x);
+    const z = Number(d.z);
+    if (!isFinite(x) || !isFinite(z)) return;
+    spawnRing(x, z, 0x9aff5a, 0.36);
+    spawnBurst(x, 0.5, z, 0x9aff5a, 10, {
+      speed: 1.8, up: 1.6, spread: 0.35, life: 0.4, gravity: -5,
+    });
+    shake = Math.max(shake, 0.18);
   });
 
   // 补给箱砸到地上：一圈土 + 轻微"咚"的震感（不用重震，它不是爆炸）
@@ -2419,8 +2434,9 @@ export function syncScene(state, dt) {
   updateBossPresence(state);
   updateZombieHitFeedback(state);
 
-  // 子弹
+  // 子弹 + 远程僵尸的酸液
   syncBullets(state);
+  syncEnemyShots(state);
   // 滚木和骑士冲锋：持续移动的实体，按 state 里的数组同步
   syncRollingLogs(state);
   syncKnightCharges(state);
@@ -2948,6 +2964,60 @@ function updateBossPresence(state) {
     if (look && look.isBoss) { has = true; break; }
   }
   bossOnField = has;
+}
+
+/* ----------------------------------------------------------
+ * 远程僵尸吐的酸液（点子池「远程僵尸」）
+ *
+ * 一个亮绿小球 + 一条短拖尾，飞行途中冒几粒火星。
+ * 它必须比僵尸的绿色更亮更饱和，否则混在人群里看不出来躲。
+ * ---------------------------------------------------------- */
+const enemyShotMeshes = new Map();
+let enemyShotGeo = null;
+let enemyShotMat = null;
+
+function ensureEnemyShotAssets() {
+  if (enemyShotGeo) return;
+  enemyShotGeo = new THREE.SphereGeometry(0.16, 8, 6);
+  enemyShotMat = new THREE.MeshBasicMaterial({
+    color: 0xb4ff5a,
+    transparent: true,
+    opacity: 0.95,
+  });
+}
+
+function syncEnemyShots(state) {
+  if (!scene) return;
+  const list = state.enemyShots || [];
+  if (!list.length && !enemyShotMeshes.size) return;
+
+  ensureEnemyShotAssets();
+  const alive = new Set();
+
+  for (const s of list) {
+    alive.add(s.id);
+    let mesh = enemyShotMeshes.get(s.id);
+    if (!mesh) {
+      mesh = new THREE.Mesh(enemyShotGeo, enemyShotMat);
+      scene.add(mesh);
+      enemyShotMeshes.set(s.id, mesh);
+    }
+    mesh.position.set(s.x, 0.85, s.z);
+    // 一边飞一边冒一点点绿火，看得见来向。
+    // 概率压得低：同屏可能有 5-6 发酸液，粒子池只有 500 个，别把血雾挤掉
+    if (Math.random() < 0.18) {
+      spawnBurst(s.x, 0.85, s.z, 0x9aff5a, 1, {
+        speed: 0.4, up: 0.4, spread: 0.12, life: 0.3, gravity: -0.6,
+      });
+    }
+  }
+
+  // 几何体和材质是所有酸液共享的，这里只把 mesh 从场景摘掉，绝不 dispose
+  for (const [id, mesh] of enemyShotMeshes) {
+    if (alive.has(id)) continue;
+    scene.remove(mesh);
+    enemyShotMeshes.delete(id);
+  }
 }
 
 function syncBullets(state) {  const alive = new Set();
@@ -4179,7 +4249,7 @@ function makeZombieMesh(type) {
   // 色块版的五色：和 ZOMBIE_LOOKS 的 tint 方向一致（普通绿/暗红灰/黄绿/灰白/灰绿）
   // 11 自爆=橙红、12 护甲=金属灰，按 type 取，取不到回落到普通
   const colors = [0x6f8f6a, 0x8f5a4a, 0x9aa04a, 0xb8bcc4, 0x647f68];
-  const COLOR_BY_TYPE = { 10: 0x6b6068, 11: 0xd85a2a, 12: 0x8a95a4 };
+  const COLOR_BY_TYPE = { 10: 0x6b6068, 11: 0xd85a2a, 12: 0x8a95a4, 13: 0x7ac850 };
   const look = ZOMBIE_LOOKS[type] || ZOMBIE_LOOKS[0];
 
   const mesh = new THREE.Mesh(

@@ -221,6 +221,8 @@ const CONFIG = {
       { id: 11, name: '自爆', hp: 1.6, speed: 0.90, touchLoss: 2, score: 4, baseWeight: 6, growth: 0.4, maxWeight: 12, minWave: 4, explode: { radius: 2.8, hpMul: 4 } },
       // 12 护甲：子弹伤害打对折，靠技能或集火处理
       { id: 12, name: '护甲', hp: 2.0, speed: 0.85, touchLoss: 2, score: 4, baseWeight: 8, growth: 0.3, maxWeight: 14, minWave: 5, armor: 0.5 },
+      // 13 远程：走到半场就停住，隔着距离往阵型吐酸液，逼玩家优先点掉它
+      { id: 13, name: '远程', hp: 1.4, speed: 0.95, touchLoss: 1, score: 5, baseWeight: 7, growth: 0.35, maxWeight: 13, minWave: 7, ranged: { stopZ: -13, interval: 2.6, damage: 1, speed: 7 } },
       // 时代 Boss：不参与随机抽签（minWave 999 + boss 标记双保险），
       // 只由 spawnEraBoss() 在切换时代时单独刷一只
       // hp 9 = 同波普通僵尸的 9 倍（第 5 波约 470 血），40 兵对准约 20 秒能打完
@@ -375,8 +377,9 @@ const state = {
   barrelTimer: 0,
   crateTimer: 0,
   crates: [],        // 补给箱：{ id, x, z, y, landed, reward }
+  enemyShots: [],    // 远程僵尸吐出来的酸液：{ id, x, z, tx, tz, speed, damage }
   nextId: 1,
-  spawnCounts: new Array(13).fill(0), // 调试用：统计每种僵尸刷了多少只（0-12）
+  spawnCounts: new Array(14).fill(0), // 调试用：统计每种僵尸刷了多少只（0-13）
 };
 
 // 调试用：浏览器控制台输入 __state 可以看实时数据
@@ -595,6 +598,7 @@ function resetState(opts = {}) {
   state.barrelTimer = CONFIG.barrel.spawnInterval;
   state.crateTimer = CONFIG.crate.firstDelay;
   state.crates.length = 0;
+  state.enemyShots.length = 0;
   state.nextId = 1;
   state.spawnCounts.fill(0);
   resetBarricade();
@@ -1595,6 +1599,7 @@ function update(dt) {
   updateFiring(dt);
   updateBarrelSpawn(dt);
   updateCrates(dt);
+  updateEnemyShots(dt);
   updateBullets(dt);
   updateSlots(dt);
   updateBarriers(dt);
@@ -1813,6 +1818,55 @@ function hitCrate(bx, bz) {
     return true;
   }
   return false;
+}
+
+/* ----------------------------------------------------------
+ * 远程僵尸的酸液（点子池「远程僵尸」）
+ *
+ * 从僵尸位置朝玩家当前位置飞一条直线，飞到就扣兵。玩家可以左右走位躲开，
+ * 这就是"必须优先点掉它"的压力来源——躲一次躲不了十次。
+ * ---------------------------------------------------------- */
+function fireEnemyShot(z) {
+  const targetX = state.player.x;
+  const targetZ = state.player.z;
+  const dx = targetX - z.x;
+  const dz = targetZ - z.z;
+  const len = Math.hypot(dx, dz) || 1;
+  const speed = z.ranged.speed;
+
+  state.enemyShots.push({
+    id: state.nextId++,
+    x: z.x,
+    z: z.z,
+    vx: (dx / len) * speed,
+    vz: (dz / len) * speed,
+    damage: z.ranged.damage,
+    life: 0,
+  });
+  emit('enemyShot', { x: z.x, z: z.z });
+}
+
+function updateEnemyShots(dt) {
+  for (let i = state.enemyShots.length - 1; i >= 0; i--) {
+    const s = state.enemyShots[i];
+    s.x += s.vx * dt;
+    s.z += s.vz * dt;
+    s.life += dt;
+
+    // 飞太久或飞出战场就丢掉
+    if (s.life > 4 || s.z > CONFIG.world.spawnZ + 30) {
+      state.enemyShots.splice(i, 1);
+      continue;
+    }
+
+    const dx = s.x - state.player.x;
+    const dz = s.z - state.player.z;
+    if (dx * dx + dz * dz < 0.45 * 0.45) {
+      state.enemyShots.splice(i, 1);
+      emit('enemyShotHit', { x: s.x, z: s.z });
+      if (!state.testMode) damageArmy(s.damage, 'shot');
+    }
+  }
 }
 
 function updateBullets(dt) {
@@ -2284,6 +2338,22 @@ function updateZombies(dt) {
       z.x += Math.sign(dx) * CONFIG.zombie.turnSpeed * dt;
     }
 
+    // 远程僵尸：走到半场就停，隔着距离往阵型吐酸液
+    // （它不参与贴线滑行，所以下面那段对它不生效）
+    if (z.ranged && z.z >= z.ranged.stopZ) {
+      z.z = z.ranged.stopZ;
+      z.aggro = true;
+      z.x = clamp(z.x, -CONFIG.world.halfWidth - 1, CONFIG.world.halfWidth + 1);
+
+      // 测试模式下也照常吐：伤害由 damageArmy 内部挡掉，弹道该看还是能看
+      z.shotTimer -= dt;
+      if (z.shotTimer <= 0) {
+        z.shotTimer = z.ranged.interval;
+        fireEnemyShot(z);
+      }
+      continue;
+    }
+
     if (z.z >= CONFIG.world.killZ) {
       // 到线就停住，不再往前，改为沿着防线滑向士兵
       // 这样它永远不会越线，最终一定会贴上
@@ -2498,6 +2568,9 @@ function spawnZombie() {
     aggro: false,
     armor: type.armor || 1,        // 子弹伤害乘子（护甲僵尸 0.5）
     explode: type.explode || null, // 自爆僵尸：死了按这个半径和倍率炸
+    ranged: type.ranged || null,   // 远程僵尸：停下吐东西的参数
+    // 第一次吐之前随机等一会儿，不然一群远程会同时齐射，画面像被人打了一梭子
+    shotTimer: type.ranged ? type.ranged.interval * (0.4 + Math.random() * 0.6) : 0,
     boss: false,
   });
 
@@ -2535,6 +2608,8 @@ function spawnEraBoss(eraIndex) {
     aggro: false,
     armor: type.armor || 1,
     explode: type.explode || null,
+    ranged: null,
+    shotTimer: 0,
     boss: true,
     era: eraIndex,
   };
