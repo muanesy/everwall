@@ -30,6 +30,8 @@ import {
 // 三个乙层模块：兵种阶级外观表、昼夜轮转、炸药桶（新文件，按文件边界属乙）
 import { TIERS, getTier, getTierIndex } from './visuals-tiers.js';
 import { eraForWave, getEra, applyEraLook, tintMaterials } from './visuals-era.js';
+
+export { eraMaps, pickEraMap } from './visuals-era.js';
 import { createDayNight, nightForWave } from './visuals-daynight.js';
 import { initBarrels, updateBarrels, resetBarrels, hitTestBarrel, spawnBarrelAt } from './visuals-barrels.js';
 
