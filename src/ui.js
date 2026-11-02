@@ -16,8 +16,33 @@ import { skillIconTag, slotIconTag } from './ui-skillicons.js';
 
 /* 构建标记：显示在开始页标题下方。
  * 用途很具体——改了东西但"看起来还是老样子"时，先看这行字对不对，
- * 一眼就能区分"代码没生效"和"浏览器给了缓存的旧 JS"。 */
-const BUILD_STAMP = 'v2026-11-02.2 · 26 地图 · 近景层';
+ * 一眼就能区分"代码没生效"和"浏览器给了缓存的旧 JS"。
+ *
+ * 这行以前是手写死的，结果改了几十处它还是同一个字符串，
+ * 反而制造了"根本没更新"的假象。现在改成自动读 git：
+ * 本地用 serve.py 打开时，会显示真实提交号 + 提交时间，
+ * 有未提交改动会带一个 * 号；断网 / 直接开文件时退回下面这行兜底。 */
+const BUILD_STAMP = 'v2026-11-02 · 26 地图（离线兜底标记）';
+
+// 把开始页那行版本换成真实 git 信息。拿不到就保持兜底，不报错、不占位
+function syncBuildStamp(root) {
+  const el = root && root.querySelector('[data-build]');
+  if (!el) return;
+
+  fetch('/__build', { cache: 'no-store' })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((d) => {
+      if (!d || !d.commit) return; // 没有 git / 不是 dev 服务器：留着兜底那行
+      // 用 # 前缀，一眼能看出这是提交号而不是版本号
+      el.textContent = `#${d.commit}${d.dirty ? '*' : ''} · ${d.time} · 26 地图`;
+      el.title = d.dirty
+        ? '工作区有未提交的改动（* 标记）。看到的是磁盘上的最新代码'
+        : '工作区干净，显示的就是这个提交的内容';
+    })
+    .catch(() => {
+      /* 断网或 file:// 打开：保留兜底标记，不影响游戏 */
+    });
+}
 
 let els = null;
 let actions = null;
@@ -424,6 +449,9 @@ function buildDom() {
     </div>
   `;
   document.body.appendChild(startScreen);
+
+  // 版本标记异步换成真实提交号（失败就保留上面那行兜底）
+  syncBuildStamp(startScreen);
 
   const overScreen = document.createElement('div');
   overScreen.className = 'overlay hidden';
