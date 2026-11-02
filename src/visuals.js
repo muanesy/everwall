@@ -142,6 +142,31 @@ const MAPS = {
   },
 };
 
+/* 把 17 张新地图并进 MAPS。
+ *
+ * ⚠️ 这一步**必须**在 `const MAP = MAPS[MAP_ID]` 之前。
+ * 之前我把它写在 MAPS 定义后面、但排到了 MAP 快照之后，
+ * 结果新地图在取 MAP 时还不存在，全部回落到 city——
+ * 表现就是"新地图的贴图和配色全变成废墟街道的"。
+ *
+ * 它们带着自己的 tex（复用现有贴图）、tint、雾、灯光和 props 构建函数，
+ * 并进来之后 switchMapLook / 开始页选图 / 时代选图都不用另外改。 */
+for (const [id, m] of Object.entries(NEW_MAPS)) {
+  MAPS[id] = {
+    name: m.name,
+    tex: m.tex,
+    tint: m.tint,
+    roughness: m.roughness,
+    bg: m.bg,
+    fogNear: m.fogNear,
+    fogFar: m.fogFar,
+    hemi: m.hemi,
+    key: m.key,
+    fill: m.fill,
+    isNew: true,
+  };
+}
+
 // 当前地图：从地址参数读，默认废墟街道
 let MAP_ID = new URLSearchParams(window.location.search).get('map') || 'city';
 const MAP = MAPS[MAP_ID] || MAPS.city;
@@ -281,27 +306,6 @@ const modelLib = {
 // walkSpeed 只影响走路动画节奏——比颜色更能传达"笨重"和"快"。
 // score 只用来决定"死了飘不飘字"和飘多少，必须跟 game.js CONFIG.zombie.types[].score 对齐；
 // 甲改那边分数的话这里跟着改。
-/* 把 17 张新地图并进 MAPS。
- * 它们带着自己的 tex（复用现有贴图）、tint、雾、灯光和 props 构建函数，
- * 所以并进来之后 switchMapLook / 开始页选图 / 时代选图全都不用另外改。
- * 这里放在 MAPS 定义之后、第一次使用之前，避免改动原有表的结构。 */
-for (const [id, m] of Object.entries(NEW_MAPS)) {
-  MAPS[id] = {
-    name: m.name,
-    tex: m.tex,
-    tint: m.tint,
-    roughness: m.roughness,
-    bg: m.bg,
-    fogNear: m.fogNear,
-    fogFar: m.fogFar,
-    hemi: m.hemi,
-    key: m.key,
-    fill: m.fill,
-    // 标记出来，buildProps 里分流到新地图的构建函数
-    isNew: true,
-  };
-}
-
 const ZOMBIE_LOOKS = [
   { src: 'male',   scale: 1.0,  tint: [0.80, 0.90, 0.84], walkSpeed: 1.0, attackSpeed: 1.0, score: 1 },   // 0 普通 灰绿
   { src: 'male',   scale: 1.25, tint: [0.88, 0.62, 0.58], walkSpeed: 0.85, attackSpeed: 0.75, score: 3 },  // 1 大块头 暗红灰（出拳慢而重）
@@ -1447,11 +1451,18 @@ export function switchMapLook(mapId, opts = {}) {
 
   // 带过渡的换图：先淡出，再换，最后淡入
   if (opts.fade) {
-    fadeOut(opts.fadeMs || 420);
-    setTimeout(() => {
-      doSwitchMapLook(mapId);
-      fadeIn(opts.fadeMs || 420);
-    }, (opts.fadeMs || 420) + 40);
+    const ms = opts.fadeMs || 420;
+    fadeOut(ms);
+    // 在淡出的黑屏期间把贴图 load 好，再换场景、再淡入。
+    // 这样玩家看到的是"黑一下 → 新地图已经完整"，而不是"灰地面慢慢长出贴图"。
+    const target = MAPS[mapId];
+    const ready = target ? preloadGroundTexture(target.tex) : Promise.resolve(null);
+    ready
+      .catch(() => null)
+      .then(() => {
+        doSwitchMapLook(mapId);
+        fadeIn(ms);
+      });
     return true;
   }
   return doSwitchMapLook(mapId);
@@ -1485,19 +1496,14 @@ function doSwitchMapLook(mapId) {
     fillLight.position.set(...m.fill.pos);
   }
 
-  // 地面贴图
+  // 地面贴图：优先用预加载好的缓存。没缓存就现加载，加载完再贴上去。
+  // 先染色（乘色）和粗糙度立刻生效，贴图到位后只是补上图，不会整块跳变。
   if (groundMesh) {
-    const tex = loadGroundTextures(renderer, m.tex);
     const gm = groundMesh.material;
-    if (gm.map) gm.map.dispose();
-    if (gm.normalMap) gm.normalMap.dispose();
-    if (gm.roughnessMap) gm.roughnessMap.dispose();
-    gm.map = tex.map;
-    gm.normalMap = tex.normalMap;
-    gm.roughnessMap = tex.roughnessMap;
     gm.color.setHex(m.tint);
     gm.roughness = m.roughness;
     gm.needsUpdate = true;
+    flushGroundTexture(m.tex);
   }
 
   // 背景物：旧的拆干净再重建（不 dispose 会泄漏显存）
@@ -3999,6 +4005,35 @@ function updatePropAnimations(dt) {
   }
 }
 
+/* 某个深度 z 处，画面横向能看见多宽（世界单位半宽）。
+ *
+ * 摆背景物必须用它：这台相机 45° 俯视、画面 9:16，
+ * 每个深度能看见的横向范围差很多（z=0 约 ±11，z=-40 约 ±19.4），
+ * 超出就会被左右裁掉，看起来像"没做背景物"。
+ *
+ * 相机是 lookAt(0,0,0)、位置 (0, camY, camZ)，
+ * 所以可视半宽 = 相机到该点的深度 × tanH。 */
+function viewHalfXAt(z) {
+  if (!camera) return 11;
+  const tilt = (CAM.tilt * Math.PI) / 180;
+  const tanV = Math.tan((CAM.fov * Math.PI) / 360);
+  const tanH = tanV * camera.aspect;
+  // 视线方向（从相机指向原点）
+  const c = Math.cos(tilt);
+  const s = Math.sin(tilt);
+  const fz = -c;
+  const fy = -s;
+  // 相机在 (0, camY, camZ)，深度 = 点相对相机沿视线方向的分量
+  // 深度 = 点相对相机、沿视线方向的投影长度。
+  // 视线朝下朝里（fy、fz 都是负），所以 rel 点乘 f 本身就是正值，
+  // **不要再取负**——我第一版多写了一个负号，深度变负后被 Math.max(1,…) 钳成 1，
+  // 可见半宽算成 1 个单位，结果几乎所有道具都被判"没空间"而跳过。
+  const relY = 0 - camY;
+  const relZ = z - camZ;
+  const depth = relY * fy + relZ * fz;
+  return Math.max(6, depth * tanH);
+}
+
 function buildProps(mapId = MAP_ID) {
   const group = new THREE.Group();
   const rng = mulberry32(20261101);
@@ -4006,7 +4041,9 @@ function buildProps(mapId = MAP_ID) {
   // 新地图（17 张）走自己的构建函数：零件工厂 + 配置组合，
   // 不用在这里堆 17 个 props 函数
   if (isNewMap(mapId) && NEW_MAPS[mapId].build) {
-    NEW_MAPS[mapId].build(group, rng, propAnim);
+    // 把"某个深度画面能看见多宽"交给地图模块，让它只在可见带里摆道具。
+    // 少了这个，道具会摆到画面外——第一版城堡墙就是这样被裁掉的。
+    NEW_MAPS[mapId].build(group, rng, propAnim, { viewHalfX: viewHalfXAt });
   } else {
     const builder = {
       city: buildCityProps,
@@ -7278,7 +7315,6 @@ function loadGroundTextures(renderer, mapId) {
 
   // 一格贴图铺 GROUND_TILE 个世界单位。铺多大是关键参数：
   // 太小会糊（纹理颗粒比屏幕像素还细，被平均掉），太大会失真。
-  // 全部贴图统一用 1k，所以六张地图共用同一个尺度。
   const rx = GROUND_W / GROUND_TILE;
   const ry = GROUND_H / GROUND_TILE;
 
@@ -7292,11 +7328,102 @@ function loadGroundTextures(renderer, mapId) {
     return tex;
   };
 
-  return {
+  const set = {
     map: load(`${mapId}-diff`, true),
     normalMap: load(`${mapId}-nor_gl`, false),
     roughnessMap: load(`${mapId}-rough`, false),
   };
+
+  // 预加载好的贴图直接给出去；没预加载过就返回一组"还在加载"的纹理。
+  // flushGroundTextures 会在贴图到位后把它们贴到地面上，
+  // 所以切图不会出现"先灰一片、过一会才变"的跳变。
+  return set;
+}
+
+/* ----------------------------------------------------------
+ * 贴图预加载
+ *
+ * 新地图的贴图是 2k 的，一张图三件套约 3.7MB。按需加载会让切图瞬间
+ * 出现一片没有贴图的灰地面，所以：
+ *   1. 进游戏前先预加载「当前选中的地图」
+ *   2. 切图时如果目标图还没加载好，在淡出黑屏期间等它
+ * 用户明确说过"体积先不管，加载完再展示"，所以这里优先体验。
+ * ---------------------------------------------------------- */
+const groundTexCache = new Map();   // mapId → { map, normalMap, roughnessMap } | 'loading'
+
+function groundTextureUrl(mapId, kind) {
+  return new URL(`../assets/${mapId}-${kind}.jpg`, import.meta.url).href;
+}
+
+/** 预加载一张地图的地面贴图。已在加载/已加载则复用同一个 Promise */
+export function preloadGroundTexture(mapId) {
+  const hit = groundTexCache.get(mapId);
+  if (hit && hit !== 'loading') return Promise.resolve(hit);
+  if (hit === 'loading') {
+    return groundPreloadPromises.get(mapId) || Promise.resolve(null);
+  }
+
+  groundTexCache.set(mapId, 'loading');
+  const loader = new THREE.TextureLoader();
+
+  const one = (kind) => new Promise((res) => {
+    loader.load(
+      groundTextureUrl(mapId, kind),
+      (t) => res(t),
+      undefined,
+      () => res(null)     // 加载失败也 resolve，别让整张图卡住
+    );
+  });
+
+  const p = Promise.all([one('diff'), one('nor_gl'), one('rough')]).then(([diff, nor, rough]) => {
+    if (!diff) { groundTexCache.delete(mapId); return null; }
+
+    const rx = GROUND_W / GROUND_TILE;
+    const ry = GROUND_H / GROUND_TILE;
+    const maxAniso = renderer ? renderer.capabilities.getMaxAnisotropy() : 1;
+    const setup = (t, isColor) => {
+      if (!t) return null;
+      t.wrapS = THREE.RepeatWrapping;
+      t.wrapT = THREE.RepeatWrapping;
+      t.repeat.set(rx, ry);
+      t.anisotropy = maxAniso;
+      if (isColor) t.colorSpace = THREE.SRGBColorSpace;
+      t.needsUpdate = true;
+      return t;
+    };
+    const set = {
+      map: setup(diff, true),
+      normalMap: setup(nor, false),
+      roughnessMap: setup(rough, false),
+    };
+    groundTexCache.set(mapId, set);
+    groundPreloadPromises.delete(mapId);
+    return set;
+  });
+
+  groundPreloadPromises.set(mapId, p);
+  return p;
+}
+
+const groundPreloadPromises = new Map();
+
+/** 把缓存里的贴图贴到地面材质上（切图后调用；没缓存就现加载再贴） */
+function flushGroundTexture(mapId) {
+  const apply = (set) => {
+    if (!groundMesh || !set) return;
+    const gm = groundMesh.material;
+    if (gm.map && gm.map !== set.map) gm.map.dispose();
+    if (gm.normalMap && gm.normalMap !== set.normalMap) gm.normalMap.dispose();
+    if (gm.roughnessMap && gm.roughnessMap !== set.roughnessMap) gm.roughnessMap.dispose();
+    gm.map = set.map;
+    gm.normalMap = set.normalMap;
+    gm.roughnessMap = set.roughnessMap;
+    gm.needsUpdate = true;
+  };
+
+  const hit = groundTexCache.get(mapId);
+  if (hit && hit !== 'loading') { apply(hit); return; }
+  preloadGroundTexture(mapId).then(apply);
 }
 
 function disposeMesh(mesh) {
