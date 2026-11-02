@@ -468,7 +468,6 @@ function buildDom() {
   startScreen.className = 'overlay';
   startScreen.innerHTML = `
     <div class="card">
-      <p class="eyebrow">广告里的游戏</p>
       <h1>万古防线</h1>
       <p class="title-en">EVERWALL</p>
       <p class="build-stamp" data-build>${BUILD_STAMP}</p>

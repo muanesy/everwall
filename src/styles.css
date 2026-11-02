@@ -38,7 +38,11 @@ body {
   user-select: none;
   -webkit-touch-callout: none;
   -webkit-tap-highlight-color: transparent;
-  touch-action: none;
+  /* 页面本身锁死不能滚动；但开始页的地图网格和遮罩层要能上下滑，
+     所以这里放开纵向手势，再用 overscroll-behavior 挡掉下拉刷新。
+     战场的拖动只用到横向位移（pointerRatio 取 clientX），不受影响；
+     画布自己另设 touch-action: none，拖动不会被打断。 */
+  touch-action: pan-y;
 }
 
 /* 竖屏舞台：把画面锁在 9:16 里居中显示。
@@ -204,6 +208,19 @@ canvas {
   overscroll-behavior: contain;
   background: rgba(6, 9, 13, 0.72);
   backdrop-filter: blur(6px);
+  /* 窄屏/矮窗口下卡片会超出视口，开始按钮不能被裁掉：
+     body 关了默认滚动，这里单独放开纵向滚动和触摸拖动 */
+  overflow-y: auto;
+  overflow-x: hidden;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* 内容比视口高时从顶部开始排，避免 flex 居中把卡片上沿裁掉 */
+@supports (align-items: safe center) {
+  .overlay {
+    align-items: safe center;
+  }
 }
 
 .card {
@@ -225,22 +242,60 @@ canvas {
   color: var(--accent);
 }
 
-.card h1 {
-  margin: 0 0 10px;
-  font-size: 30px;
-  letter-spacing: 0.04em;
+/* 标题自带字体：只内嵌标题用到的几个字，文件各 2~4KB，
+   不依赖系统装没装隶书/衬线，手机和电脑字形一致。
+   中文是 Ma Shan Zheng（OFL，毛笔楷），英文是 Cinzel（OFL，碑刻大写）。 */
+@font-face {
+  font-family: "EVERWALL Title";
+  src: url("../assets/fonts/title-zh.ttf") format("truetype");
+  font-weight: 400;
+  font-display: swap;
 }
 
-/* 中文标题下面的英文名：大写 + 拉开字距，读起来像铭牌而不是第二行标题 */
+@font-face {
+  font-family: "EVERWALL Capitals";
+  src: url("../assets/fonts/title-en.ttf") format("truetype");
+  font-weight: 500;
+  font-display: swap;
+}
+
+.card h1 {
+  margin: 0 0 6px;
+  /* 内嵌字体优先，保证各平台一致；字体加载失败时再退回系统隶书/楷体，不会变豆腐块。 */
+  font-family: "EVERWALL Title", "华文隶书", "隶书", "LiSu", "STLiti", "华文新魏", "华文楷体", "楷体", "STKaiti", "KaiTi", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", serif;
+  font-size: 36px;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  text-indent: 0.06em; /* 补掉最后一行多出的字距，标题才真的居中 */
+  line-height: 1.16;
+  color: #e7c47e;
+}
+
+/* 描金标题：系统艺术字打底，再叠一层金属渐变和一点外发光。
+   不支持 background-clip 的环境退回上面的实色，不会变成透明字。 */
+@supports ((background-clip: text) or (-webkit-background-clip: text)) {
+  .card h1 {
+    background: linear-gradient(180deg, #fff4d2 0%, #f0cd86 38%, #c08e42 62%, #f7e0b2 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    filter:
+      drop-shadow(0 1px 0 rgba(0, 0, 0, 0.65))
+      drop-shadow(0 0 22px rgba(226, 178, 92, 0.26));
+  }
+}
+
+/* 中文标题下面的英文名：衬线铭牌感，大写 + 拉开字距 */
 .title-en {
-  margin: -4px 0 12px;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.42em;
-  text-indent: 0.42em; /* 补掉最后一个字母后面多出的字距，居中才真的居中 */
+  margin: 2px 0 14px;
+  font-family: "EVERWALL Capitals", "Castellar", "Bodoni Poster", "Didot", "Baskerville", "Georgia", "Times New Roman", serif;
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.52em;
+  text-indent: 0.52em; /* 补掉最后一个字母后面多出的字距，居中才真的居中 */
   text-transform: uppercase;
-  color: var(--accent);
-  opacity: 0.85;
+  color: #b58f4c;
+  opacity: 0.95;
 }
 
 .card h2 {
@@ -1391,6 +1446,19 @@ canvas {
 }
 
 @media (max-width: 720px) {
+  /* 小屏上描金标题收一档，避免四字加字距把卡片撑满 */
+  .card h1 {
+    font-size: 30px;
+    letter-spacing: 0.04em;
+    text-indent: 0.04em;
+  }
+
+  .title-en {
+    font-size: 10px;
+    letter-spacing: 0.42em;
+    text-indent: 0.42em;
+  }
+
   .skill-rail {
     width: 56px;
     gap: 6px;
