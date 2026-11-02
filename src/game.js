@@ -63,6 +63,18 @@ const CONFIG = {
     rowGap: 0.32,        // 排与排之间的纵向间距
     maxSoldiers: 120,    // 最多显示多少个士兵
   },
+  card: {
+    everyWaves: 2,       // 每几波抽一次
+    slowMo: 0.25,        // 抽卡时全场慢放倍率
+    duration: 4,         // 选择时间，秒
+  },
+  slots: {
+    siege: { x: 4.5, z: 15 },        // 攻城，后排右
+    support: { x: -4.5, z: 15 },     // 支援，后排左
+    command: { x: 0, z: 15 },        // 指挥，后排中
+    closeDefense: { x: 5.5, z: 4.5 },// 近防，前排右
+    // 工事就是路障本身，位置在 CONFIG.barricade
+  },
   barrel: {
     damageBase: 20,      // 炸药桶爆炸伤害的基础值
     damagePerWave: 4,    // 每波增加的伤害
@@ -185,6 +197,22 @@ const state = {
     frontCount: 1,
   },
 
+  // 抽卡和永久升级
+  upgrades: {
+    damage: 1,          // 士兵伤害倍率
+    moveSpeed: 1,       // 士兵移速倍率
+    damageReduction: 0, // 士兵受到伤害的减免
+    barrelDamage: 1,    // 炸药桶伤害倍率
+    fireRate: 1,        // 射速倍率
+  },
+  card: {
+    active: false,
+    choices: [],
+    timeLeft: 0,
+    version: 0,
+  },
+  timeScale: 1,
+
   // 路障：挡在前排，有血量，碎了冷却后重建
   barricade: {
     level: 1,
@@ -261,6 +289,7 @@ initUI(state, {
   start: startGame,
   restart: startGame,
   revive: revive,
+  chooseCard,
 });
 
 // 炸药桶爆炸：乙负责画面，这里按半径结算僵尸伤害
@@ -271,8 +300,9 @@ events.addEventListener('barrelExploded', (e) => {
 
   const radius = Number.isFinite(detail.radius) ? detail.radius : 3.2;
   const damage =
-    CONFIG.barrel.damageBase +
-    (state.wave - 1) * CONFIG.barrel.damagePerWave;
+    (CONFIG.barrel.damageBase +
+      (state.wave - 1) * CONFIG.barrel.damagePerWave) *
+    state.upgrades.barrelDamage;
   const r2 = radius * radius;
 
   for (let i = state.zombies.length - 1; i >= 0; i--) {
@@ -294,6 +324,11 @@ events.addEventListener('barrelExploded', (e) => {
  * 输入：键盘 + 触摸拖动
  * ---------------------------------------------------------- */
 window.addEventListener('keydown', (e) => {
+  if (state.card.active && (e.key === '1' || e.key === '2' || e.key === '3')) {
+    chooseCard(Number(e.key) - 1);
+    return;
+  }
+
   if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') input.left = true;
   if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') input.right = true;
   if (e.key.startsWith('Arrow')) e.preventDefault();
@@ -338,6 +373,17 @@ function resetState() {
   state.weapon.lines = 1;
   state.weapon.pierce = false;
   state.weapon.timers = [0];
+
+  state.upgrades.damage = 1;
+  state.upgrades.moveSpeed = 1;
+  state.upgrades.damageReduction = 0;
+  state.upgrades.barrelDamage = 1;
+  state.upgrades.fireRate = 1;
+
+  state.card.active = false;
+  state.card.choices = [];
+  state.card.timeLeft = 0;
+  state.timeScale = 1;
 
   state.bullets.length = 0;
   state.barriers.length = 0;
@@ -419,6 +465,107 @@ if (typeof window !== 'undefined') {
 }
 
 /* ----------------------------------------------------------
+ * 抽卡
+ * ---------------------------------------------------------- */
+const CARD_POOL = [
+  {
+    id: 'barricade',
+    name: '路障升级',
+    desc: '路障 +1 级，血量和宽度提升',
+    can: () => state.barricade.level < CONFIG.barricade.levels.length,
+    apply: () => upgradeBarricade(),
+  },
+  {
+    id: 'damage',
+    name: '火力强化',
+    desc: '士兵伤害 +15%',
+    can: () => state.upgrades.damage < 2,
+    apply: () => { state.upgrades.damage = Math.min(2, state.upgrades.damage * 1.15); },
+  },
+  {
+    id: 'speed',
+    name: '急行军',
+    desc: '士兵移速 +10%',
+    can: () => state.upgrades.moveSpeed < 1.5,
+    apply: () => { state.upgrades.moveSpeed = Math.min(1.5, state.upgrades.moveSpeed * 1.1); },
+  },
+  {
+    id: 'armor',
+    name: '护甲',
+    desc: '士兵受到的伤害 -10%',
+    can: () => state.upgrades.damageReduction < 0.5,
+    apply: () => { state.upgrades.damageReduction = Math.min(0.5, state.upgrades.damageReduction + 0.1); },
+  },
+  {
+    id: 'barrel',
+    name: '炸药桶强化',
+    desc: '爆炸伤害 +30%',
+    can: () => state.upgrades.barrelDamage < 2.5,
+    apply: () => { state.upgrades.barrelDamage = Math.min(2.5, state.upgrades.barrelDamage * 1.3); },
+  },
+  {
+    id: 'fireRate',
+    name: '快速射击',
+    desc: '全队射速 +8%',
+    can: () => state.upgrades.fireRate < 1.5,
+    apply: () => { state.upgrades.fireRate = Math.min(1.5, state.upgrades.fireRate * 1.08); },
+  },
+  {
+    id: 'gun',
+    name: '火力增援',
+    desc: '枪位 +1，最多 8 个',
+    can: () => state.weapon.lines < CONFIG.weapon.maxLines,
+    apply: () => { state.weapon.lines = Math.min(CONFIG.weapon.maxLines, state.weapon.lines + 1); },
+  },
+];
+
+function startCardDraw() {
+  if (state.card.active) return;
+
+  const pool = CARD_POOL.filter((c) => c.can());
+  if (!pool.length) return;
+
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+
+  state.card.active = true;
+  state.card.choices = pool.slice(0, 3);
+  state.card.timeLeft = CONFIG.card.duration;
+  state.card.version += 1;
+  state.timeScale = CONFIG.card.slowMo;
+  emit('cardStart', { choices: state.card.choices.map((c) => c.id) });
+}
+
+function chooseCard(index) {
+  if (!state.card.active) return;
+
+  const card = state.card.choices[index];
+  if (!card) return;
+
+  card.apply();
+  state.card.active = false;
+  state.card.choices = [];
+  state.card.timeLeft = 0;
+  state.timeScale = 1;
+  emit('cardChosen', { id: card.id });
+}
+
+function updateCard(realDt) {
+  if (!state.card.active) return;
+
+  state.card.timeLeft -= realDt;
+  if (state.card.timeLeft > 0) return;
+
+  // 超时优先拿防御类，没有再拿第一张
+  const preferred = state.card.choices.findIndex(
+    (c) => c.id === 'armor' || c.id === 'barricade'
+  );
+  chooseCard(preferred >= 0 ? preferred : 0);
+}
+
+/* ----------------------------------------------------------
  * 每帧更新
  * ---------------------------------------------------------- */
 // 每 4 波进一个时代：换配色和地图，场上实体全部保留
@@ -444,9 +591,15 @@ function update(dt) {
 
   const nextWave = Math.floor(state.time / CONFIG.wave.duration) + 1;
   if (nextWave !== state.wave) {
+    const completed = nextWave - 1; // 刚结束的那一波
     state.wave = nextWave;
     syncEraWithWave(nextWave);
     emit('waveStart', { wave: nextWave });
+
+    // 每 2 波结束抽一次
+    if (completed > 0 && completed % CONFIG.card.everyWaves === 0) {
+      startCardDraw();
+    }
   }
 
   updateFormation();
@@ -477,7 +630,7 @@ function updatePlayer(dt) {
 
   if (dir !== 0) {
     state.player.x = clamp(
-      state.player.x + dir * CONFIG.player.speed * dt,
+      state.player.x + dir * CONFIG.player.speed * state.upgrades.moveSpeed * dt,
       -CONFIG.world.halfWidth,
       CONFIG.world.halfWidth
     );
@@ -514,7 +667,8 @@ function updateFiring(dt) {
     tier.fireInterval,
     CONFIG.player.baseFireInterval / Math.max(1, state.soldiers)
   );
-  const totalRate = baseCount / baseInterval; // 每秒多少发
+  const effInterval = baseInterval / state.upgrades.fireRate;
+  const totalRate = baseCount / effInterval; // 每秒多少发
   const interval = shooters / totalRate;
 
   // 每个枪位各自计时，新枪位随机错开，避免整排同时开火
@@ -546,7 +700,7 @@ function updateFiring(dt) {
       z: state.player.z - 0.1,
       vx,
       vz: -CONFIG.player.bulletSpeed,
-      damage: CONFIG.player.bulletDamage * tier.damage,
+      damage: CONFIG.player.bulletDamage * tier.damage * state.upgrades.damage,
       pierces: 0,
     });
 
@@ -1057,12 +1211,24 @@ function spawnZombie() {
 function damageArmy(amount, cause) {
   if (state.status !== 'playing') return;
 
-  state.soldiers -= amount;
-  emit('armyHurt', { soldiers: state.soldiers, amount, cause });
+  // 护甲按概率挡掉每一滴伤害，避免 1 点伤害被取整吃掉
+  let dmg = amount;
+  const reduction = state.upgrades.damageReduction || 0;
+  if (reduction > 0) {
+    for (let i = 0; i < amount; i++) {
+      if (Math.random() < reduction) dmg -= 1;
+    }
+  }
+  if (dmg <= 0) return;
+
+  state.soldiers -= dmg;
+  emit('armyHurt', { soldiers: state.soldiers, amount: dmg, cause });
 
   if (state.soldiers <= 0) {
     state.soldiers = 0;
     state.status = 'over';
+    state.card.active = false;
+    state.timeScale = 1;
   }
 }
 
@@ -1079,6 +1245,8 @@ function applySoldiers(delta) {
   if (state.soldiers <= 0) {
     state.soldiers = 0;
     state.status = 'over';
+    state.card.active = false;
+    state.timeScale = 1;
   }
 }
 
@@ -1090,12 +1258,18 @@ let lastTime = performance.now();
 function loop(now) {
   requestAnimationFrame(loop);
 
-  const dt = Math.min((now - lastTime) / 1000, 0.05);
+  const realDt = Math.min((now - lastTime) / 1000, 0.05);
   lastTime = now;
 
-  if (state.status === 'playing') update(dt);
+  if (state.status === 'playing') {
+    updateCard(realDt);            // 抽卡倒计时用真实时间
+    const dt = realDt * state.timeScale;
+    update(dt);
+    syncScene(state, dt);
+  } else {
+    syncScene(state, realDt);
+  }
 
-  syncScene(state, dt);
   updateUI(state);
 }
 

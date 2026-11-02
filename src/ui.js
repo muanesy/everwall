@@ -97,6 +97,7 @@ export function updateUI(state) {
   updateTierBadge(state.soldiers);
   updateLoadingBox();
   updateWaveCountdown(state);
+  updateCards(state);
 
   els.hud.classList.toggle('hidden', state.status !== 'playing');
   els.startScreen.classList.toggle('hidden', state.status !== 'menu');
@@ -182,6 +183,38 @@ function updateLoadingBox() {
   }
 }
 
+/* 抽卡：慢放时底部弹出三张，倒计时结束自动选 */
+function updateCards(state) {
+  if (!els.cardLayer) return;
+
+  const show = state.status === 'playing' && state.card && state.card.active;
+  els.cardLayer.classList.toggle('hidden', !show);
+  if (!show) return;
+
+  els.cardTimer.textContent = `${Math.max(0, Math.ceil(state.card.timeLeft))}s`;
+
+  if (els.cardVersion !== state.card.version) {
+    els.cardVersion = state.card.version;
+    renderCards(state.card.choices);
+  }
+}
+
+function renderCards(choices) {
+  els.cardRow.innerHTML = choices.map((c, i) => `
+    <button class="card-choice" data-card-index="${i}">
+      <em>${i + 1}</em>
+      <strong>${c.name}</strong>
+      <span>${c.desc}</span>
+    </button>
+  `).join('');
+
+  els.cardRow.querySelectorAll('[data-card-index]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (actions && actions.chooseCard) actions.chooseCard(Number(btn.dataset.cardIndex));
+    });
+  });
+}
+
 /* ---------- 内部 ---------- */
 
 function buildDom() {
@@ -258,6 +291,18 @@ function buildDom() {
   `;
   document.body.appendChild(overScreen);
 
+  // 抽卡层：慢放时从底部滑出，不暂停游戏
+  const cardLayer = document.createElement('div');
+  cardLayer.className = 'card-layer hidden';
+  cardLayer.innerHTML = `
+    <div class="card-layer__head">
+      <span>选择一张强化</span>
+      <span class="card-layer__timer" data-card-timer>4s</span>
+    </div>
+    <div class="card-layer__row" data-card-row></div>
+  `;
+  document.body.appendChild(cardLayer);
+
   // 静音开关：不影响游戏，只控制声音。现场演示嫌吵可以按一下。
   const soundBtn = document.createElement('button');
   soundBtn.className = 'sound-toggle';
@@ -300,6 +345,10 @@ function buildDom() {
     loadingFill: startScreen.querySelector('[data-loading-fill]'),
     loadingText: startScreen.querySelector('[data-loading-text]'),
     startBest,
+    cardLayer,
+    cardTimer: cardLayer.querySelector('[data-card-timer]'),
+    cardRow: cardLayer.querySelector('[data-card-row]'),
+    cardVersion: -1,
   };
 }
 

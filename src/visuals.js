@@ -765,6 +765,7 @@ export function initVisuals(container, events) {
 
   // 路障：前排一段可破坏的墙
   initBarricade();
+  initSlots();
 
   // 队长
   playerMesh = new THREE.Mesh(
@@ -2984,6 +2985,54 @@ function getHpBarTexture() {
 /* ----------------------------------------------------------
  * 路障：前排一段可破坏的墙 + 下方血条 + 冷却倒计时
  * ---------------------------------------------------------- */
+/* ----------------------------------------------------------
+ * 槽位地基：五个槽位的固定位置
+ * 工事就是路障本身，这里放另外四个
+ * ---------------------------------------------------------- */
+const SLOT_DEFS = [
+  { id: 'siege', name: '攻城', x: 4.5, z: 15, color: 0xffa64d },
+  { id: 'support', name: '支援', x: -4.5, z: 15, color: 0x5adf7a },
+  { id: 'command', name: '指挥', x: 0, z: 15, color: 0x6fa8ff },
+  { id: 'closeDefense', name: '近防', x: 5.5, z: 4.5, color: 0xff6a4a },
+];
+
+function initSlots() {
+  for (const s of SLOT_DEFS) {
+    const pad = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.85, 0.95, 0.08, 20),
+      new THREE.MeshStandardMaterial({ color: 0x1a2430, roughness: 0.85 })
+    );
+    pad.position.set(s.x, 0.04, s.z);
+    scene.add(pad);
+
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.72, 0.88, 24),
+      new THREE.MeshBasicMaterial({
+        color: s.color,
+        transparent: true,
+        opacity: 0.55,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      })
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(s.x, 0.09, s.z);
+    scene.add(ring);
+
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(0.22, 0.55, 0.22),
+      new THREE.MeshStandardMaterial({
+        color: s.color,
+        emissive: s.color,
+        emissiveIntensity: 0.25,
+        roughness: 0.5,
+      })
+    );
+    post.position.set(s.x, 0.28, s.z);
+    scene.add(post);
+  }
+}
+
 function initBarricade() {
   barricadeGroup = new THREE.Group();
   barricadeGroup.position.set(BARRICADE_X, 0, BARRICADE_Z);
