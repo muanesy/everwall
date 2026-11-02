@@ -1029,9 +1029,11 @@ function setSlotLevel(id, level) {
   }
 }
 
-// 后现代起自动解锁召唤槽
+// 星际（era >= 4）起保底自动解锁召唤槽。
+// 后现代（era 3）是「靠抽卡解锁」的窗口：解锁卡和升级卡都从这个时代开始出现，
+// 所以不能一进后现代就自动送 1 级，否则解锁卡永远抽不到、等于白写一张卡。
 function ensureSummonSlot() {
-  if (state.era >= 3 && state.slotLevels.summon === 0) {
+  if (state.era >= 4 && state.slotLevels.summon === 0) {
     setSlotLevel('summon', 1);
     emit('skillNotice', { text: '召唤槽已解锁', kind: 'skill' });
   }
@@ -1208,20 +1210,19 @@ const CARD_POOL = [
     apply: () => setSlotLevel('command', state.slotLevels.command + 1),
   },
   {
-    // 另外四个槽位都有解锁卡，只有召唤没有——结果就是前期永远开不出来，
-    // 那第六个地基一直空着，看起来像模型丢了。补上，和别的槽位一样抽。
-    // （后现代 era>=3 的自动解锁保留，作为抽不到时的保底）
+    // 召唤是后现代（era >= 3）才登场的槽位：解锁卡和升级卡都只在这个时代之后出现。
+    // 前期抽到也没有意义（出来就一只 60 血小僵尸），不如让三选一的位置留给别的卡。
     id: 'slotSummon',
     name: '召唤槽',
     desc: () => `解锁召唤 1 级：${slotSummary('summon', 1)}`,
-    can: () => !state.slotLevels.summon,
+    can: () => state.era >= 3 && !state.slotLevels.summon,
     apply: () => setSlotLevel('summon', 1),
   },
   {
     id: 'slotSummonUpgrade',
     name: '召唤升级',
     desc: () => `召唤 ${state.slotLevels.summon} → ${state.slotLevels.summon + 1} 级，${slotSummary('summon', state.slotLevels.summon + 1)}`,
-    can: () => state.slotLevels.summon > 0 && state.slotLevels.summon < SLOT_MAX_LEVEL,
+    can: () => state.era >= 3 && state.slotLevels.summon > 0 && state.slotLevels.summon < SLOT_MAX_LEVEL,
     apply: () => setSlotLevel('summon', state.slotLevels.summon + 1),
   },
   {
