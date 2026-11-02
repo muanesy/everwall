@@ -11,6 +11,8 @@ import { TIERS, getTier, tierProgress } from './visuals-tiers.js';
 import { getWaveElapsed } from './visuals.js';
 // 加载进度由画面层提供（models 在后台下载）
 import { getModelLoadProgress } from './visuals.js';
+// 技能与槽位图标：内联 SVG，零图片资源（见 ui-skillicons.js）
+import { skillIconTag, slotIconTag } from './ui-skillicons.js';
 
 let els = null;
 let actions = null;
@@ -281,6 +283,7 @@ function updateSkillRail(state) {
       return `
         <button class="skill-slot" type="button" data-skill-id="${s.id}" style="--skill-color:${color}">
           <span class="skill-slot__key">${i + 1}</span>
+          <span class="skill-slot__icon">${skillIconTag(s.id, { size: 26 })}</span>
           <span class="skill-slot__name">${s.name}</span>
           <span class="skill-slot__charges">×${s.charges}</span>
         </button>
@@ -415,6 +418,7 @@ function buildDom() {
   const slotRows = testData.slots.map((s) => `
     <div class="test-slot">
       <div class="test-slot__top">
+        <span class="test-slot__icon">${slotIconTag(s.id, { size: 18 })}</span>
         <span class="test-slot__name">${s.name}</span>
         <span class="test-slot__level" data-test-level="${s.id}">Lv0</span>
         <button class="test-step" type="button" data-test-minus="${s.id}" aria-label="${s.name} 降一级">−</button>
@@ -430,7 +434,7 @@ function buildDom() {
     return `
       <p class="test-skill-era">${name}</p>
       <div class="test-skill-grid">
-        ${list.map((s) => `<button class="test-skill" type="button" data-test-skill="${s.id}">${s.name}</button>`).join('')}
+        ${list.map((s) => `<button class="test-skill" type="button" data-test-skill="${s.id}"><span class="test-skill__icon">${skillIconTag(s.id, { size: 15 })}</span>${s.name}</button>`).join('')}
       </div>
     `;
   }).join('');
