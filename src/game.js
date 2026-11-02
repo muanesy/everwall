@@ -306,11 +306,15 @@ const CONFIG = {
     minSpawnInterval: 0.16,
     intervalPerWave: 0.02,
     maxAlive: 120,
-    aggroStartZ: 1,        // 比原来多一点点距离就开始拐弯
-    aggroRadius: 6,        // 主动拐弯的范围
-    turnSpeed: 3.8,        // 主动追击时的侧向速度，放慢一些
+    aggroStartZ: 0,        // 进入中后段就开始缓慢吸附
+    aggroRadius: 9,        // 吸附范围比原来更早
+    turnSpeed: 2.6,        // 吸附速度放慢
     lineSlideSpeed: 15,    // 到线后沿防线滑向士兵的速度，必须快过士兵
     chainDetourRange: 4,   // 离锁链多近才开始横向绕行，避免从出生点就吸附
+    chargeDistance: 16,    // 离玩家超过这个距离才蓄力跑步
+    chargeSpeedMul: 1.9,   // 远距离冲刺倍率
+    absorbDistance: 8,     // 进入这个距离后放慢、开始吸附
+    absorbSpeedMul: 0.55,  // 近距离吸附时的前进速度倍率
     touchBase: 0.9,        // 士兵阵型的基础接触半宽
     touchPerSoldier: 0.04, // 每多一个兵，接触范围加多少
     touchMaxBonus: 0.6,    // 接触范围最多额外加多少
@@ -336,9 +340,9 @@ const CONFIG = {
       { id: 14, name: '召唤者', hp: 2.2, speed: 0.72, touchLoss: 2, score: 8, baseWeight: 0, growth: 0, minWave: 999, summoner: true },
       // 时代 Boss：不参与随机抽签（minWave 999 + boss 标记双保险），
       // 只由 spawnEraBoss() 在切换时代时单独刷一只
-      // hp 26 = 同波普通僵尸的 26 倍（第 5 波约 1350 血、第 21 波约 4680 血）。
-      // 原来 9 倍在中后期几秒就被打穿，Boss 完全没有"分段节点"的分量
-      { id: 10, name: '时代Boss', hp: 26, speed: 0.5, touchLoss: 6, score: 40, baseWeight: 0, growth: 0, minWave: 999, boss: true },
+      // hp 60 = 同波普通僵尸的 60 倍（第 5 波约 3120 血、第 21 波约 10800 血）。
+      // 26 倍在后期成型 build 面前撑不了几秒，Boss 没有"分段节点"的分量
+      { id: 10, name: '时代Boss', hp: 60, speed: 0.5, touchLoss: 6, score: 40, baseWeight: 0, growth: 0, minWave: 999, boss: true },
     ],
   },
   wave: {
@@ -358,7 +362,7 @@ const CONFIG = {
     underLevelMin: 0.55,  // 最多 -45%
   },
   // 时代 Boss：每次切换时代刷一只，作为分段节点
-  // 血量乘子和普通僵尸同一套公式（baseHp + 波次成长），再乘 types 里的 hp=14
+  // 血量乘子和普通僵尸同一套公式（baseHp + 波次成长），再乘 types 里的 hp=60
   boss: {
     rewardSoldiers: 8,   // 击败奖励：加兵
     rewardScore: 30,     // 击败奖励：额外分数（types 里的 score 40 会另算）
@@ -3210,6 +3214,14 @@ function updateZombies(dt) {
     const dz = state.player.z - z.z;
     const dist = Math.hypot(dx, dz);
 
+    // 两段式移动：远距离蓄力跑步靠近，进入吸附距离后放慢
+    let phaseMul = 1;
+    if (dist > CONFIG.zombie.chargeDistance) {
+      phaseMul = CONFIG.zombie.chargeSpeedMul;
+    } else if (dist < CONFIG.zombie.absorbDistance) {
+      phaseMul = CONFIG.zombie.absorbSpeedMul;
+    }
+
     if (z.z > CONFIG.zombie.aggroStartZ && dist < CONFIG.zombie.aggroRadius) {
       z.aggro = true;
     }
@@ -3262,8 +3274,10 @@ function updateZombies(dt) {
       // 离屏阶段给 1.9 倍，约 4 秒走进画面；进屏后立刻恢复正常速度，
       // 所以不影响它进场之后的压迫节奏和平衡。
       const introMul = z.boss && z.z < CONFIG.world.screenTopZ ? 1.9 : 1;
+      // 普通僵尸走 phaseMul（远冲近慢）；Boss 还要兼顾离屏入场加速
+      const speedMul = z.boss ? Math.max(phaseMul, introMul) : phaseMul;
 
-      z.z += z.speed * dt * slowMul * waterMul * introMul;
+      z.z += z.speed * dt * slowMul * waterMul * speedMul;
     }
 
     z.x = clamp(z.x, -CONFIG.world.halfWidth - 1, CONFIG.world.halfWidth + 1);
@@ -4008,7 +4022,7 @@ function spawnZombie() {
  *
  * 每次切换时代刷一只，从右侧通道正中压下来，作为"这一时代开场的高潮"。
  * 不参与随机抽签（typeWeight 里直接返回 0），一局最多同时存在一只。
- * 血量沿用普通僵尸那套公式再乘 types 里的 hp=14，所以越往后的时代越硬。
+ * 血量沿用普通僵尸那套公式再乘 types 里的 hp=60，所以越往后的时代越硬。
  * ---------------------------------------------------------- */
 function spawnEraBoss(eraIndex) {
   const type = CONFIG.zombie.types.find((t) => t.boss);
