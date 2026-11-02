@@ -18,7 +18,6 @@ import {
   spawnBarrel,
   switchEra,
   pickEraMap,
-  igniteFireZone,
   spawnCampfireFx,
 } from './visuals.js';
 import { initUI, updateUI } from './ui.js';
@@ -1137,9 +1136,8 @@ function castSkill(id) {
         remaining: cfg.duration,
         dps: cfg.dps,
       });
-      // 地面火区 + 篝火本体的木柴/火苗/火星/暖光
-      igniteFireZone(target.x, target.z, cfg.radius, cfg.duration);
-      spawnCampfireFx(target.x, target.z, cfg.duration);
+      // 篝火本体和地面范围圈都由画面层负责
+      spawnCampfireFx(target.x, target.z, cfg.duration, cfg.radius);
       break;
     }
     case 'slow':
@@ -1696,7 +1694,8 @@ function spawnBarrierRow() {
         x: centerX,
         z,
         value: -randInt(CONFIG.barrier.negativeMin, negativeCap),
-        maxValue: randInt(CONFIG.barrier.capMin, valueCap),
+        // 灰色陷阱打到 0 就消失，永远不会变成正数
+        maxValue: grey ? 0 : randInt(CONFIG.barrier.capMin, valueCap),
         hits: 0,
         required: 0,
         length: len,
@@ -2086,12 +2085,14 @@ function spawnZombie() {
   const baseSpeed =
     CONFIG.zombie.baseSpeed + (state.wave - 1) * CONFIG.zombie.speedPerWave;
   const nightMul = isNight(state.wave) ? CONFIG.zombie.nightSpeedMul : 1;
+  const hp = baseHp * type.hp;
 
   state.zombies.push({
     id: state.nextId++,
     x: minX + Math.random() * (maxX - minX),
     z: CONFIG.world.spawnZ - Math.random() * 4,
-    hp: baseHp * type.hp,
+    hp,
+    maxHp: hp,
     speed: Math.min(
       CONFIG.zombie.speedCap,
       baseSpeed * type.speed * nightMul

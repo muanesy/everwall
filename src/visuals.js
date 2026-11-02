@@ -951,7 +951,7 @@ export function initVisuals(container, events) {
     } else if (d.id === 'arrowRain') {
       spawnArrowRain(d.x, d.z, d.radius || 4, d.color || 0xd9b36c);
     } else if (d.type === 'rollingLog' || d.type === 'knightCharge' || d.type === 'campfire') {
-      // 滚木/骑士由 sync 负责画，篝火由 igniteFireZone 负责画
+      // 滚木/骑士由 sync 负责画，篝火由 spawnCampfireFx 负责画
     } else {
       spawnSkyStrike(d.x, d.z, d.color || 0xffffff);
     }
@@ -1806,73 +1806,134 @@ export function igniteFireZone(x, z, radius = FIRE_RADIUS, duration = FIRE_LIFE)
 }
 
 /* 篝火：交叉木柴 + 火苗 + 火星 + 暖光，和油桶火区叠在一起 */
-export function spawnCampfireFx(x, z, duration = 5) {
+export function spawnCampfireFx(x, z, duration = 5, radius = 3.5) {
   if (!scene || !isFinite(x) || !isFinite(z)) return null;
 
   const group = new THREE.Group();
   group.position.set(x, 0, z);
 
+  // 伤害范围：淡橙色地面 + 一圈边线，不铺大块焦土
+  const area = new THREE.Mesh(
+    new THREE.CircleGeometry(radius, 56),
+    new THREE.MeshBasicMaterial({
+      color: 0xff6a1e,
+      transparent: true,
+      opacity: 0.07,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  area.rotation.x = -Math.PI / 2;
+  area.position.y = 0.022;
+  group.add(area);
+
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(radius - 0.07, radius, 56),
+    new THREE.MeshBasicMaterial({
+      color: 0xff8a2b,
+      transparent: true,
+      opacity: 0.42,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.032;
+  group.add(ring);
+
+  // 中心火堆底下的一小块焦土
+  const char = new THREE.Mesh(
+    new THREE.CircleGeometry(0.9, 24),
+    new THREE.MeshBasicMaterial({
+      color: 0x1a0f08,
+      transparent: true,
+      opacity: 0.5,
+      depthWrite: false,
+    })
+  );
+  char.rotation.x = -Math.PI / 2;
+  char.position.y = 0.012;
+  group.add(char);
+
+  // 火堆中心的高亮火光，让远处也能看出这里有火
+  const glow = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({
+      map: ensureFireTex(),
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  glow.rotation.x = -Math.PI / 2;
+  glow.rotation.z = Math.random() * Math.PI * 2;
+  glow.position.y = 0.06;
+  glow.scale.set(2.6, 2.6, 1);
+  group.add(glow);
+
   // 石圈
-  const stoneMat = new THREE.MeshBasicMaterial({ color: 0x4a4640 });
-  for (let i = 0; i < 7; i++) {
-    const a = (i / 7) * Math.PI * 2;
-    const stone = new THREE.Mesh(new THREE.SphereGeometry(0.13, 5, 4), stoneMat);
-    stone.position.set(Math.cos(a) * 0.58, 0.1, Math.sin(a) * 0.58);
-    stone.scale.y = 0.7;
+  const stoneMat = new THREE.MeshBasicMaterial({ color: 0x5b554c });
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    const stone = new THREE.Mesh(new THREE.SphereGeometry(0.15, 5, 4), stoneMat);
+    stone.position.set(Math.cos(a) * 0.62, 0.11, Math.sin(a) * 0.62);
+    stone.scale.set(1, 0.65, 1);
     group.add(stone);
   }
 
   // 交叉木柴
-  const logMat = new THREE.MeshBasicMaterial({ color: 0x4a2c16 });
+  const logMat = new THREE.MeshBasicMaterial({ color: 0x6b3f1d });
   for (let i = 0; i < 3; i++) {
     const log = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.09, 0.09, 1.02, 6),
+      new THREE.CylinderGeometry(0.1, 0.1, 1.15, 6),
       logMat
     );
     log.rotation.z = Math.PI / 2;
     log.rotation.y = (i / 3) * Math.PI;
-    log.position.y = 0.14 + i * 0.035;
+    log.position.y = 0.16 + i * 0.04;
     group.add(log);
   }
 
-  // 三层火苗：外橙、中黄、内白
-  const flameColors = [0xff5a16, 0xffa22b, 0xffe08a];
+  // 三层火苗：外红橙、中黄、内白，整体比之前高
+  const flameColors = [0xff4a0a, 0xffa22b, 0xfff0a0];
   const flames = [];
-  for (let i = 0; i < 9; i++) {
-    const h = 0.5 + Math.random() * 0.55;
-    const color = flameColors[i < 5 ? 0 : i < 8 ? 1 : 2];
+  for (let i = 0; i < 14; i++) {
+    const h = 0.8 + Math.random() * 0.9;
+    const color = flameColors[i < 8 ? 0 : i < 12 ? 1 : 2];
     const mesh = new THREE.Mesh(
-      new THREE.ConeGeometry(0.14 + Math.random() * 0.08, h, 6),
+      new THREE.ConeGeometry(0.18 + Math.random() * 0.12, h, 7),
       new THREE.MeshBasicMaterial({
         color,
         transparent: true,
-        opacity: 0.7,
+        opacity: 0.78,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
       })
     );
     const a = Math.random() * Math.PI * 2;
-    const r = Math.random() * 0.3;
-    const baseY = 0.2 + h / 2;
+    const r = Math.random() * 0.36;
+    const baseY = 0.22 + h / 2;
     mesh.position.set(Math.cos(a) * r, baseY, Math.sin(a) * r);
     group.add(mesh);
     flames.push({
       mesh,
       baseY,
       phase: Math.random() * Math.PI * 2,
-      speed: 5 + Math.random() * 4,
+      speed: 4.5 + Math.random() * 4,
     });
   }
 
   // 火星
-  const emberCount = 24;
+  const emberCount = 36;
   const pos = new Float32Array(emberCount * 3);
   const seeds = new Float32Array(emberCount);
   for (let i = 0; i < emberCount; i++) {
     const a = Math.random() * Math.PI * 2;
-    const r = Math.random() * 0.34;
+    const r = Math.random() * 0.4;
     pos[i * 3] = Math.cos(a) * r;
-    pos[i * 3 + 1] = 0.2 + Math.random() * 1.1;
+    pos[i * 3 + 1] = 0.2 + Math.random() * 1.4;
     pos[i * 3 + 2] = Math.sin(a) * r;
     seeds[i] = Math.random();
   }
@@ -1882,9 +1943,9 @@ export function spawnCampfireFx(x, z, duration = 5) {
     emberGeo,
     new THREE.PointsMaterial({
       color: 0xffc75a,
-      size: 0.075,
+      size: 0.09,
       transparent: true,
-      opacity: 0.9,
+      opacity: 0.95,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
     })
@@ -1892,8 +1953,8 @@ export function spawnCampfireFx(x, z, duration = 5) {
   group.add(embers);
 
   // 暖光
-  const light = new THREE.PointLight(0xff8a3d, 1.8, 8, 2);
-  light.position.y = 1.2;
+  const light = new THREE.PointLight(0xff8a3d, 2.8, 9, 2);
+  light.position.y = 1.4;
   group.add(light);
 
   scene.add(group);
@@ -1904,6 +1965,9 @@ export function spawnCampfireFx(x, z, duration = 5) {
     embers,
     emberSeeds: seeds,
     light,
+    ring,
+    area,
+    glow,
     life: 0,
     maxLife: Math.max(0.5, duration),
   };
@@ -1939,12 +2003,20 @@ function updateCampfireFx(dt) {
     const arr = fx.embers.geometry.attributes.position.array;
     for (let j = 0; j < arr.length; j += 3) {
       arr[j + 1] += dt * (0.35 + fx.emberSeeds[j / 3] * 0.45);
-      if (arr[j + 1] > 1.35) arr[j + 1] = 0.18;
+      if (arr[j + 1] > 1.5) arr[j + 1] = 0.18;
     }
     fx.embers.geometry.attributes.position.needsUpdate = true;
-    fx.embers.material.opacity = 0.85 * fade;
+    fx.embers.material.opacity = 0.9 * fade;
 
-    fx.light.intensity = (1.45 + Math.sin(fx.life * 17) * 0.35) * fade;
+    // 地面火光和范围圈也一起跳动
+    const pulse = 0.85 + Math.sin(fx.life * 4.5) * 0.15;
+    fx.glow.scale.set(2.6 * pulse, 2.6 * pulse, 1);
+    fx.glow.rotation.z += dt * 0.45;
+    fx.glow.material.opacity = (0.72 + Math.sin(fx.life * 11) * 0.14) * fade;
+    fx.ring.material.opacity = 0.34 * pulse * fade;
+    fx.area.material.opacity = 0.065 * fade;
+
+    fx.light.intensity = (2.2 + Math.sin(fx.life * 17) * 0.5) * fade;
   }
 }
 
@@ -2496,9 +2568,9 @@ function syncZombies(state, dt) {
           ? { isModel: true, vis }
           : { isModel: false, mesh: makeZombieMesh(z.type) };
 
-        // 精英和 Boss 头顶挂血条（甲给僵尸加 maxHp 字段就有内容显示）
+        // 精英和 Boss 头顶挂血条；普通僵尸不显示，避免满屏血条
         const look = ZOMBIE_LOOKS[z.type];
-        if (look && (look.isBoss || look.score >= 5 || z.maxHp)) {
+        if (look && (look.isBoss || look.score >= 5)) {
           const w = look.isBoss ? 2.0 : 1.2;
           entry.hpBar = makeHpBar(w);
           entry.hpHeight =
