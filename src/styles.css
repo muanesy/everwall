@@ -176,6 +176,18 @@ canvas {
   letter-spacing: 0.04em;
 }
 
+/* 中文标题下面的英文名：大写 + 拉开字距，读起来像铭牌而不是第二行标题 */
+.title-en {
+  margin: -4px 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.42em;
+  text-indent: 0.42em; /* 补掉最后一个字母后面多出的字距，居中才真的居中 */
+  text-transform: uppercase;
+  color: var(--accent);
+  opacity: 0.85;
+}
+
 .card h2 {
   margin: 0 0 10px;
   font-size: 24px;

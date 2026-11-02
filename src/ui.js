@@ -415,7 +415,8 @@ function buildDom() {
   startScreen.innerHTML = `
     <div class="card">
       <p class="eyebrow">广告里的游戏</p>
-      <h1>向僵尸开炮</h1>
+      <h1>万古防线</h1>
+      <p class="title-en">EVERWALL</p>
       <p class="build-stamp" data-build>${BUILD_STAMP}</p>
       <p class="sub">
         左右移动，自动开火。<br>
