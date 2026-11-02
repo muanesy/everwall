@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "gradient-text",
+        "value": "*",
+        "files": [
+          "src/styles.css"
+        ],
+        "createdAt": "2026-11-02T15:20:52.321Z",
+        "reason": "intentional gold engraved title treatment from teammate commits 133613b/92f3440, preserved during merge; not decorative filler"
+      }
+    ]
+  }
+}
