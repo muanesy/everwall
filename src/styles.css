@@ -224,21 +224,43 @@ canvas {
 }
 
 .card h1 {
-  margin: 0 0 10px;
-  font-size: 30px;
-  letter-spacing: 0.04em;
+  margin: 0 0 6px;
+  /* Windows 上「华文隶书 / 隶书」是本机自带的碑刻感隶书；
+     Mac/iOS 退到华文楷体，安卓最后退到系统衬线宋体，形态不会崩。 */
+  font-family: "华文隶书", "隶书", "LiSu", "STLiti", "华文新魏", "华文楷体", "楷体", "STKaiti", "KaiTi", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", serif;
+  font-size: 40px;
+  font-weight: 400;
+  letter-spacing: 0.14em;
+  text-indent: 0.14em; /* 补掉最后一行多出的字距，标题才真的居中 */
+  line-height: 1.16;
+  color: #e7c47e;
 }
 
-/* 中文标题下面的英文名：大写 + 拉开字距，读起来像铭牌而不是第二行标题 */
+/* 描金标题：系统艺术字打底，再叠一层金属渐变和一点外发光。
+   不支持 background-clip 的环境退回上面的实色，不会变成透明字。 */
+@supports ((background-clip: text) or (-webkit-background-clip: text)) {
+  .card h1 {
+    background: linear-gradient(180deg, #fff4d2 0%, #f0cd86 38%, #c08e42 62%, #f7e0b2 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    filter:
+      drop-shadow(0 1px 0 rgba(0, 0, 0, 0.65))
+      drop-shadow(0 0 22px rgba(226, 178, 92, 0.26));
+  }
+}
+
+/* 中文标题下面的英文名：衬线铭牌感，大写 + 拉开字距 */
 .title-en {
-  margin: -4px 0 12px;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.42em;
-  text-indent: 0.42em; /* 补掉最后一个字母后面多出的字距，居中才真的居中 */
+  margin: 2px 0 14px;
+  font-family: "Castellar", "Bodoni Poster", "Didot", "Baskerville", "Georgia", "Times New Roman", serif;
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.52em;
+  text-indent: 0.52em; /* 补掉最后一个字母后面多出的字距，居中才真的居中 */
   text-transform: uppercase;
-  color: var(--accent);
-  opacity: 0.85;
+  color: #b58f4c;
+  opacity: 0.95;
 }
 
 .card h2 {
@@ -1339,6 +1361,19 @@ canvas {
 }
 
 @media (max-width: 720px) {
+  /* 小屏上描金标题收一档，避免四字加字距把卡片撑满 */
+  .card h1 {
+    font-size: 34px;
+    letter-spacing: 0.1em;
+    text-indent: 0.1em;
+  }
+
+  .title-en {
+    font-size: 10px;
+    letter-spacing: 0.42em;
+    text-indent: 0.42em;
+  }
+
   .skill-rail {
     width: 56px;
     gap: 6px;
