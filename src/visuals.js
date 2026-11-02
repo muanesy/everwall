@@ -736,7 +736,7 @@ const carrierDroneMeshes = new Map();
 const swarmDroneMeshes = new Map();
 const friendlyZombieMeshes = new Map();
 const virusBombMeshes = new Map();
-let tankSupportMesh = null;
+const tankSupportMeshes = new Map(); // 坦克可以同时有多辆，key 是 t.id
 const effects = [];
 
 // 战斗特效升级件（对象在 initVisuals 里创建）：
@@ -3544,20 +3544,25 @@ function makeTankSupportMesh() {
 }
 
 function syncTankSupport(state) {
-  if (!state.tankSupport) {
-    if (tankSupportMesh) {
-      scene.remove(tankSupportMesh);
-      disposeMesh(tankSupportMesh);
-      tankSupportMesh = null;
+  const alive = new Set();
+
+  for (const t of state.tankSupports || []) {
+    alive.add(t.id);
+    let mesh = tankSupportMeshes.get(t.id);
+    if (!mesh) {
+      mesh = makeTankSupportMesh();
+      scene.add(mesh);
+      tankSupportMeshes.set(t.id, mesh);
     }
-    return;
+    mesh.position.set(t.x, 0, t.z);
   }
 
-  if (!tankSupportMesh) {
-    tankSupportMesh = makeTankSupportMesh();
-    scene.add(tankSupportMesh);
+  for (const [id, mesh] of tankSupportMeshes) {
+    if (alive.has(id)) continue;
+    scene.remove(mesh);
+    disposeMesh(mesh);
+    tankSupportMeshes.delete(id);
   }
-  tankSupportMesh.position.set(state.tankSupport.x, 0, state.tankSupport.z);
 }
 
 /* 装甲车 */

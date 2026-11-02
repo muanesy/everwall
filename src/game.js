@@ -160,13 +160,14 @@ const CONFIG = {
     falloff: 0.7,      // 越靠边伤害越低：边缘只保留 30%
   },
   tankSupport: {
-    x: -5.5, z: 9.4,   // 左下方
-    shots: 3,          // 一轮打 3 发
+    x: -5.5, z: 9.4,   // 左下方；再叫一辆就摆在它右边 spacing 格处
+    spacing: 2.4,      // 第二辆在第一辆右边这么多格
+    shots: 4,          // 一轮打 4 发（原来 3 发，持续时间顺带长了一节）
     shotInterval: 0.7,
     damage: 60,
-    radius: 3.0,
-    flightTime: 0.5,   // 炮弹飞行时间
-    retreatDelay: 0.8, // 打完多久开始撤
+    radius: 3.9,       // 爆炸范围 3.0 → 3.9，清一片而不是只扫一条
+    flightTime: 0.32,  // 炮弹飞行时间 0.5 → 0.32，落点更快
+    retreatDelay: 0.9, // 打完多久开始撤
     retreatSpeed: 4.5,
   },
   apc: {
@@ -362,7 +363,7 @@ const CONFIG = {
   pickup: {
     interval: 26,      // 以前 14 秒一个，掉得太勤，拉到 26 秒
     firstDelay: 16,
-    duration: 9,       // 换来的枪只能用 9 秒（原来 18 秒的一半），到点换回时代武器
+    duration: 5,       // 换来的枪只能用 5 秒，到点换回时代武器（18 → 9 → 5）
     max: 1,            // 场上最多一个，以前是两个
     life: 24,          // 打不中就在场上待 24 秒自动消失，不然会一直占着刷新位
     hitW: 0.72,        // 子弹命中的横向半宽
@@ -512,7 +513,7 @@ const state = {
   knightCharges: [], // { id, x, z, speed, damage, hit }
   campfireZones: [], // { id, x, z, radius, remaining, dps }
   siegeShots: [],    // { x, z, radius, damage, timeLeft } 炮弹落地后才结算
-  tankSupport: null, // { x, z, shotsLeft, timer, retreating, retreatDelay }
+  tankSupports: [],  // 场上的坦克：{ x, z, shotsLeft, timer, retreating, retreatDelay }
   apcCharges: [],    // { id, x, z, speed, damage, hit, mgTimer }
   carrierDrones: [], // { id, x, z, baseX, baseZ, life, mgTimer, phase }
   swarmDrones: [],   // 无人机蜂群：{ id, x, z, targetId, life, heading }
@@ -768,7 +769,7 @@ function resetState(opts = {}) {
   state.knightCharges.length = 0;
   state.campfireZones.length = 0;
   state.siegeShots.length = 0;
-  state.tankSupport = null;
+  state.tankSupports.length = 0;
   state.apcCharges.length = 0;
   state.carrierDrones.length = 0;
   state.swarmDrones.length = 0;
@@ -828,7 +829,7 @@ function revive() {
   state.knightCharges.length = 0;
   state.campfireZones.length = 0;
   state.siegeShots.length = 0;
-  state.tankSupport = null;
+  state.tankSupports.length = 0;
   state.apcCharges.length = 0;
   state.carrierDrones.length = 0;
   state.swarmDrones.length = 0;
@@ -1362,7 +1363,7 @@ const SKILL_DESCS = {
   barrage: '圆形炮火覆盖：半径 4.5 内 90 伤害，8 发炮弹连续落下',
   napalm: '最密处半径 3.5 内 45 伤害',
   paratroopers: '立刻 +10 兵',
-  tank: '左下出现坦克，打 3 发范围炮（每发 60、半径 3）后撤退',
+  tank: '左下出现坦克，打 4 发范围炮（每发 60、半径 3.9）后撤退；场上已有坦克时，新的一辆出现在它右边',
   precision: '最密处半径 2.2 内 110 伤害',
   droneSwarm: '一波内陆续放出 10 架无人机，从屏幕下方起飞、各自随机锁定僵尸，命中造成 65 点小范围伤害',
   emp: '全场僵尸原地停顿 2 秒',
@@ -2179,7 +2180,7 @@ function update(dt) {
   updateZombies(dt);
   updateSummoners(dt);
   updateSiegeShots(dt);
-  updateTankSupport(dt);
+  updateTankSupports(dt);
   updateApcCharges(dt);
   updateCarrierDrones(dt);
   updateSwarmDrones(dt);
@@ -3312,64 +3313,77 @@ function nearestZombieIndex(x, z, maxRange) {
 }
 
 // 坦克支援：左下方出现，打 3 发范围炮后向下撤退
+/* 坦克支援：可以叠着叫。新的一辆摆在已有坦克右边，不会把前一辆顶掉；
+ * 原来 state.tankSupport 是单例，第二发技能直接把第一辆覆盖了 */
 function spawnTankSupport() {
   const cfg = CONFIG.tankSupport;
-  state.tankSupport = {
-    x: cfg.x,
+
+  // 从默认点开始往右找第一个空位。撤退中的坦克也算占位，
+  // 否则两辆车会重叠着一起往后开
+  const used = state.tankSupports.map((t) => t.x);
+  let x = cfg.x;
+  while (used.some((u) => Math.abs(u - x) < cfg.spacing * 0.5)) {
+    x += cfg.spacing;
+  }
+
+  state.tankSupports.push({
+    id: state.nextId++,
+    x,
     z: cfg.z,
     shotsLeft: cfg.shots,
     timer: 0.25,
     retreating: false,
     retreatDelay: cfg.retreatDelay,
-  };
+  });
 }
 
-function updateTankSupport(dt) {
-  const t = state.tankSupport;
-  if (!t) return;
-
+function updateTankSupports(dt) {
   const cfg = CONFIG.tankSupport;
 
-  if (t.retreating) {
-    t.z += cfg.retreatSpeed * dt;
-    if (t.z > 13.5) state.tankSupport = null;
-    return;
-  }
+  for (let i = state.tankSupports.length - 1; i >= 0; i--) {
+    const t = state.tankSupports[i];
 
-  t.timer -= dt;
-
-  if (t.shotsLeft > 0 && t.timer <= 0) {
-    t.shotsLeft -= 1;
-    t.timer = cfg.shotInterval;
-
-    const target = densestPoint();
-    if (target) {
-      // 和攻城共用延迟炮弹队列
-      state.siegeShots.push({
-        x: target.x,
-        z: target.z,
-        radius: cfg.radius,
-        damage: cfg.damage,
-        timeLeft: cfg.flightTime,
-      });
-      emit('slotStrike', {
-        kind: 'tank',
-        fromX: t.x,
-        fromZ: t.z,
-        x: target.x,
-        z: target.z,
-        radius: cfg.radius,
-        flightTime: cfg.flightTime,
-        color: 0xffa64d,
-      });
+    if (t.retreating) {
+      t.z += cfg.retreatSpeed * dt;
+      if (t.z > 13.5) state.tankSupports.splice(i, 1);
+      continue;
     }
 
-    if (t.shotsLeft <= 0) t.retreatDelay = cfg.retreatDelay;
-  }
+    t.timer -= dt;
 
-  if (t.shotsLeft <= 0) {
-    t.retreatDelay -= dt;
-    if (t.retreatDelay <= 0) t.retreating = true;
+    if (t.shotsLeft > 0 && t.timer <= 0) {
+      t.shotsLeft -= 1;
+      t.timer = cfg.shotInterval;
+
+      const target = densestPoint();
+      if (target) {
+        // 和攻城共用延迟炮弹队列
+        state.siegeShots.push({
+          x: target.x,
+          z: target.z,
+          radius: cfg.radius,
+          damage: cfg.damage,
+          timeLeft: cfg.flightTime,
+        });
+        emit('slotStrike', {
+          kind: 'tank',
+          fromX: t.x,
+          fromZ: t.z,
+          x: target.x,
+          z: target.z,
+          radius: cfg.radius,
+          flightTime: cfg.flightTime,
+          color: 0xffa64d,
+        });
+      }
+
+      if (t.shotsLeft <= 0) t.retreatDelay = cfg.retreatDelay;
+    }
+
+    if (t.shotsLeft <= 0) {
+      t.retreatDelay -= dt;
+      if (t.retreatDelay <= 0) t.retreating = true;
+    }
   }
 }
 
@@ -4143,6 +4157,8 @@ initUI(state, {
   setEra: setEraForTest,
   spawnTestZombies,
   clearZombies: clearTestZombies,
+  // 测试模式下每 2 波才自然抽一次卡，想验证卡池很麻烦，给个手动入口
+  drawCard: () => startCardDraw(),
   getTestData,
   getSlotInfo,
   useSkill,
