@@ -618,6 +618,8 @@ canvas {
 .card-panel {
   width: 100%;
   max-width: 360px;
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -905,6 +907,104 @@ canvas {
 @media (max-width: 720px) {
   .test-panel {
     width: min(52vw, 236px);
+    font-size: 11px;
+  }
+}
+
+/* ---------- 左侧技能栏 ---------- */
+
+.skill-rail {
+  position: fixed;
+  z-index: 8;
+  left: calc(50% - min(50vw, 100vh * 9 / 32) + 8px);
+  top: calc(118px + env(safe-area-inset-top));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 66px;
+  pointer-events: none;
+}
+
+.skill-slot {
+  position: relative;
+  width: 66px;
+  height: 66px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border: 1px solid var(--skill-color, rgba(78, 161, 255, 0.7));
+  border-radius: 13px;
+  background: rgba(8, 12, 18, 0.78);
+  color: var(--fg);
+  font-family: inherit;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  transition: transform 0.1s ease, background 0.15s ease, opacity 0.15s ease;
+}
+
+.skill-slot::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--skill-color, #4ea1ff);
+}
+
+.skill-slot:hover {
+  background: rgba(24, 34, 46, 0.92);
+}
+
+.skill-slot:active {
+  transform: scale(0.95);
+}
+
+.skill-slot:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.skill-slot__key {
+  position: absolute;
+  top: 4px;
+  left: 7px;
+  font-size: 9px;
+  color: rgba(143, 163, 184, 0.75);
+  font-variant-numeric: tabular-nums;
+}
+
+.skill-slot__name {
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  color: #f2f7ff;
+}
+
+.skill-slot__charges {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--skill-color, #8fb6e0);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 720px) {
+  .skill-rail {
+    width: 56px;
+    gap: 6px;
+  }
+
+  .skill-slot {
+    width: 56px;
+    height: 56px;
+    border-radius: 11px;
+  }
+
+  .skill-slot__name {
     font-size: 11px;
   }
 }

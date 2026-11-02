@@ -245,6 +245,9 @@ const SLOT_NAMES = {
   barricade: '工事',
 };
 const SLOT_MAX_LEVEL = 5;
+const SKILL_BAG_MAX = 4;       // 技能栏最多存几种
+const SKILL_MAX_CHARGES = 9;   // 同一种技能最多叠几次
+const SKILL_USE_CD = 0.3;      // 两次使用之间的冷却，防连点
 
 /* ----------------------------------------------------------
  * 游戏状态
@@ -300,6 +303,11 @@ const state = {
   slots: { siege: false, support: false, closeDefense: false, command: false },
   slotLevels: { siege: 0, support: 0, closeDefense: 0, command: 0 },
   slotTimers: { siege: 3, support: 6, closeDefense: 0 },
+
+  // 一次性技能栏：抽到卡后存次数，点左侧图标使用
+  skillBag: [],        // [{ id, charges }]
+  skillBagVersion: 0,  // UI 重建用
+  skillUseCd: 0,
   slowUntil: 0,
   slowMul: 1,
   buffUntil: 0,
@@ -486,6 +494,9 @@ function resetState(opts = {}) {
   state.slots.closeDefense = false;
   state.slots.command = false;
   state.slotLevels = { siege: 0, support: 0, closeDefense: 0, command: 0 };
+  state.skillBag = [];
+  state.skillBagVersion += 1;
+  state.skillUseCd = 0;
 
   state.slotTimers.siege = 3;
   state.slotTimers.support = 6;
@@ -800,6 +811,10 @@ if (typeof window !== 'undefined') {
   window.__castSkill = castSkill;
   window.__setSlotLevel = setSlotLevel;
   window.__slotInfo = getSlotInfo;
+  window.__gainSkill = gainSkill;
+  window.__useSkill = useSkill;
+  window.__skillBag = getSkillBag;
+  window.__convertExpiredSkills = convertExpiredSkills;
 }
 
 /* ----------------------------------------------------------
@@ -962,6 +977,22 @@ const SKILL_DEFS = [
   { id: 'reboot', name: '重启', era: 5, type: 'clear', color: 0xffffff },
   { id: 'entropy', name: '熵增', era: 5, type: 'slow', duration: 5, mul: 0.5, dps: 8, color: 0x8a8f99 },
 ];
+
+// 一次性技能改成存次数后，每张卡给几次。强技能少给，功能技能多给。
+const SKILL_CHARGES = {
+  // 中世纪
+  arrowRain: 2, rollingLog: 2, holyWater: 3, knightCharge: 2, campfire: 2,
+  // 二战
+  airStrike: 2, barrage: 2, napalm: 2, paratroopers: 3, tank: 2,
+  // 现代
+  precision: 2, droneSwarm: 2, emp: 2, apc: 2, supplyDrop: 3,
+  // 后现代
+  virusBomb: 2, bioLegion: 3, geneBurst: 2, timeSlow: 2, memory: 2,
+  // 星际
+  orbital: 1, blackHole: 2, wormhole: 3, fleetSalvo: 2, timeDilation: 2,
+  // 终幕
+  finalJudgment: 1, cosmicCollapse: 1, sacrifice: 1, reboot: 1, entropy: 2,
+};
 
 const SKILL_DESCS = {
   arrowRain: '圆形箭雨：半径 4 内 50 伤害（直径 8，约屏幕宽度一半）',
@@ -1167,6 +1198,12 @@ function castSkill(id) {
       applySoldiers(def.soldiers);
       break;
     case 'upgradeSlot':
+      if (
+        state.barricade.unlocked &&
+        state.barricade.level >= CONFIG.barricade.levels.length
+      ) {
+        return false;
+      }
       upgradeBarricade();
       break;
     case 'pull': {
@@ -1200,10 +1237,9 @@ function castSkill(id) {
       break;
     }
     case 'sacrifice':
-      if (state.soldiers > def.soldiers) {
-        applySoldiers(-def.soldiers, { force: true });
-        damageZombiesInRadius(0, -6, 60, def.damage);
-      }
+      if (state.soldiers <= def.soldiers) return false;
+      applySoldiers(-def.soldiers, { force: true });
+      damageZombiesInRadius(0, -6, 60, def.damage);
       break;
     case 'clear':
       clearZombies();
@@ -1216,14 +1252,148 @@ function castSkill(id) {
   return true;
 }
 
-// 一次性技能也有出现条件：兵不够不能献祭，路障满级就不用再出记忆植入
+// 一次性技能也有出现条件：路障满级就不用再出记忆植入
 function skillCanAppear(def) {
-  if (def.requiresSoldiers) return state.soldiers > def.requiresSoldiers;
   if (def.id === 'memory') {
     return !state.barricade.unlocked ||
       state.barricade.level < CONFIG.barricade.levels.length;
   }
   return true;
+}
+
+function skillDef(id) {
+  return SKILL_DEFS.find((s) => s.id === id) || null;
+}
+
+function skillCharges(def) {
+  return SKILL_CHARGES[def.id] || 2;
+}
+
+// 换算成兵时，越强的技能每次值越多：1 次=12 兵，2 次=8 兵，3 次=5 兵
+function skillStrengthValue(def) {
+  const charges = skillCharges(def);
+  if (charges <= 1) return 12;
+  if (charges === 2) return 8;
+  return 5;
+}
+
+// 给 UI 读的技能栏数据
+function getSkillBag() {
+  return state.skillBag.map((entry, i) => {
+    const def = skillDef(entry.id);
+    return {
+      id: entry.id,
+      name: def ? def.name : entry.id,
+      charges: entry.charges,
+      color: def ? def.color : 0xffffff,
+      key: i + 1,
+    };
+  });
+}
+
+// 抽到一次性技能卡：存进技能栏，不立刻释放
+function gainSkill(id) {
+  const def = skillDef(id);
+  if (!def) return;
+
+  const add = skillCharges(def);
+  const existing = state.skillBag.find((s) => s.id === id);
+
+  if (existing) {
+    const room = SKILL_MAX_CHARGES - existing.charges;
+    const got = Math.max(0, Math.min(room, add));
+    existing.charges += got;
+
+    if (got < add) {
+      const extra = add - got;
+      const soldiers = extra * skillStrengthValue(def);
+      applySoldiers(soldiers);
+      emit('skillNotice', {
+        text: `${def.name} 已达 ${SKILL_MAX_CHARGES} 次上限，溢出 ${extra} 次折算 +${soldiers} 兵`,
+        kind: 'skill',
+      });
+    }
+  } else if (state.skillBag.length < SKILL_BAG_MAX) {
+    state.skillBag.push({ id, charges: add });
+  } else {
+    // 技能栏满了：替换次数最少的那个，按剩余次数和强度折算成兵
+    let idx = 0;
+    for (let i = 1; i < state.skillBag.length; i++) {
+      if (state.skillBag[i].charges < state.skillBag[idx].charges) idx = i;
+    }
+
+    const old = state.skillBag[idx];
+    const oldDef = skillDef(old.id);
+    const soldiers = old.charges * (oldDef ? skillStrengthValue(oldDef) : 5);
+
+    applySoldiers(soldiers);
+    state.skillBag[idx] = { id, charges: add };
+
+    emit('skillNotice', {
+      text: `技能栏已满：${oldDef ? oldDef.name : old.id}×${old.charges} 折算 +${soldiers} 兵，换入 ${def.name}×${add}`,
+      kind: 'skill',
+    });
+  }
+
+  state.skillBagVersion += 1;
+}
+
+// 使用一次技能。技能失败（兵不够、路障满级）时不扣次数。
+function useSkill(id) {
+  if (state.status !== 'playing') return false;
+  if (state.skillUseCd > 0) return false;
+
+  const entry = state.skillBag.find((s) => s.id === id);
+  if (!entry) return false;
+
+  const def = skillDef(id);
+  if (!castSkill(id)) {
+    emit('skillNotice', {
+      text: `现在无法使用${def ? def.name : id}`,
+      kind: 'skill',
+    });
+    return false;
+  }
+
+  entry.charges -= 1;
+  if (entry.charges <= 0) {
+    const idx = state.skillBag.indexOf(entry);
+    if (idx >= 0) state.skillBag.splice(idx, 1);
+  }
+
+  state.skillUseCd = SKILL_USE_CD;
+  state.skillBagVersion += 1;
+  return true;
+}
+
+// 换时代：旧时代技能按剩余次数和强度折算成兵，然后清掉
+function convertExpiredSkills() {
+  const expired = [];
+
+  for (let i = state.skillBag.length - 1; i >= 0; i--) {
+    const entry = state.skillBag[i];
+    const def = skillDef(entry.id);
+    if (def && def.era < state.era) {
+      expired.push({ def, charges: entry.charges });
+      state.skillBag.splice(i, 1);
+    }
+  }
+
+  if (!expired.length) return;
+
+  let total = 0;
+  const parts = [];
+  for (const item of expired) {
+    total += item.charges * skillStrengthValue(item.def);
+    parts.push(`${item.def.name}×${item.charges}`);
+  }
+
+  applySoldiers(total);
+  state.skillBagVersion += 1;
+  emit('skillNotice', {
+    text: `旧时代技能折算：${parts.join('、')} → +${total} 兵`,
+    kind: 'skill',
+  });
 }
 
 function buildCardPool() {
@@ -1237,9 +1407,9 @@ function buildCardPool() {
     .map((s) => ({
       id: 'skill_' + s.id,
       name: s.name,
-      desc: SKILL_DESCS[s.id] || '一次性技能，抽到立刻释放',
+      desc: `${SKILL_DESCS[s.id] || '一次性技能'}。获得 ${skillCharges(s)} 次使用机会`,
       can: () => skillCanAppear(s),
-      apply: () => castSkill(s.id),
+      apply: () => gainSkill(s.id),
     }));
 
   return base.concat(skills);
@@ -1313,6 +1483,9 @@ function syncEraWithWave(wave) {
   state.mapId = map;
   state.usedMaps.push(map);
 
+  // 旧时代没打完的技能次数折算成兵
+  convertExpiredSkills();
+
   // 只换时代配色和地图，场上僵尸、子弹、屏障全部保留
   switchEra(eraIndex, map);
   refreshSlotsForEra();
@@ -1320,6 +1493,7 @@ function syncEraWithWave(wave) {
 
 function update(dt) {
   state.time += dt;
+  state.skillUseCd = Math.max(0, state.skillUseCd - dt);
 
   const nextWave = Math.floor(state.time / CONFIG.wave.duration) + 1;
   if (nextWave !== state.wave) {
@@ -2208,6 +2382,8 @@ initUI(state, {
   clearZombies: clearTestZombies,
   getTestData,
   getSlotInfo,
+  useSkill,
+  getSkillBag,
 });
 
 /* ----------------------------------------------------------

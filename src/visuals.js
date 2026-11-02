@@ -962,6 +962,11 @@ export function initVisuals(container, events) {
     if (v) spawnRing(v.x, v.z, v.color, 0.6);
   });
 
+  events.addEventListener('skillNotice', (e) => {
+    const d = e.detail || {};
+    if (d.text) pushToast(d.text, d.kind || 'skill');
+  });
+
   events.addEventListener('barricadeHit', (e) => {
     spawnBurst(e.detail.x, 0.3, e.detail.z, 0x8a7a5a, 2, {
       speed: 1.0,

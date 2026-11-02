@@ -101,6 +101,7 @@ export function updateUI(state) {
   updateWaveCountdown(state);
   updateCards(state);
   updateTestPanel(state);
+  updateSkillRail(state);
 
   els.hud.classList.toggle('hidden', state.status !== 'playing');
   els.startScreen.classList.toggle('hidden', state.status !== 'menu');
@@ -257,6 +258,49 @@ function updateTestPanel(state) {
   }
 }
 
+/* ---------- 左侧技能栏 ---------- */
+
+function updateSkillRail(state) {
+  if (!els.skillRail) return;
+
+  const show =
+    state.status === 'playing' &&
+    !state.testMode &&
+    state.skillBag &&
+    state.skillBag.length > 0;
+
+  els.skillRail.classList.toggle('hidden', !show);
+  if (!show) return;
+
+  if (els.skillVersion !== state.skillBagVersion) {
+    els.skillVersion = state.skillBagVersion;
+    const bag = actions && actions.getSkillBag ? actions.getSkillBag() : [];
+
+    els.skillRail.innerHTML = bag.map((s, i) => {
+      const color = '#' + (s.color >>> 0).toString(16).padStart(6, '0');
+      return `
+        <button class="skill-slot" type="button" data-skill-id="${s.id}" style="--skill-color:${color}">
+          <span class="skill-slot__key">${i + 1}</span>
+          <span class="skill-slot__name">${s.name}</span>
+          <span class="skill-slot__charges">×${s.charges}</span>
+        </button>
+      `;
+    }).join('');
+
+    els.skillRail.querySelectorAll('[data-skill-id]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        initAudio();
+        if (actions && actions.useSkill) actions.useSkill(btn.dataset.skillId);
+      });
+    });
+  }
+
+  const cooling = state.skillUseCd > 0;
+  els.skillRail.querySelectorAll('.skill-slot').forEach((btn) => {
+    btn.disabled = cooling;
+  });
+}
+
 /* ---------- 内部 ---------- */
 
 function buildDom() {
@@ -354,6 +398,11 @@ function buildDom() {
     </div>
   `;
   document.body.appendChild(cardLayer);
+
+  // 左侧技能栏：抽到一次性技能卡后存次数，点图标或按数字键使用
+  const skillRail = document.createElement('aside');
+  skillRail.className = 'skill-rail hidden';
+  document.body.appendChild(skillRail);
 
   // 测试模式面板：只在主界面打开测试开关、进游戏后出现
   const testPanel = document.createElement('aside');
@@ -456,6 +505,8 @@ function buildDom() {
     cardTimer: cardLayer.querySelector('[data-card-timer]'),
     cardRow: cardLayer.querySelector('[data-card-row]'),
     cardVersion: -1,
+    skillRail,
+    skillVersion: -1,
     testToggle: startScreen.querySelector('[data-test-toggle]'),
     testToggleLabel: startScreen.querySelector('[data-test-toggle-label]'),
     testStartBtn: startScreen.querySelector('[data-start]'),
@@ -565,5 +616,19 @@ function bindEvents() {
     els.soundBtn.textContent = muted ? '🔇' : '🔊';
     els.soundBtn.classList.toggle('is-muted', muted);
     if (!muted) playClick();
+  });
+
+  // 技能栏数字键 1-4
+  window.addEventListener('keydown', (e) => {
+    if (e.repeat || e.ctrlKey || e.altKey || e.metaKey) return;
+    const n = Number(e.key);
+    if (n < 1 || n > 4) return;
+    if (!currentState || !currentState.skillBag) return;
+
+    const entry = currentState.skillBag[n - 1];
+    if (!entry) return;
+
+    e.preventDefault();
+    if (actions && actions.useSkill) actions.useSkill(entry.id);
   });
 }

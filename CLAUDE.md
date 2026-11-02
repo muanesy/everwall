@@ -16,7 +16,8 @@
 
 - `src/game.js` —— 核心逻辑；技能描述集中在 `SKILL_DESCS`；
   测试模式入口在 `resetState({ testMode: true })` 和 `src/ui.js` 的左侧面板
-- `src/ui.js` —— UI/抽卡界面；`src/visuals.js` —— 多边形视觉模拟
+- `src/ui.js` —— UI/抽卡界面/左侧技能栏；`src/visuals.js` —— 多边形视觉模拟
+- 一次性技能次数在 `SKILL_CHARGES`，技能栏状态是 `state.skillBag`
 
 ## 工作约定
 
