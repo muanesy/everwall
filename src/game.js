@@ -21,6 +21,10 @@ import {
 } from './visuals.js';
 import { initUI, updateUI } from './ui.js';
 
+// 测试开关：true = 五个槽位默认解锁（含路障），方便逐个测试
+// 测试完改回 false，槽位就会重新走抽卡解锁
+const UNLOCK_ALL_SLOTS_FOR_TEST = true;
+
 // 起始地图：开始页传入的 ?map=，默认废墟街道
 const START_MAP =
   new URLSearchParams(window.location.search).get('map') || 'city';
@@ -417,6 +421,14 @@ function resetState() {
   state.spawnCounts.fill(0);
   resetBarricade();
 
+  if (UNLOCK_ALL_SLOTS_FOR_TEST) {
+    state.slots.siege = true;
+    state.slots.support = true;
+    state.slots.closeDefense = true;
+    state.slots.command = true;
+    unlockBarricade();
+  }
+
   // 把画面拉回第一个时代和起始地图，静默切换，不弹提示
   switchEra(0, START_MAP, { fade: false, silent: true });
 }
@@ -660,6 +672,39 @@ const SKILL_DEFS = [
   { id: 'entropy', name: '熵增', era: 5, type: 'slow', duration: 5, mul: 0.5, damage: 8, color: 0x8a8f99 },
 ];
 
+const SKILL_DESCS = {
+  arrowRain: '横排箭雨，对一整条线造成 40 点伤害',
+  rollingLog: '滚木横扫一条线，60 点伤害',
+  holyWater: '圣水回复 2 个兵',
+  knightCharge: '骑士冲锋，对最密的一群造成 50 点伤害',
+  campfire: '篝火点燃一片区域，30 点伤害',
+  airStrike: '空袭，对最密的一群造成 90 点伤害',
+  barrage: '炮火覆盖一整条横线，70 点伤害',
+  napalm: '燃烧弹，45 点范围伤害',
+  paratroopers: '空降 10 个兵',
+  tank: '坦克碾过一条横线，80 点伤害',
+  precision: '精确打击，110 点范围伤害',
+  droneSwarm: '无人机蜂群，60 点大范围伤害',
+  emp: '电磁脉冲，全场僵尸减速 2 秒',
+  apc: '装甲车冲锋，一条横线 70 点伤害',
+  supplyDrop: '空投补给，增加 15 个兵',
+  virusBomb: '病毒炸弹，80 点范围伤害',
+  bioLegion: '生物人军团，增加 8 个兵',
+  geneBurst: '基因爆发，全队射速翻倍 5 秒',
+  timeSlow: '时间减速，全场僵尸减速 50%，持续 4 秒',
+  memory: '记忆植入，路障 +1 级',
+  orbital: '轨道轰炸，横排 130 点伤害',
+  blackHole: '黑洞把周围僵尸吸到一点，并造成 40 点伤害',
+  wormhole: '虫洞把最靠前的僵尸送回屏幕顶端',
+  fleetSalvo: '舰队齐射，横排 100 点伤害',
+  timeDilation: '时间膨胀，全场慢放 3 秒',
+  finalJudgment: '终焉审判，200 点大范围伤害',
+  cosmicCollapse: '宇宙坍缩，把大范围僵尸拉向中心，80 点伤害',
+  sacrifice: '献祭 20 个兵，对全场僵尸造成 300 点伤害',
+  reboot: '重启，清空场上所有僵尸',
+  entropy: '熵增，全场僵尸减速并持续掉 8 点血',
+};
+
 function densestPoint() {
   if (!state.zombies.length) return null;
 
@@ -797,7 +842,7 @@ function buildCardPool() {
     .map((s) => ({
       id: 'skill_' + s.id,
       name: s.name,
-      desc: '一次性技能，抽到立刻释放',
+      desc: SKILL_DESCS[s.id] || '一次性技能，抽到立刻释放',
       can: () => true,
       apply: () => castSkill(s.id),
     }));
