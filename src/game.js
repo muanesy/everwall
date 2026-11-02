@@ -590,6 +590,8 @@ const state = {
   // 一次性技能栏：抽到卡后存次数，点左侧图标使用
   skillBag: [],        // [{ id, charges }]
   skillBagVersion: 0,  // UI 重建用
+  lastGainedSkillId: null,   // 刚获得的技能，技能栏高亮用
+  lastGainedSkillVersion: 0,
   skillUseCd: 0,
   slowUntil: 0,
   slowMul: 1,
@@ -970,6 +972,8 @@ function resetState(opts = {}) {
   state.commandMarkTimer = 0;
   state.skillBag = [];
   state.skillBagVersion += 1;
+  state.lastGainedSkillId = null;
+  state.lastGainedSkillVersion = 0;
   state.skillUseCd = 0;
   state.usedSkills = [];
   state.weaponBoostUntil = 0;
@@ -2477,6 +2481,8 @@ function grantRandomSkill() {
 
   const def = pool[Math.floor(Math.random() * pool.length)];
   gainSkill(def.id);
+  state.lastGainedSkillId = def.id;
+  state.lastGainedSkillVersion = state.skillBagVersion;
   emit('skillNotice', {
     text: `自动获得技能：${def.name}`,
     kind: 'skill',
@@ -2614,9 +2620,8 @@ function openUpgradePanel() {
 
   state.upgradePanel.active = true;
   state.upgradePanel.picks = picks;
-  state.upgradePanel.timeLeft = 10;
+  state.upgradePanel.timeLeft = 30;
   state.upgradePanel.version += 1;
-  state.timeScale = 0.25;
   emit('upgradePanelOpen', { picks });
 }
 
@@ -5297,10 +5302,13 @@ function loop(now) {
 
   if (state.status === 'playing') {
     if (state.paused) {
-      // 暂停时画面冻结：用 dt=0 同步一次，不推进任何计时和动画
+      // 暂停菜单：画面冻结，升级面板的倒计时也停住
+      syncScene(state, 0);
+    } else if (state.upgradePanel.active) {
+      // 升级面板：完全暂停游戏，但面板自己的 30 秒倒计时继续走
+      updateUpgradePanel(realDt);
       syncScene(state, 0);
     } else {
-      updateUpgradePanel(realDt);  // 升级面板倒计时用真实时间
       updateCard(realDt);          // 旧的抽卡倒计时（已停用，保留兼容）
       const dt = realDt * state.timeScale;
       update(dt);

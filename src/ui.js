@@ -279,6 +279,17 @@ function renderCards(choices) {
 
 /* ---------- 地图结束升级面板 ---------- */
 
+const UPGRADE_EMOJI = {
+  barricadeUnlock: '🧱', barricadeUpgrade: '🧱',
+  slotSiege: '💣', slotSiegeUpgrade: '💣',
+  slotClose: '🛡️', slotCloseUpgrade: '🛡️',
+  slotSupport: '🩹', slotSupportUpgrade: '🩹',
+  slotCommand: '🎯', slotCommandUpgrade: '🎯',
+  slotSummon: '🧟', slotSummonUpgrade: '🧟',
+  damage: '💥', speed: '👟', armor: '🦺',
+  barrel: '🛢️', fireRate: '⚡', gun: '🔫',
+};
+
 function updateUpgradePanel(state) {
   if (!els.upgradeLayer) return;
 
@@ -297,7 +308,7 @@ function updateUpgradePanel(state) {
     const pool = actions && actions.getUpgradePool ? actions.getUpgradePool() : [];
     els.upgradeGrid.innerHTML = pool.map((c) => `
       <button class="upgrade-choice" type="button" data-upgrade-id="${c.id}">
-        <strong>${c.name}</strong>
+        <strong>${c.name} ${UPGRADE_EMOJI[c.id] || '⭐'}</strong>
         <span>${c.desc}</span>
       </button>
     `).join('');
@@ -368,8 +379,11 @@ function updateSkillRail(state) {
 
     els.skillRail.innerHTML = bag.map((s, i) => {
       const color = '#' + (s.color >>> 0).toString(16).padStart(6, '0');
+      const isNew =
+        s.id === state.lastGainedSkillId &&
+        state.skillBagVersion === state.lastGainedSkillVersion;
       return `
-        <button class="skill-slot" type="button" data-skill-id="${s.id}"
+        <button class="skill-slot${isNew ? ' is-new' : ''}" type="button" data-skill-id="${s.id}"
           data-charges="${s.charges}" style="--skill-color:${color}">
           <span class="skill-slot__key">${i + 1}</span>
           <span class="skill-slot__icon">${skillIconTag(s.id, { size: 26 })}</span>
@@ -543,8 +557,8 @@ function buildDom() {
   upgradeLayer.innerHTML = `
     <div class="card-panel upgrade-panel">
       <div class="card-layer__head">
-        <span>地图完成 · 选择升级</span>
-        <span class="card-layer__timer" data-upgrade-timer>10s</span>
+        <span>已暂停 · 选择升级</span>
+        <span class="card-layer__timer" data-upgrade-timer>30s</span>
       </div>
       <p class="upgrade-picks" data-upgrade-picks>剩余 3 次</p>
       <div class="upgrade-grid" data-upgrade-grid></div>
