@@ -515,6 +515,7 @@ function buildDom() {
       <p class="best-line" data-start-best></p>
       <button class="btn" data-start>开始游戏</button>
       <p class="hint">键盘 ← → 或 A / D<br>手机上按住屏幕左右拖动</p>
+      <p class="credit">模型：Poly by Google · Catapult · CC-BY 3.0</p>
     </div>
   `;
   document.body.appendChild(startScreen);

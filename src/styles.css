@@ -457,6 +457,14 @@ canvas {
   color: rgba(143, 163, 184, 0.7);
 }
 
+.credit {
+  margin: 10px 0 0;
+  font-size: 10px;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+  color: rgba(143, 163, 184, 0.45);
+}
+
 /* ---------- 静音开关 ---------- */
 
 /* 贴在竖屏舞台的右下角，不挡 HUD，也不挡底部的操作提示 */
