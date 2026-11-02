@@ -1294,13 +1294,23 @@ export function initVisuals(container, events) {
   // 记忆植入：炮弹落地，绿色毒雾
   events.addEventListener('plagueImpact', (e) => {
     const d = e.detail;
+    const radius = d.radius || 2.2;
     spawnImpact(d.x, d.z, {
-      radius: d.radius || 2.2,
+      radius,
       color: 0x8fe36a,
       power: 0.6,
       dust: false,
     });
     if (d.count > 0) spawnRing(d.x, d.z, 0x8fe36a, 0.7);
+    // 毒雾要在整段感染时间里一直挂着：地面留一圈淡绿残渍，再叠几团缓慢胀开的雾
+    spawnGroundArea(d.x, d.z, radius, 0x8fe36a, 5.5);
+    spawnPlagueFog(d.x, d.z, radius);
+    spawnBurst(d.x, 0.35, d.z, 0x8fe36a, 12, {
+      speed: 0.9,
+      up: 1.1,
+      spread: radius * 0.55,
+      life: 1.8,
+    });
   });
 
   // 感染扩散：一条绿色连线加落点小环
@@ -8340,6 +8350,30 @@ function spawnGroundArea(x, z, radius, color, maxLife = 0.7) {
   effects.push({ mesh: ring, life: 0, maxLife, type: 'fade' });
 }
 
+/* 记忆植入的落地毒雾：几团低透明度绿雾，整段感染时间里缓慢胀开、转着飘 */
+function spawnPlagueFog(x, z, radius) {
+  const group = new THREE.Group();
+  const count = 6;
+  for (let i = 0; i < count; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.random() * radius * 0.7;
+    const puff = new THREE.Mesh(
+      new THREE.SphereGeometry(0.42 + Math.random() * 0.32, 8, 6),
+      new THREE.MeshBasicMaterial({
+        color: 0x8fe36a,
+        transparent: true,
+        opacity: 0.12,
+        depthWrite: false,
+      })
+    );
+    puff.position.set(Math.cos(a) * r, 0.22 + Math.random() * 0.2, Math.sin(a) * r);
+    group.add(puff);
+  }
+  group.position.set(x, 0, z);
+  scene.add(group);
+  effects.push({ mesh: group, life: 0, maxLife: 5.4, type: 'plagueFog' });
+}
+
 /* 箭雨：圆形覆盖区 + 一批箭矢从上方落进圈里 */
 function spawnArrowRain(x, z, radius, color) {
   spawnGroundArea(x, z, radius, color, 0.75);
@@ -8509,6 +8543,14 @@ function updateEffects(dt) {
       fx.mesh.material.opacity = (1 - t) * 0.32;
     } else if (fx.type === 'areaDisc') {
       fx.mesh.material.opacity = (1 - t) * 0.14;
+    } else if (fx.type === 'plagueFog') {
+      // 毒雾：整段存活期慢慢膨胀，最后 18% 才收掉，别让它突然消失
+      fx.mesh.scale.setScalar(1 + t * 0.45);
+      fx.mesh.rotation.y = t * 0.6;
+      const fade = t < 0.82 ? 1 : (1 - t) / 0.18;
+      for (const puff of fx.mesh.children) {
+        puff.material.opacity = 0.12 * fade;
+      }
     } else if (fx.type === 'arc' || fx.type === 'arrow') {
       const x = fx.from.x + (fx.to.x - fx.from.x) * t;
       const z = fx.from.z + (fx.to.z - fx.from.z) * t;

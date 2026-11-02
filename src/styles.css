@@ -182,10 +182,45 @@ canvas {
   white-space: nowrap;
 }
 
+.score-box {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
 .score {
   font-size: 20px;
   font-weight: 700;
   text-shadow: 0 0 18px rgba(78, 161, 255, 0.6);
+}
+
+/* 指挥槽集火加成：小图标跟着时代换，数字跟着等级走 */
+.cmd-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #ffb36b;
+  text-shadow: 0 0 10px rgba(255, 145, 70, 0.45);
+}
+
+.cmd-chip[hidden] {
+  display: none;
+}
+
+.cmd-chip__icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  opacity: 0.9;
+}
+
+.cmd-chip__icon svg {
+  width: 100%;
+  height: 100%;
 }
 
 /* ---------- 遮罩层 ---------- */
@@ -455,6 +490,14 @@ canvas {
   font-size: 12px;
   line-height: 1.7;
   color: rgba(143, 163, 184, 0.7);
+}
+
+.credit {
+  margin: 10px 0 0;
+  font-size: 10px;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+  color: rgba(143, 163, 184, 0.45);
 }
 
 /* ---------- 静音开关 ---------- */

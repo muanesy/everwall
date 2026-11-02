@@ -15,6 +15,48 @@
  * ========================================================== */
 
 import * as THREE from 'three';
+import { GLTFLoader } from '../assets/vendor/loaders/GLTFLoader.js';
+
+/* ----------------------------------------------------------
+ * 攻城槽位的正式模型：Poly by Google「Catapult」，CC-BY 3.0
+ * （署名见开始页底部小字）。只加载一次，之后每个槽位 clone 一份。
+ * 加载失败就静默返回 null，走程序化兜底，槽位不会消失。
+ * ---------------------------------------------------------- */
+let siegeModelPromise = null;
+
+function loadSiegeModel() {
+  if (!siegeModelPromise) {
+    const loader = new GLTFLoader();
+    siegeModelPromise = new Promise((resolve) => {
+      loader.load(
+        new URL('../assets/models/b-slot-siege-0.glb', import.meta.url).href,
+        (gltf) => resolve(gltf.scene),
+        undefined,
+        () => resolve(null),
+      );
+    });
+  }
+  return siegeModelPromise;
+}
+
+/* 把模型缩到槽位占位内（宽 ≥ 深取大的一边），脚底对齐 y=0，中心对齐原点 */
+function fitSlotModel(obj, maxW, maxH) {
+  const box = new THREE.Box3().setFromObject(obj);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  const s = Math.min(
+    maxW / Math.max(size.x, 1e-4),
+    maxW / Math.max(size.z, 1e-4),
+    maxH / Math.max(size.y, 1e-4),
+  );
+  obj.scale.setScalar(s);
+  box.setFromObject(obj);
+  const c = new THREE.Vector3();
+  box.getCenter(c);
+  obj.position.x -= c.x;
+  obj.position.z -= c.z;
+  obj.position.y -= box.min.y;
+}
 
 /* ----------------------------------------------------------
  * 时代美术基调
@@ -150,6 +192,10 @@ function addChargeRing(g, m, radius, y, tube = 0.045) {
 /* 攻城：投石机 → 车厢炮 → 履带炮塔 → 生物喷射罐 → 能量轨道 → 引力球 */
 function buildSiege(g, m, era, lv = 1) {
   if (era === 0) {
+    // 正式模型是 Poly by Google 的投石机（CC-BY 3.0），下面这套程序化几何体
+    // 只当加载失败时的兜底，加载成功就整组隐藏。
+    const base = new THREE.Group();
+    g.add(base);
     // 木架投石机：等级决定臂长、单/双联、有没有底盘
     const twin = lv >= 3;                       // 3 级起双联抛臂
     const wheeled = lv >= 4;                    // 4 级起带轮底盘
@@ -159,35 +205,34 @@ function buildSiege(g, m, era, lv = 1) {
 
     if (wheeled) {
       // 带轮底盘：四个木轮 + 车架
-      add(g, new THREE.BoxGeometry(1.0, 0.12, 0.72), m.dark, 0, 0.2, 0);
+      add(base, new THREE.BoxGeometry(1.0, 0.12, 0.72), m.dark, 0, 0.2, 0);
       for (const sx of [-1, 1]) {
         for (const sz of [-1, 1]) {
-          add(g, new THREE.CylinderGeometry(0.13, 0.13, 0.07, 10), m.accent,
+          add(base, new THREE.CylinderGeometry(0.13, 0.13, 0.07, 10), m.accent,
             sx * 0.4, 0.13, sz * 0.26, 0, 0, Math.PI / 2);
         }
       }
     } else {
       // 落地木底座
-      add(g, new THREE.BoxGeometry(0.96, 0.14, 0.64), m.main, 0, 0.07, 0);
+      add(base, new THREE.BoxGeometry(0.96, 0.14, 0.64), m.main, 0, 0.07, 0);
     }
 
     // 3 级起加转盘：双联抛臂要能左右扫
     if (twin) {
-      const ring = add(g, new THREE.TorusGeometry(0.33, 0.028, 6, 20), m.accent,
+      add(base, new THREE.TorusGeometry(0.33, 0.028, 6, 20), m.accent,
         0, wheeled ? 0.27 : 0.15, 0, Math.PI / 2, 0, 0);
-      ring.name = 'siegeTurntable';
     }
 
     // A 形木架：左右两侧各两根内倾立柱 + 顶部横梁
     const baseY = wheeled ? 0.26 : 0.14;
     for (const sx of [-1, 1]) {
       for (const sz of [-1, 1]) {
-        add(g, new THREE.BoxGeometry(0.07, legH, 0.07), m.main,
+        add(base, new THREE.BoxGeometry(0.07, legH, 0.07), m.main,
           sx * 0.32, baseY + legH * 0.5, sz * 0.17,
           sz * 0.22, 0, -sx * 0.16);
       }
     }
-    add(g, new THREE.BoxGeometry(0.74, 0.06, 0.06), m.main, 0, baseY + legH, 0);
+    add(base, new THREE.BoxGeometry(0.74, 0.06, 0.06), m.main, 0, baseY + legH, 0);
 
     // 横轴 + 抛臂。抛臂整体挂在一个 Group 上，后坐动画不会把轴带歪
     const armGroup = new THREE.Group();
@@ -203,17 +248,25 @@ function buildSiege(g, m, era, lv = 1) {
       add(armGroup, new THREE.SphereGeometry(0.075, 8, 6), m.dark,
         ox, 0.02, -armLen * 0.62);
     }
-    g.add(armGroup);
+    base.add(armGroup);
 
     // 5 级：顶部再起一层塔架，远处看是"攻城塔"而不是放大版投石机
     if (lv >= 5) {
       for (const sx of [-1, 1]) {
-        add(g, new THREE.BoxGeometry(0.06, 0.46, 0.06), m.main,
+        add(base, new THREE.BoxGeometry(0.06, 0.46, 0.06), m.main,
           sx * 0.36, baseY + legH + 0.2, 0.16, 0, 0, -sx * 0.06);
       }
-      add(g, new THREE.BoxGeometry(0.8, 0.06, 0.34), m.accent,
+      add(base, new THREE.BoxGeometry(0.8, 0.06, 0.34), m.accent,
         0, baseY + legH + 0.44, 0.16);
     }
+
+    loadSiegeModel().then((src) => {
+      if (!src) return;
+      const model = src.clone(true);
+      fitSlotModel(model, 0.86, 1.2);
+      base.visible = false;
+      g.add(model);
+    });
     return;
   }
   if (era === 1) {
