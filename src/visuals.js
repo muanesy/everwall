@@ -662,6 +662,10 @@ const barrierMeshes = new Map();
 const bulletMeshes = new Map();
 const rollingLogMeshes = new Map();
 const knightChargeMeshes = new Map();
+const apcMeshes = new Map();
+const carrierDroneMeshes = new Map();
+const friendlyZombieMeshes = new Map();
+let tankSupportMesh = null;
 const effects = [];
 
 // 战斗特效升级件（对象在 initVisuals 里创建）：
@@ -933,12 +937,35 @@ export function initVisuals(container, events) {
 
   events.addEventListener('slotStrike', (e) => {
     const d = e.detail;
-    if (d.kind === 'siege') {
+    if (d.kind === 'siege' || d.kind === 'tank') {
       spawnMortar(d.fromX, d.fromZ, d.x, d.z, d.color || 0xffa64d, d.flightTime || 0.5);
     } else if (d.kind === 'closeDefense') {
       spawnTracer(d.fromX, d.fromZ, d.x, d.z, d.color || 0xff6a4a);
     }
     spawnRing(d.x, d.z, d.color || 0xffa64d, 0.5);
+  });
+
+  events.addEventListener('apcShot', (e) => {
+    const d = e.detail;
+    spawnTracer(d.fromX, d.fromZ, d.x, d.z, 0xffd27a, 0.9);
+  });
+
+  events.addEventListener('droneShot', (e) => {
+    const d = e.detail;
+    spawnTracer(d.fromX, d.fromZ, d.x, d.z, 0x7fe3ff, 2.6);
+  });
+
+  events.addEventListener('friendlySpawn', (e) => {
+    spawnRing(e.detail.x, e.detail.z, 0x5adf7a, 0.45);
+  });
+
+  events.addEventListener('friendlyDie', (e) => {
+    spawnBurst(e.detail.x, 0.7, e.detail.z, 0x5adf7a, 8, {
+      speed: 1.8,
+      up: 1.4,
+      spread: 0.3,
+      life: 0.45,
+    });
   });
 
   events.addEventListener('slotHeal', (e) => {
@@ -953,8 +980,19 @@ export function initVisuals(container, events) {
       spawnRing(d.x, d.z, d.color || 0x5adf7a, 0.7);
     } else if (d.id === 'arrowRain') {
       spawnArrowRain(d.x, d.z, d.radius || 4, d.color || 0xd9b36c);
-    } else if (d.type === 'rollingLog' || d.type === 'knightCharge' || d.type === 'campfire') {
-      // 滚木/骑士由 sync 负责画，篝火由 spawnCampfireFx 负责画
+    } else if (d.type === 'barrage') {
+      spawnBarrageFx(d.x, d.z, d.radius || 4.5, d.color || 0xff8a4d);
+    } else if (d.type === 'orbital') {
+      spawnOrbitalBeam(d.z, d.color || 0x7fe3ff);
+    } else if (
+      d.type === 'rollingLog' ||
+      d.type === 'knightCharge' ||
+      d.type === 'campfire' ||
+      d.type === 'tank' ||
+      d.type === 'apc' ||
+      d.type === 'carrierDrones'
+    ) {
+      // 持续实体由各自的 sync 负责画
     } else {
       spawnSkyStrike(d.x, d.z, d.color || 0xffffff);
     }
@@ -2366,6 +2404,10 @@ export function syncScene(state, dt) {
   // 滚木和骑士冲锋：持续移动的实体，按 state 里的数组同步
   syncRollingLogs(state);
   syncKnightCharges(state);
+  syncTankSupport(state);
+  syncApcs(state);
+  syncCarrierDrones(state);
+  syncFriendlyZombies(state);
 
   updateEffects(dt);
   updateParticleFx(dt);
@@ -3066,6 +3108,232 @@ function syncKnightCharges(state) {
       scene.remove(mesh);
       disposeMesh(mesh);
       knightChargeMeshes.delete(id);
+    }
+  }
+}
+
+/* 坦克支援：左下方一辆坦克，打三发后撤退 */
+function makeTankSupportMesh() {
+  const group = new THREE.Group();
+  const hullMat = new THREE.MeshStandardMaterial({ color: 0x6f7a58, roughness: 0.85 });
+  const darkMat = new THREE.MeshStandardMaterial({ color: 0x2a2f28, roughness: 0.9 });
+
+  const hull = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.5, 1.55), hullMat);
+  hull.position.y = 0.45;
+  group.add(hull);
+
+  for (const x of [-0.55, 0.55]) {
+    const track = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.38, 1.7), darkMat);
+    track.position.set(x, 0.22, 0);
+    group.add(track);
+  }
+
+  const turret = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.35, 0.7), hullMat);
+  turret.position.set(0, 0.82, 0.05);
+  group.add(turret);
+
+  const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.16, 1.1), darkMat);
+  barrel.position.set(0, 0.9, -0.72);
+  barrel.rotation.x = -0.3;
+  group.add(barrel);
+
+  return group;
+}
+
+function syncTankSupport(state) {
+  if (!state.tankSupport) {
+    if (tankSupportMesh) {
+      scene.remove(tankSupportMesh);
+      disposeMesh(tankSupportMesh);
+      tankSupportMesh = null;
+    }
+    return;
+  }
+
+  if (!tankSupportMesh) {
+    tankSupportMesh = makeTankSupportMesh();
+    scene.add(tankSupportMesh);
+  }
+  tankSupportMesh.position.set(state.tankSupport.x, 0, state.tankSupport.z);
+}
+
+/* 装甲车 */
+function makeApcMesh() {
+  const group = new THREE.Group();
+  const hullMat = new THREE.MeshStandardMaterial({ color: 0x7d8872, roughness: 0.8 });
+  const darkMat = new THREE.MeshStandardMaterial({ color: 0x262b24, roughness: 0.95 });
+
+  const hull = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.5, 1.7), hullMat);
+  hull.position.y = 0.45;
+  group.add(hull);
+
+  for (const [x, z] of [[-0.45, -0.55], [0.45, -0.55], [-0.45, 0.55], [0.45, 0.55]]) {
+    const wheel = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.22, 0.22, 0.16, 10),
+      darkMat
+    );
+    wheel.rotation.z = Math.PI / 2;
+    wheel.position.set(x, 0.22, z);
+    group.add(wheel);
+  }
+
+  const turret = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.3, 0.55), hullMat);
+  turret.position.set(0, 0.8, -0.1);
+  group.add(turret);
+
+  const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.8), darkMat);
+  barrel.position.set(0, 0.86, -0.6);
+  group.add(barrel);
+
+  return group;
+}
+
+function syncApcs(state) {
+  const alive = new Set();
+
+  for (const a of state.apcCharges || []) {
+    alive.add(a.id);
+    let mesh = apcMeshes.get(a.id);
+    if (!mesh) {
+      mesh = makeApcMesh();
+      scene.add(mesh);
+      apcMeshes.set(a.id, mesh);
+    }
+    mesh.position.set(a.x, 0, a.z);
+  }
+
+  for (const [id, mesh] of apcMeshes) {
+    if (!alive.has(id)) {
+      scene.remove(mesh);
+      disposeMesh(mesh);
+      apcMeshes.delete(id);
+    }
+  }
+}
+
+/* 舰载无人机 */
+function makeCarrierDroneMesh() {
+  const group = new THREE.Group();
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: 0x9fe3ff,
+    emissive: 0x2b6f8f,
+    emissiveIntensity: 0.6,
+    roughness: 0.4,
+    metalness: 0.5,
+  });
+  const darkMat = new THREE.MeshStandardMaterial({ color: 0x202a32, roughness: 0.8 });
+
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.16, 0.46), bodyMat);
+  group.add(body);
+
+  for (const [x, z] of [[-0.22, -0.18], [0.22, -0.18], [-0.22, 0.18], [0.22, 0.18]]) {
+    const rotor = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.15, 0.15, 0.025, 10),
+      darkMat
+    );
+    rotor.position.set(x, 0.1, z);
+    group.add(rotor);
+  }
+
+  const glow = new THREE.Mesh(
+    new THREE.SphereGeometry(0.07, 8, 6),
+    new THREE.MeshBasicMaterial({ color: 0x9fe3ff, transparent: true, opacity: 0.9 })
+  );
+  glow.position.y = -0.1;
+  group.add(glow);
+
+  return group;
+}
+
+function syncCarrierDrones(state) {
+  const alive = new Set();
+
+  for (const d of state.carrierDrones || []) {
+    alive.add(d.id);
+    let mesh = carrierDroneMeshes.get(d.id);
+    if (!mesh) {
+      mesh = makeCarrierDroneMesh();
+      scene.add(mesh);
+      carrierDroneMeshes.set(d.id, mesh);
+    }
+    mesh.position.set(d.x, 2.6, d.z);
+    mesh.rotation.y = d.phase + performance.now() * 0.001;
+  }
+
+  for (const [id, mesh] of carrierDroneMeshes) {
+    if (!alive.has(id)) {
+      scene.remove(mesh);
+      disposeMesh(mesh);
+      carrierDroneMeshes.delete(id);
+    }
+  }
+}
+
+/* 友方僵尸：绿色单位，和敌方明显区分 */
+function makeFriendlyZombieMesh() {
+  const group = new THREE.Group();
+  const skin = new THREE.MeshStandardMaterial({
+    color: 0x5adf7a,
+    emissive: 0x1f6b3a,
+    emissiveIntensity: 0.45,
+    roughness: 0.7,
+  });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x244532, roughness: 0.9 });
+
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.85, 0.42), skin);
+  body.position.y = 0.6;
+  group.add(body);
+
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6), skin);
+  head.position.y = 1.15;
+  group.add(head);
+
+  for (const x of [-0.18, 0.18]) {
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.45, 0.15), dark);
+    leg.position.set(x, 0.22, 0);
+    group.add(leg);
+
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.5, 0.12), skin);
+    arm.position.set(x * 1.9, 0.7, 0);
+    group.add(arm);
+  }
+
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.36, 0.48, 20),
+    new THREE.MeshBasicMaterial({
+      color: 0x5adf7a,
+      transparent: true,
+      opacity: 0.5,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.02;
+  group.add(ring);
+
+  return group;
+}
+
+function syncFriendlyZombies(state) {
+  const alive = new Set();
+
+  for (const f of state.friendlyZombies || []) {
+    alive.add(f.id);
+    let mesh = friendlyZombieMeshes.get(f.id);
+    if (!mesh) {
+      mesh = makeFriendlyZombieMesh();
+      scene.add(mesh);
+      friendlyZombieMeshes.set(f.id, mesh);
+    }
+    mesh.position.set(f.x, 0, f.z);
+  }
+
+  for (const [id, mesh] of friendlyZombieMeshes) {
+    if (!alive.has(id)) {
+      scene.remove(mesh);
+      disposeMesh(mesh);
+      friendlyZombieMeshes.delete(id);
     }
   }
 }
@@ -4174,6 +4442,7 @@ const SLOT_DEFS = [
   { id: 'support', name: '支援', x: -4.5, z: 15, color: 0x5adf7a },
   { id: 'command', name: '指挥', x: 0, z: 15, color: 0x6fa8ff },
   { id: 'closeDefense', name: '近防', x: 5.5, z: 4.5, color: 0xff6a4a },
+  { id: 'summon', name: '召唤', x: -5.5, z: 4.5, color: 0x9c6bff },
 ];
 
 const slotVisuals = new Map();
@@ -4246,6 +4515,27 @@ function makeSlotStructure(id, color) {
     const flag = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.3, 0.03), mainMat);
     flag.position.set(0.3, 1.35, 0);
     group.add(flag);
+  } else if (id === 'summon') {
+    const base = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.5, 0.6, 0.3, 12),
+      darkMat
+    );
+    base.position.y = 0.15;
+    group.add(base);
+
+    const pod = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.32, 0.42, 1.0, 10),
+      mainMat
+    );
+    pod.position.y = 0.85;
+    group.add(pod);
+
+    const core = new THREE.Mesh(
+      new THREE.SphereGeometry(0.2, 10, 8),
+      new THREE.MeshBasicMaterial({ color: 0x9c6bff, transparent: true, opacity: 0.9 })
+    );
+    core.position.y = 1.3;
+    group.add(core);
   }
 
   return group;
@@ -4291,9 +4581,13 @@ function initSlots() {
 
 function syncSlots(state) {
   for (const [id, v] of slotVisuals) {
+    const eraLocked = id === 'summon' && state.era < 3;
     const on = !!(state.slots && state.slots[id]);
-    v.structure.visible = on;
-    v.ring.material.opacity = on ? 0.8 : 0.16;
+
+    v.pad.visible = !eraLocked;
+    v.ring.visible = !eraLocked;
+    v.structure.visible = !eraLocked && on;
+    if (!eraLocked) v.ring.material.opacity = on ? 0.8 : 0.16;
   }
 }
 
@@ -4692,22 +4986,82 @@ function spawnMortar(fromX, fromZ, toX, toZ, color, flightTime = 0.5) {
 }
 
 /* 技能范围打击：从天上砸下来 */
-function spawnSkyStrike(x, z, color) {
+function spawnSkyStrike(x, z, color, delay = 0) {
   const mesh = new THREE.Mesh(
     new THREE.SphereGeometry(0.2, 8, 8),
     new THREE.MeshBasicMaterial({ color })
   );
   mesh.position.set(x, 12, z);
+  mesh.visible = delay <= 0;
   scene.add(mesh);
   effects.push({
     mesh,
-    life: 0,
+    life: -delay,
     maxLife: 0.4,
     type: 'arc',
     from: { x, y: 12, z },
     to: { x, y: 0.3, z },
     arc: 0,
   });
+}
+
+/* 炮火覆盖：圆形范围 + 8 发炮弹错开落下 */
+function spawnBarrageFx(x, z, radius, color) {
+  spawnGroundArea(x, z, radius, color, 0.9);
+
+  for (let i = 0; i < 8; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.sqrt(Math.random()) * radius * 0.9;
+    spawnSkyStrike(
+      x + Math.cos(a) * r,
+      z + Math.sin(a) * r,
+      color,
+      i * 0.08 + Math.random() * 0.06
+    );
+  }
+}
+
+/* 轨道轰炸：横向光柱，z 已被甲限制在士兵阵型之前 */
+function spawnOrbitalBeam(z, color) {
+  const core = new THREE.Mesh(
+    new THREE.BoxGeometry(18, 0.22, 0.22),
+    new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 1,
+      depthWrite: false,
+    })
+  );
+  core.position.set(0, 2.8, z);
+  scene.add(core);
+  effects.push({ mesh: core, life: 0, maxLife: 0.75, type: 'fade' });
+
+  const glow = new THREE.Mesh(
+    new THREE.BoxGeometry(18.6, 1.1, 1.1),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.35,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  glow.position.set(0, 2.8, z);
+  scene.add(glow);
+  effects.push({ mesh: glow, life: 0, maxLife: 0.75, type: 'beamGlow' });
+
+  for (let i = 0; i < 10; i++) {
+    spawnBurst(
+      -8 + (i / 9) * 16,
+      0.3,
+      z,
+      color,
+      2,
+      { speed: 1.4, up: 1.8, spread: 0.3, life: 0.5 }
+    );
+  }
+
+  shake = Math.max(shake, 0.55);
 }
 
 /* 地面范围圈：给圆形技能标出覆盖范围 */
@@ -4775,7 +5129,7 @@ function spawnArrowRain(x, z, radius, color) {
 }
 
 /* 近防：从炮塔拉一条曳光到目标 */
-function spawnTracer(fromX, fromZ, toX, toZ, color) {
+function spawnTracer(fromX, fromZ, toX, toZ, color, fromY = 0.8) {
   const dx = toX - fromX;
   const dz = toZ - fromZ;
   const len = Math.hypot(dx, dz) || 0.1;
@@ -4784,8 +5138,8 @@ function spawnTracer(fromX, fromZ, toX, toZ, color) {
     new THREE.BoxGeometry(0.06, 0.06, len),
     new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9 })
   );
-  mesh.position.set((fromX + toX) / 2, 0.8, (fromZ + toZ) / 2);
-  mesh.lookAt(toX, 0.8, toZ);
+  mesh.position.set((fromX + toX) / 2, fromY, (fromZ + toZ) / 2);
+  mesh.lookAt(toX, fromY, toZ);
   scene.add(mesh);
   effects.push({ mesh, life: 0, maxLife: 0.15, type: 'fade' });
 }
@@ -4865,6 +5219,12 @@ function updateEffects(dt) {
     const fx = effects[i];
     fx.life += dt;
 
+    if (fx.life < 0) {
+      if (fx.mesh.visible) fx.mesh.visible = false;
+      continue;
+    }
+    if (!fx.mesh.visible) fx.mesh.visible = true;
+
     const t = fx.life / fx.maxLife;
 
     if (t >= 1) {
@@ -4896,6 +5256,9 @@ function updateEffects(dt) {
       fx.mesh.position.set(x, y, z);
     } else if (fx.type === 'fade') {
       fx.mesh.material.opacity = (1 - t) * 0.9;
+    } else if (fx.type === 'beamGlow') {
+      fx.mesh.material.opacity = (1 - t) * 0.35;
+      fx.mesh.scale.set(1, 1 + t * 0.6, 1 + t * 0.6);
     } else {
       fx.mesh.scale.setScalar(1 + t * 0.6);
       fx.mesh.material.opacity = 1 - t;

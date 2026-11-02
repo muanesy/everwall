@@ -113,6 +113,18 @@ const CONFIG = {
         { damageMul: 2.10, radius: 3.8, interval: 0.38 },
       ],
     },
+    // 后现代起自动解锁的第六槽位：制造友方僵尸对冲
+    summon: {
+      x: -5.5, z: 4.5, baseHp: 60, baseDamage: 12, speed: 3.2,
+      recommendedByEra: [0, 0, 0, 1, 3, 5],
+      levels: [
+        { hpMul: 1.00, damageMul: 1.00, interval: 8.0, maxAlive: 2 },
+        { hpMul: 1.25, damageMul: 1.20, interval: 7.2, maxAlive: 2 },
+        { hpMul: 1.55, damageMul: 1.45, interval: 6.4, maxAlive: 3 },
+        { hpMul: 1.90, damageMul: 1.75, interval: 5.6, maxAlive: 3 },
+        { hpMul: 2.30, damageMul: 2.10, interval: 4.8, maxAlive: 4 },
+      ],
+    },
     // 工事就是路障本身，位置和等级在 CONFIG.barricade
   },
   barrel: {
@@ -141,6 +153,70 @@ const CONFIG = {
     duration: 5,       // 火区存在 5 秒
     dps: 18,           // 圆心每秒伤害，总计 90
     falloff: 0.7,      // 越靠边伤害越低：边缘只保留 30%
+  },
+  tankSupport: {
+    x: -5.5, z: 9.4,   // 左下方
+    shots: 3,          // 一轮打 3 发
+    shotInterval: 0.7,
+    damage: 60,
+    radius: 3.0,
+    flightTime: 0.5,   // 炮弹飞行时间
+    retreatDelay: 0.8, // 打完多久开始撤
+    retreatSpeed: 4.5,
+  },
+  apc: {
+    speed: 7.5,        // 比骑士慢很多
+    damage: 90,        // 撞击伤害，每只僵尸一次
+    hitRadius: 1.1,
+    hitDepth: 1.2,
+    spawnZ: 9.8,
+    mgInterval: 0.35,  // 机枪间隔
+    mgDamage: 12,
+    mgRange: 8,
+  },
+  carrierDrones: {
+    count: 4,
+    life: 15,          // 持续一波，和 CONFIG.wave.duration 保持一致
+    damage: 10,
+    interval: 0.5,
+    range: 16,
+    radius: 1.6,       // 无人机绕最密点转的半径
+  },
+  orbital: {
+    beamZMax: 6.9,     // 光柱最高到这条线，留出士兵阵型
+    beamWidth: 3.0,
+  },
+  tankSupport: {
+    x: -5.5, z: 9.4,   // 左下方
+    shots: 3,          // 一轮打 3 发
+    shotInterval: 0.7,
+    damage: 60,
+    radius: 3.0,
+    flightTime: 0.5,   // 炮弹飞行时间
+    retreatDelay: 0.8, // 打完多久开始撤
+    retreatSpeed: 4.5,
+  },
+  apc: {
+    speed: 7.5,        // 比骑士慢很多
+    damage: 90,        // 撞击伤害，每只僵尸一次
+    hitRadius: 1.1,
+    hitDepth: 1.2,
+    spawnZ: 9.8,
+    mgInterval: 0.35,  // 机枪间隔
+    mgDamage: 12,
+    mgRange: 8,
+  },
+  carrierDrones: {
+    count: 4,
+    life: 4.0,
+    damage: 10,
+    interval: 0.5,
+    range: 16,
+    radius: 1.6,       // 无人机绕最密点转的半径
+  },
+  orbital: {
+    beamZMax: 6.9,     // 光柱最高到这条线，留出士兵阵型
+    beamWidth: 3.0,
   },
   barricade: {
     xMin: -0.4,          // 路障左边界，避开左边屏障通道
@@ -236,12 +312,13 @@ const CONFIG = {
   },
 };
 
-const SLOT_IDS = ['siege', 'closeDefense', 'support', 'command'];
+const SLOT_IDS = ['siege', 'closeDefense', 'support', 'command', 'summon'];
 const SLOT_NAMES = {
   siege: '攻城',
   closeDefense: '近防',
   support: '支援',
   command: '指挥',
+  summon: '召唤',
   barricade: '工事',
 };
 const SLOT_MAX_LEVEL = 5;
@@ -300,9 +377,9 @@ const state = {
   },
   timeScale: 1,
   // 槽位默认全部锁定，抽到对应卡才生效；level 0 = 未解锁，1-5 = 等级
-  slots: { siege: false, support: false, closeDefense: false, command: false },
-  slotLevels: { siege: 0, support: 0, closeDefense: 0, command: 0 },
-  slotTimers: { siege: 3, support: 6, closeDefense: 0 },
+  slots: { siege: false, support: false, closeDefense: false, command: false, summon: false },
+  slotLevels: { siege: 0, support: 0, closeDefense: 0, command: 0, summon: 0 },
+  slotTimers: { siege: 3, support: 6, closeDefense: 0, summon: 2 },
 
   // 一次性技能栏：抽到卡后存次数，点左侧图标使用
   skillBag: [],        // [{ id, charges }]
@@ -339,6 +416,11 @@ const state = {
   knightCharges: [], // { id, x, z, speed, damage, hit }
   campfireZones: [], // { id, x, z, radius, remaining, dps }
   siegeShots: [],    // { x, z, radius, damage, timeLeft } 炮弹落地后才结算
+  tankSupport: null, // { x, z, shotsLeft, timer, retreating, retreatDelay }
+  apcCharges: [],    // { id, x, z, speed, damage, hit, mgTimer }
+  carrierDrones: [], // { id, x, z, baseX, baseZ, life, mgTimer, phase }
+  friendlyZombies: [], // { id, x, z, hp, maxHp, speed, damage, attackTimer, life }
+  usedSkills: [],    // 一局只能用一次的技能 id，目前是轨道轰炸
 
   barrierTimer: 0,
   zombieTimer: 0,
@@ -493,14 +575,17 @@ function resetState(opts = {}) {
   state.slots.support = false;
   state.slots.closeDefense = false;
   state.slots.command = false;
-  state.slotLevels = { siege: 0, support: 0, closeDefense: 0, command: 0 };
+  state.slots.summon = false;
+  state.slotLevels = { siege: 0, support: 0, closeDefense: 0, command: 0, summon: 0 };
   state.skillBag = [];
   state.skillBagVersion += 1;
   state.skillUseCd = 0;
+  state.usedSkills = [];
 
   state.slotTimers.siege = 3;
   state.slotTimers.support = 6;
   state.slotTimers.closeDefense = 0;
+  state.slotTimers.summon = 2;
   state.slowUntil = 0;
   state.slowMul = 1;
   state.buffUntil = 0;
@@ -516,6 +601,10 @@ function resetState(opts = {}) {
   state.knightCharges.length = 0;
   state.campfireZones.length = 0;
   state.siegeShots.length = 0;
+  state.tankSupport = null;
+  state.apcCharges.length = 0;
+  state.carrierDrones.length = 0;
+  state.friendlyZombies.length = 0;
 
   state.barrierTimer = 0.6;
   state.zombieTimer = 1.0;
@@ -551,6 +640,10 @@ function revive() {
   state.knightCharges.length = 0;
   state.campfireZones.length = 0;
   state.siegeShots.length = 0;
+  state.tankSupport = null;
+  state.apcCharges.length = 0;
+  state.carrierDrones.length = 0;
+  state.friendlyZombies.length = 0;
   state.barrierTimer = 0.4;
   state.zombieTimer = 0.8;
 
@@ -565,9 +658,11 @@ function revive() {
 }
 
 // 低于当前时代推荐等级时的折扣：每差 1 级 -15%，最多 -45%
-function underLevelMul(level, era = state.era) {
+function underLevelMul(level, era = state.era, recommendedOverride = null) {
   const cfg = CONFIG.era;
-  const recommended = cfg.recommendedLevel[era] || 1;
+  const recommended = recommendedOverride
+    ? (recommendedOverride[era] || 1)
+    : (cfg.recommendedLevel[era] || 1);
   const behind = Math.max(0, recommended - level);
   return Math.max(
     cfg.underLevelMin,
@@ -582,7 +677,17 @@ function slotStatsAt(id, level, era = state.era) {
 
   const lv = Math.min(cfg.levels.length, Math.max(1, Math.floor(level)));
   const row = cfg.levels[lv - 1];
-  const under = underLevelMul(lv, era);
+  const under = underLevelMul(lv, era, cfg.recommendedByEra || null);
+
+  if (id === 'summon') {
+    return {
+      hp: Math.round(cfg.baseHp * CONFIG.era.hpPower[era] * row.hpMul * under),
+      damage: Math.round(cfg.baseDamage * CONFIG.era.attackPower[era] * row.damageMul * under),
+      interval: row.interval,
+      maxAlive: row.maxAlive,
+      speed: cfg.speed,
+    };
+  }
 
   if (id === 'support') {
     return {
@@ -620,6 +725,9 @@ function slotSummary(id, level, era = state.era) {
 
   if (id === 'support') return `${s.heal} 兵 / ${s.interval.toFixed(1)}s`;
   if (id === 'command') return `射速 +${(s.bonus * 100).toFixed(1)}%`;
+  if (id === 'summon') {
+    return `${s.hp} 血 / ${s.damage} 伤 / ${s.interval.toFixed(1)}s / 最多 ${s.maxAlive}`;
+  }
   return `${s.damage} 伤 / 半径 ${s.radius} / ${s.interval.toFixed(1)}s`;
 }
 
@@ -723,6 +831,14 @@ function setSlotLevel(id, level) {
   }
 }
 
+// 后现代起自动解锁召唤槽
+function ensureSummonSlot() {
+  if (state.era >= 3 && state.slotLevels.summon === 0) {
+    setSlotLevel('summon', 1);
+    emit('skillNotice', { text: '召唤槽已解锁', kind: 'skill' });
+  }
+}
+
 // 换时代后重新算路障血量和反击伤害；槽位数值是每帧算的，不用刷新
 function refreshSlotsForEra() {
   if (state.barricade.unlocked) {
@@ -783,6 +899,7 @@ function setEraForTest(index) {
   state.mapId = map;
   state.usedMaps.push(map);
 
+  ensureSummonSlot();
   switchEra(eraIndex, map);
   refreshSlotsForEra();
 }
@@ -893,6 +1010,13 @@ const CARD_POOL = [
     apply: () => setSlotLevel('command', state.slotLevels.command + 1),
   },
   {
+    id: 'slotSummonUpgrade',
+    name: '召唤升级',
+    desc: () => `召唤 ${state.slotLevels.summon} → ${state.slotLevels.summon + 1} 级，${slotSummary('summon', state.slotLevels.summon + 1)}`,
+    can: () => state.era >= 3 && state.slotLevels.summon > 0 && state.slotLevels.summon < SLOT_MAX_LEVEL,
+    apply: () => setSlotLevel('summon', state.slotLevels.summon + 1),
+  },
+  {
     id: 'damage',
     name: '火力强化',
     desc: '士兵伤害 +15%',
@@ -936,7 +1060,7 @@ const CARD_POOL = [
   },
 ];
 
-/* 一次性技能：抽到就立刻释放，按效果类型走通用逻辑 */
+/* 一次性技能：抽到后存进技能栏，按效果类型走通用逻辑 */
 const SKILL_DEFS = [
   // 0 中世纪
   // 半径 4 = 屏幕半宽，直径 8 刚好是屏幕宽度的一半
@@ -948,15 +1072,15 @@ const SKILL_DEFS = [
   { id: 'campfire', name: '篝火', era: 0, type: 'campfire', radius: 3.5, color: 0xff9a4d },
   // 1 二战
   { id: 'airStrike', name: '空袭', era: 1, type: 'aoe', damage: 90, radius: 4.0, color: 0xffd27a },
-  { id: 'barrage', name: '炮火覆盖', era: 1, type: 'line', damage: 70, radius: 3.0, color: 0xff8a4d },
+  { id: 'barrage', name: '炮火覆盖', era: 1, type: 'barrage', damage: 90, radius: 4.5, color: 0xff8a4d },
   { id: 'napalm', name: '燃烧弹', era: 1, type: 'aoe', damage: 45, radius: 3.5, color: 0xff6a2a },
   { id: 'paratroopers', name: '伞兵增援', era: 1, type: 'heal', soldiers: 10, color: 0x8fb6e0 },
-  { id: 'tank', name: '坦克支援', era: 1, type: 'line', damage: 80, radius: 3.0, color: 0xb0b8a0 },
+  { id: 'tank', name: '坦克支援', era: 1, type: 'tank', color: 0xb0b8a0 },
   // 2 现代
   { id: 'precision', name: '精确打击', era: 2, type: 'aoe', damage: 110, radius: 2.2, color: 0x9fe3ff },
   { id: 'droneSwarm', name: '无人机蜂群', era: 2, type: 'aoe', damage: 60, radius: 4.5, color: 0x7fd4ff },
   { id: 'emp', name: '电磁脉冲', era: 2, type: 'freeze', duration: 2, color: 0x6fa8ff },
-  { id: 'apc', name: '装甲车冲锋', era: 2, type: 'line', damage: 70, radius: 3.0, color: 0x8f9a7a },
+  { id: 'apc', name: '装甲车冲锋', era: 2, type: 'apc', color: 0x8f9a7a },
   { id: 'supplyDrop', name: '空投补给', era: 2, type: 'heal', soldiers: 15, color: 0x5adf7a },
   // 3 后现代
   { id: 'virusBomb', name: '病毒炸弹', era: 3, type: 'aoe', damage: 80, radius: 4.0, color: 0x8fe36a },
@@ -965,10 +1089,10 @@ const SKILL_DEFS = [
   { id: 'timeSlow', name: '时间减速', era: 3, type: 'slow', duration: 4, mul: 0.5, color: 0x8fb6ff },
   { id: 'memory', name: '记忆植入', era: 3, type: 'upgradeSlot', color: 0xd0a0ff },
   // 4 星际
-  { id: 'orbital', name: '轨道轰炸', era: 4, type: 'line', damage: 130, radius: 3.5, color: 0x7fe3ff },
+  { id: 'orbital', name: '轨道轰炸', era: 4, type: 'orbital', color: 0x7fe3ff },
   { id: 'blackHole', name: '黑洞', era: 4, type: 'pull', damage: 40, radius: 4.0, pullRadius: 12, pullFactor: 0.85, color: 0x6a4dff },
   { id: 'wormhole', name: '虫洞', era: 4, type: 'warp', color: 0xb06bff },
-  { id: 'fleetSalvo', name: '舰队齐射', era: 4, type: 'line', damage: 100, radius: 3.0, color: 0x9fe3ff },
+  { id: 'carrierDrones', name: '舰载无人机群', era: 4, type: 'carrierDrones', color: 0x9fe3ff },
   { id: 'timeDilation', name: '时间膨胀', era: 4, type: 'slow', duration: 3, mul: 0.4, color: 0x8fb6ff },
   // 5 终幕
   { id: 'finalJudgment', name: '终焉审判', era: 5, type: 'aoe', damage: 200, radius: 6.0, color: 0xffffff },
@@ -989,7 +1113,7 @@ const SKILL_CHARGES = {
   // 后现代
   virusBomb: 2, bioLegion: 3, geneBurst: 2, timeSlow: 2, memory: 2,
   // 星际
-  orbital: 1, blackHole: 2, wormhole: 3, fleetSalvo: 2, timeDilation: 2,
+  orbital: 1, blackHole: 2, wormhole: 3, carrierDrones: 2, timeDilation: 2,
   // 终幕
   finalJudgment: 1, cosmicCollapse: 1, sacrifice: 1, reboot: 1, entropy: 2,
 };
@@ -1001,24 +1125,24 @@ const SKILL_DESCS = {
   knightCharge: '右下随机冲 3 个骑士，向上贯穿，每个骑士对每只僵尸 50 伤害',
   campfire: '最密处半径 3.5 火区，持续 5 秒，每秒 12 伤害',
   airStrike: '最密处半径 4 内 90 伤害',
-  barrage: '横排炮火：半宽 3 的整条横线 70 伤害',
+  barrage: '圆形炮火覆盖：半径 4.5 内 90 伤害，8 发炮弹连续落下',
   napalm: '最密处半径 3.5 内 45 伤害',
   paratroopers: '立刻 +10 兵',
-  tank: '横排碾压：半宽 3 的整条横线 80 伤害',
+  tank: '左下出现坦克，打 3 发范围炮（每发 60、半径 3）后撤退',
   precision: '最密处半径 2.2 内 110 伤害',
   droneSwarm: '最密处半径 4.5 内 60 伤害',
   emp: '全场僵尸原地停顿 2 秒',
-  apc: '横排冲锋：半宽 3 的整条横线 70 伤害',
+  apc: '慢速向上冲锋，撞到每只僵尸 90 伤害，同时机枪点射最近僵尸',
   supplyDrop: '立刻 +15 兵',
   virusBomb: '最密处半径 4 内 80 伤害',
   bioLegion: '立刻 +8 兵',
   geneBurst: '全队射速 ×2，持续 5 秒',
   timeSlow: '全场僵尸移速 ×0.5，持续 4 秒',
   memory: '路障 +1 级；未解锁则直接解锁 1 级',
-  orbital: '横排轨道轰炸：半宽 3.5 的整条横线 130 伤害',
+  orbital: '横向轨道光柱，直接清空全场僵尸；一局只能使用一次',
   blackHole: '半径 12 内僵尸吸向中心，中心半径 4 内 40 伤害',
   wormhole: '最靠前的 1 只僵尸送回出生点',
-  fleetSalvo: '横排齐射：半宽 3 的整条横线 100 伤害',
+  carrierDrones: '召唤 4 架舰载无人机，绕最密点持续射击一波（15 秒）',
   timeDilation: '全场僵尸移速 ×0.4，持续 3 秒',
   finalJudgment: '最密处半径 6 内 200 伤害',
   cosmicCollapse: '半径 14 内僵尸吸向中心，中心半径 6 内 80 伤害',
@@ -1156,6 +1280,22 @@ function castSkill(id) {
     case 'line':
       damageZombiesInLine(target.z, def.radius, def.damage);
       break;
+    case 'barrage':
+      damageZombiesInRadius(target.x, target.z, def.radius, def.damage);
+      break;
+    case 'tank':
+      spawnTankSupport();
+      break;
+    case 'apc':
+      spawnApcCharge();
+      break;
+    case 'carrierDrones':
+      spawnCarrierDrones();
+      break;
+    case 'orbital':
+      clearZombies();
+      target.z = Math.min(target.z, CONFIG.orbital.beamZMax);
+      break;
     case 'rollingLog':
       spawnRollingLog();
       break;
@@ -1258,6 +1398,11 @@ function skillCanAppear(def) {
     return !state.barricade.unlocked ||
       state.barricade.level < CONFIG.barricade.levels.length;
   }
+  if (def.id === 'orbital') {
+    // 一局只能拿一次、用一次
+    return !state.usedSkills.includes('orbital') &&
+      !state.skillBag.some((s) => s.id === 'orbital');
+  }
   return true;
 }
 
@@ -1296,11 +1441,24 @@ function gainSkill(id) {
   const def = skillDef(id);
   if (!def) return;
 
+  // 轨道轰炸一局只能拿一次，重复抽到直接折算
+  if (def.id === 'orbital' && state.usedSkills.includes('orbital')) {
+    const soldiers = skillCharges(def) * skillStrengthValue(def);
+    applySoldiers(soldiers);
+    emit('skillNotice', {
+      text: `轨道轰炸本局已经用过，这张卡折算 +${soldiers} 兵`,
+      kind: 'skill',
+    });
+    state.skillBagVersion += 1;
+    return;
+  }
+
   const add = skillCharges(def);
+  const maxCharges = def.id === 'orbital' ? 1 : SKILL_MAX_CHARGES;
   const existing = state.skillBag.find((s) => s.id === id);
 
   if (existing) {
-    const room = SKILL_MAX_CHARGES - existing.charges;
+    const room = maxCharges - existing.charges;
     const got = Math.max(0, Math.min(room, add));
     existing.charges += got;
 
@@ -1309,7 +1467,7 @@ function gainSkill(id) {
       const soldiers = extra * skillStrengthValue(def);
       applySoldiers(soldiers);
       emit('skillNotice', {
-        text: `${def.name} 已达 ${SKILL_MAX_CHARGES} 次上限，溢出 ${extra} 次折算 +${soldiers} 兵`,
+        text: `${def.name} 已达 ${maxCharges} 次上限，溢出 ${extra} 次折算 +${soldiers} 兵`,
         kind: 'skill',
       });
     }
@@ -1354,6 +1512,8 @@ function useSkill(id) {
     });
     return false;
   }
+
+  if (id === 'orbital') state.usedSkills.push('orbital');
 
   entry.charges -= 1;
   if (entry.charges <= 0) {
@@ -1485,6 +1645,7 @@ function syncEraWithWave(wave) {
 
   // 旧时代没打完的技能次数折算成兵
   convertExpiredSkills();
+  ensureSummonSlot();
 
   // 只换时代配色和地图，场上僵尸、子弹、屏障全部保留
   switchEra(eraIndex, map);
@@ -1519,8 +1680,12 @@ function update(dt) {
   updateBullets(dt);
   updateSlots(dt);
   updateBarriers(dt);
+  updateFriendlyZombies(dt);
   updateZombies(dt);
   updateSiegeShots(dt);
+  updateTankSupport(dt);
+  updateApcCharges(dt);
+  updateCarrierDrones(dt);
   updateRollingLogs(dt);
   updateKnightCharges(dt);
   updateCampfireZones(dt);
@@ -1736,12 +1901,6 @@ function updateBullets(dt) {
       const z = state.zombies[j];
 
       if (Math.abs(b.x - z.x) < 0.72 && Math.abs(b.z - z.z) < 0.7) {
-        // 测试模式：子弹命中但不掉血，子弹仍然消耗
-        if (state.testMode) {
-          state.bullets.splice(i, 1);
-          break;
-        }
-
         z.hp -= b.damage;
 
         if (z.hp <= 0) {
@@ -2005,6 +2164,17 @@ function updateSlots(dt) {
       emit('slotHeal', { x: cfg.x, z: cfg.z });
     }
   }
+
+  if (state.slots.summon) {
+    const stats = slotStats('summon');
+    state.slotTimers.summon -= dt;
+    if (state.slotTimers.summon <= 0) {
+      state.slotTimers.summon = stats.interval;
+      if (state.friendlyZombies.length < stats.maxAlive) {
+        spawnFriendlyZombie(stats);
+      }
+    }
+  }
 }
 
 function updateBarricade(dt) {
@@ -2050,6 +2220,12 @@ function updateZombies(dt) {
   // 移动：进入下半场且离士兵够近时，开始横向追人
   for (const z of state.zombies) {
     if (frozen) continue;
+
+    // 友方僵尸拦住敌人：停下互殴，不再往前走
+    const blocker = state.friendlyZombies.find(
+      (f) => Math.abs(f.x - z.x) < 0.9 && Math.abs(f.z - z.z) < 0.9
+    );
+    if (blocker) continue;
 
     const bar = state.barricade;
     const cfg = CONFIG.barricade;
@@ -2150,6 +2326,266 @@ function updateZombies(dt) {
       continue;
     }
 
+  }
+}
+
+// 召唤槽：造一个友方僵尸
+function spawnFriendlyZombie(stats) {
+  const cfg = CONFIG.slots.summon;
+  const x = cfg.x + (Math.random() * 2 - 1) * 0.35;
+
+  state.friendlyZombies.push({
+    id: state.nextId++,
+    x,
+    z: cfg.z + 0.3,
+    hp: stats.hp,
+    maxHp: stats.hp,
+    speed: stats.speed,
+    damage: stats.damage,
+    attackTimer: Math.random() * 0.5,
+    life: 0,
+  });
+  emit('friendlySpawn', { x, z: cfg.z + 0.3 });
+}
+
+// 友方僵尸：冲向最近敌人，贴身互殴；12 秒后自然消失
+function updateFriendlyZombies(dt) {
+  const endZ = CONFIG.world.spawnZ - 2;
+
+  for (let i = state.friendlyZombies.length - 1; i >= 0; i--) {
+    const f = state.friendlyZombies[i];
+    f.life += dt;
+
+    let targetIndex = -1;
+    let best = Infinity;
+    for (let j = 0; j < state.zombies.length; j++) {
+      const zb = state.zombies[j];
+      const dx = zb.x - f.x;
+      const dz = zb.z - f.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < best) {
+        best = d2;
+        targetIndex = j;
+      }
+    }
+
+    if (targetIndex >= 0) {
+      const zb = state.zombies[targetIndex];
+      const dx = zb.x - f.x;
+      const dz = zb.z - f.z;
+      const dist = Math.sqrt(best) || 1;
+
+      if (dist > 0.9) {
+        f.x += (dx / dist) * f.speed * dt;
+        f.z += (dz / dist) * f.speed * dt;
+      } else {
+        f.attackTimer -= dt;
+        if (f.attackTimer <= 0) {
+          f.attackTimer = 0.7;
+          damageZombieAt(targetIndex, f.damage);
+        }
+      }
+    } else {
+      // 场上没有敌人：继续往上走，走出屏幕就消失
+      f.z -= f.speed * 0.65 * dt;
+    }
+
+    // 被身边的敌人围殴
+    let contacts = 0;
+    for (const zb of state.zombies) {
+      if (Math.abs(zb.x - f.x) < 0.9 && Math.abs(zb.z - f.z) < 0.9) contacts += 1;
+    }
+    if (contacts > 0) f.hp -= contacts * 14 * dt;
+
+    f.x = Math.max(-CONFIG.world.halfWidth, Math.min(CONFIG.world.halfWidth, f.x));
+
+    if (f.hp <= 0 || f.life > 12 || f.z < endZ) {
+      state.friendlyZombies.splice(i, 1);
+      emit('friendlyDie', { x: f.x, z: f.z });
+    }
+  }
+}
+
+// 最近的僵尸下标，找不到返回 -1
+function nearestZombieIndex(x, z, maxRange) {
+  let best = -1;
+  let bestD2 = maxRange * maxRange;
+
+  for (let i = 0; i < state.zombies.length; i++) {
+    const zb = state.zombies[i];
+    const dx = zb.x - x;
+    const dz = zb.z - z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 < bestD2) {
+      bestD2 = d2;
+      best = i;
+    }
+  }
+
+  return best;
+}
+
+// 坦克支援：左下方出现，打 3 发范围炮后向下撤退
+function spawnTankSupport() {
+  const cfg = CONFIG.tankSupport;
+  state.tankSupport = {
+    x: cfg.x,
+    z: cfg.z,
+    shotsLeft: cfg.shots,
+    timer: 0.25,
+    retreating: false,
+    retreatDelay: cfg.retreatDelay,
+  };
+}
+
+function updateTankSupport(dt) {
+  const t = state.tankSupport;
+  if (!t) return;
+
+  const cfg = CONFIG.tankSupport;
+
+  if (t.retreating) {
+    t.z += cfg.retreatSpeed * dt;
+    if (t.z > 13.5) state.tankSupport = null;
+    return;
+  }
+
+  t.timer -= dt;
+
+  if (t.shotsLeft > 0 && t.timer <= 0) {
+    t.shotsLeft -= 1;
+    t.timer = cfg.shotInterval;
+
+    const target = densestPoint();
+    if (target) {
+      // 和攻城共用延迟炮弹队列
+      state.siegeShots.push({
+        x: target.x,
+        z: target.z,
+        radius: cfg.radius,
+        damage: cfg.damage,
+        timeLeft: cfg.flightTime,
+      });
+      emit('slotStrike', {
+        kind: 'tank',
+        fromX: t.x,
+        fromZ: t.z,
+        x: target.x,
+        z: target.z,
+        radius: cfg.radius,
+        flightTime: cfg.flightTime,
+        color: 0xffa64d,
+      });
+    }
+
+    if (t.shotsLeft <= 0) t.retreatDelay = cfg.retreatDelay;
+  }
+
+  if (t.shotsLeft <= 0) {
+    t.retreatDelay -= dt;
+    if (t.retreatDelay <= 0) t.retreating = true;
+  }
+}
+
+// 装甲车：慢速向上，撞击伤害 + 机枪点射最近僵尸
+function spawnApcCharge() {
+  const cfg = CONFIG.apc;
+  state.apcCharges.push({
+    id: state.nextId++,
+    x: (Math.random() * 2 - 1) * 3,
+    z: cfg.spawnZ,
+    speed: cfg.speed,
+    damage: cfg.damage,
+    hit: new Set(),
+    mgTimer: 0.2,
+  });
+}
+
+function updateApcCharges(dt) {
+  const cfg = CONFIG.apc;
+
+  for (let i = state.apcCharges.length - 1; i >= 0; i--) {
+    const a = state.apcCharges[i];
+    a.z -= a.speed * dt;
+
+    // 撞击：每只僵尸只结算一次
+    for (let j = state.zombies.length - 1; j >= 0; j--) {
+      const zb = state.zombies[j];
+      if (a.hit.has(zb.id)) continue;
+      if (Math.abs(zb.x - a.x) > cfg.hitRadius) continue;
+      if (Math.abs(zb.z - a.z) > cfg.hitDepth) continue;
+
+      a.hit.add(zb.id);
+      damageZombieAt(j, a.damage);
+    }
+
+    // 机枪：每 0.35 秒打最近的僵尸
+    a.mgTimer -= dt;
+    if (a.mgTimer <= 0) {
+      const idx = nearestZombieIndex(a.x, a.z, cfg.mgRange);
+      if (idx >= 0) {
+        const zb = state.zombies[idx];
+        emit('apcShot', {
+          fromX: a.x,
+          fromZ: a.z - 0.45,
+          x: zb.x,
+          z: zb.z,
+        });
+        damageZombieAt(idx, cfg.mgDamage);
+        a.mgTimer = cfg.mgInterval;
+      } else {
+        a.mgTimer = 0.15;
+      }
+    }
+
+    if (a.z < CONFIG.world.spawnZ - 2) state.apcCharges.splice(i, 1);
+  }
+}
+
+// 舰载无人机群：绕最密点转，持续 15 秒，自动射击最近僵尸
+function spawnCarrierDrones() {
+  const cfg = CONFIG.carrierDrones;
+  const base = densestPoint() || { x: 0, z: -6 };
+
+  for (let i = 0; i < cfg.count; i++) {
+    const phase = (i / cfg.count) * Math.PI * 2;
+    state.carrierDrones.push({
+      id: state.nextId++,
+      baseX: base.x,
+      baseZ: base.z,
+      x: base.x + Math.cos(phase) * cfg.radius,
+      z: base.z + Math.sin(phase) * cfg.radius,
+      phase,
+      life: 0,
+      mgTimer: Math.random() * cfg.interval,
+    });
+  }
+}
+
+function updateCarrierDrones(dt) {
+  const cfg = CONFIG.carrierDrones;
+
+  for (let i = state.carrierDrones.length - 1; i >= 0; i--) {
+    const d = state.carrierDrones[i];
+    d.life += dt;
+    d.phase += dt * 0.9;
+    d.x = d.baseX + Math.cos(d.phase) * cfg.radius;
+    d.z = d.baseZ + Math.sin(d.phase) * cfg.radius;
+    d.mgTimer -= dt;
+
+    if (d.mgTimer <= 0) {
+      const idx = nearestZombieIndex(d.x, d.z, cfg.range);
+      if (idx >= 0) {
+        const zb = state.zombies[idx];
+        emit('droneShot', { fromX: d.x, fromZ: d.z, x: zb.x, z: zb.z });
+        damageZombieAt(idx, cfg.damage);
+        d.mgTimer = cfg.interval;
+      } else {
+        d.mgTimer = 0.15;
+      }
+    }
+
+    if (d.life >= cfg.life) state.carrierDrones.splice(i, 1);
   }
 }
 

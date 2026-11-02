@@ -995,8 +995,12 @@ canvas {
 }
 
 .skill-slot__name {
+  max-width: 100%;
+  padding: 0 2px;
   font-size: 13px;
+  line-height: 1.1;
   letter-spacing: 0.02em;
+  text-align: center;
   color: #f2f7ff;
 }
 
