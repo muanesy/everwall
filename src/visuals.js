@@ -672,6 +672,7 @@ let fxHurt = null;
 let fxFloats = null;   // 击杀飘字的容器（绝对定位，位置每帧由相机投影算）
 let fxToast = null;
 let fxFade = null;        // 换图用的全屏淡入淡出遮罩
+let fxBloodMoon = null;   // 血月的全屏红色暗角
 const FX_P_MAX = 500;
 const fxPool = Array.from({ length: FX_P_MAX }, () => ({ life: 0, maxLife: 1, vx: 0, vy: 0, vz: 0, g: 0 }));
 let fxGeo = null;
@@ -855,6 +856,7 @@ export function initVisuals(container, events) {
     <div class="fx-hurt"></div>
     <div class="fx-floats"></div>
     <div class="fx-toast"></div>
+    <div class="fx-bloodmoon"></div>
     <div class="fx-fade"></div>`;
   document.body.appendChild(fxLayer);
   fxBanner = fxLayer.querySelector('.fx-banner');
@@ -862,6 +864,7 @@ export function initVisuals(container, events) {
   fxFloats = fxLayer.querySelector('.fx-floats');
   fxToast = fxLayer.querySelector('.fx-toast');
   fxFade = fxLayer.querySelector('.fx-fade');
+  fxBloodMoon = fxLayer.querySelector('.fx-bloodmoon');
 
   window.addEventListener('resize', resize);
   resize();
@@ -1015,6 +1018,12 @@ export function initVisuals(container, events) {
     const night = nightForWave(wave);
     if (dayNight) dayNight.setNight(night);
     if (night && !wasNight) pushToast('夜幕降临 · 僵尸加速', 'night');
+
+    // 血月：每 10 波来一次，到点自动开；下一波自动收
+    if (bloodMoonAuto && wave) {
+      const want = wave % BLOOD_MOON_EVERY === 0;
+      if (want !== bloodMoonOn) triggerBloodMoon(want, { wave });
+    }
 
     // 时代切换由 game.js 调 switchEra 驱动，这里不再按波次自动换
 
@@ -2120,6 +2129,123 @@ function clearHazards() {
   craters.length = 0;
 }
 
+/* ----------------------------------------------------------
+ * 血月（点子池「血月」那条，画面归乙，「出 Boss」归甲）
+ *
+ * 先说一个必须交代的限制：这台相机是 45° 俯视、画面顶边只到 z≈-52 的地面高度 y=0，
+ * 屏幕上根本看不到天空。所以"天上一轮红月"这种做法在这个视角下是画不出来的
+ * （试过，月盘投影到 y=-665px，整个在画面外）。血月改用三层在俯视下真看得见的东西：
+ *
+ *   1. 天色：交给昼夜模块的 setBloodMoon——背景/雾往暗血红混、主光偏红、环境光压暗
+ *   2. 天光：一盏从正上方打下来的红光，地面和人群染红（这是俯视下最有"天色变了"感的一层）
+ *   3. 暗角：全屏四边压一层血红 vignette，呼吸式明暗，像镜头被血雾包住
+ *   4. 余烬：零星往上飘的红色火星
+ *
+ * 触发：triggerBloodMoon()，默认每 10 波自动来一次（BLOOD_MOON_EVERY）。
+ * 甲要控节奏就 setBloodMoonAuto(false)，或直接 triggerBloodMoon(false) 关掉。
+ * 开启/关闭都派发 'bloodMoon' 事件（detail { wave, on }），甲按这个刷 Boss。
+ * ---------------------------------------------------------- */
+const BLOOD_MOON_EVERY = 10;
+let bloodMoonOn = false;
+let bloodMoonAuto = true;
+let bloodMoonProgress = 0;   // 视觉自己跟的淡入进度
+let bloodMoonEmber = 0;      // 余烬发射计时
+let bloodMoonLight = null;   // 头顶那盏红光
+
+function ensureBloodMoon() {
+  if (bloodMoonLight || !scene) return;
+  bloodMoonLight = new THREE.DirectionalLight(0xff3a20, 0);
+  bloodMoonLight.position.set(0, 30, -6);   // 正上方偏后，照亮整条战场
+  scene.add(bloodMoonLight);
+}
+
+/* 开 / 关血月。传 false 收掉，传 truthy 开启。
+ * 重复调用同状态不会重播过渡（除非 force）。 */
+export function triggerBloodMoon(on = true, opts = {}) {
+  const want = !!on;
+  if (want === bloodMoonOn && !opts.force) return bloodMoonOn;
+
+  bloodMoonOn = want;
+  ensureBloodMoon();
+  if (dayNight) dayNight.setBloodMoon(want, !!opts.instant);
+  // instant：换图 / 重开时用，画面立刻到位，不走淡入
+  if (opts.instant) {
+    bloodMoonProgress = want ? 1 : 0;
+    if (bloodMoonLight) bloodMoonLight.intensity = want ? 2.4 : 0;
+    if (fxBloodMoon) fxBloodMoon.style.opacity = want ? '0.55' : '0';
+  }
+
+  if (!opts.silent) {
+    if (want) {
+      shake = Math.max(shake, 0.28);
+      pushToast('血月升起 · 它来了', 'blood');
+    } else {
+      pushToast('血月退去', 'blood');
+    }
+  }
+
+  if (eventsRef) {
+    try {
+      eventsRef.dispatchEvent(new CustomEvent('bloodMoon', {
+        detail: { wave: opts.wave || (currentState ? currentState.wave : lastWave), on: want },
+      }));
+    } catch (err) {
+      // 事件异常不影响画面
+    }
+  }
+  return bloodMoonOn;
+}
+
+export function setBloodMoonAuto(on) {
+  bloodMoonAuto = !!on;
+}
+
+export function isBloodMoon() {
+  return bloodMoonOn;
+}
+
+function updateBloodMoon(dt) {
+  if (!scene) return;
+
+  const targetP = bloodMoonOn ? 1 : 0;
+  // 淡入比淡出慢：升起来要有仪式感，收掉要干脆
+  const speed = targetP > bloodMoonProgress ? 0.55 : 0.9;
+  bloodMoonProgress += (targetP - bloodMoonProgress) * Math.min(1, dt * speed * 2.2);
+  if (Math.abs(targetP - bloodMoonProgress) < 0.004) bloodMoonProgress = targetP;
+
+  const p = bloodMoonProgress;
+  if (p <= 0.001 && !bloodMoonLight) return;
+
+  ensureBloodMoon();
+
+  // 天光：强度跟着淡入走，还要有一点呼吸，否则像贴了一层静态红纸
+  if (bloodMoonLight) {
+    const breathe = 0.9 + Math.sin(performance.now() * 0.0013) * 0.1;
+    bloodMoonLight.intensity = 2.4 * p * breathe;
+  }
+
+  // 暗角：用 CSS opacity 推，不走重排
+  if (fxBloodMoon) {
+    const halo = 0.55 + Math.sin(performance.now() * 0.0016) * 0.12;
+    fxBloodMoon.style.opacity = (p * halo).toFixed(3);
+  }
+
+  // 余烬：血月期间从场地各处往上飘，密度压得很低，只是"空气里有东西"
+  if (p > 0.35) {
+    bloodMoonEmber += dt * 7 * p;
+    while (bloodMoonEmber >= 1) {
+      bloodMoonEmber -= 1;
+      spawnBurst(
+        (Math.random() - 0.5) * 17,
+        0.15 + Math.random() * 1.4,
+        -26 + Math.random() * 33,
+        0xff4a30, 1,
+        { speed: 0.25, up: 1.5, spread: 0.5, life: 1.5, gravity: 0.35 }
+      );
+    }
+  }
+}
+
 // 本波已经过去多少秒（界面层用）
 let lastWaveStartTime = 0;
 let currentState = null;
@@ -2187,6 +2313,9 @@ export function syncScene(state, dt) {
     quakeTime = 0;
     quakeCycle = 10 + Math.random() * 6; // 新局第一震别来得太急
     if (dayNight) dayNight.setNight(false, true); // 立刻回到白天，不要跨局慢慢过渡
+    if (bloodMoonOn || bloodMoonProgress > 0.01) {
+      triggerBloodMoon(false, { instant: true, silent: true }); // 血月也一并收掉，别弹提示
+    }
     soldierTierIndex = -1;               // 兵种档位重算（不弹晋升提示）
     tierAnnounced = false;
   }
@@ -2253,6 +2382,7 @@ export function syncScene(state, dt) {
   updateWater(dt);
   updateQuakeCycle(dt, state.status === 'playing');
   updateQuake(dt);
+  updateBloodMoon(dt);
   updateDeathQueue(dt);
   updatePropAnimations(dt);
   updateAdaptiveQuality(dt);

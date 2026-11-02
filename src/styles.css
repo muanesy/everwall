@@ -482,6 +482,32 @@ canvas {
   letter-spacing: 4px;
 }
 
+/* ---------- 血月提示（每 10 波） ---------- */
+
+.fx-toast--blood {
+  color: #ffd2c4;
+  border-color: rgba(255, 96, 60, 0.72);
+  box-shadow: 0 0 24px rgba(220, 50, 26, 0.5);
+  letter-spacing: 3px;
+}
+
+/* ---------- 血月全屏暗角 ----------
+ * 这台相机是 45° 俯视，画面里看不到天空，所以不做"天上红月"，
+ * 用四边压血红的方式让整个画面被血雾包住。opacity 由 visuals.js 每帧推。 */
+
+.fx-bloodmoon {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 6;
+  opacity: 0;
+  background:
+    radial-gradient(ellipse at 50% 46%,
+      rgba(120, 12, 8, 0) 38%,
+      rgba(126, 14, 10, 0.34) 74%,
+      rgba(78, 6, 4, 0.66) 100%);
+}
+
 /* ---------- 兵种档位徽标（左上角，血条下面） ---------- */
 
 .tier {

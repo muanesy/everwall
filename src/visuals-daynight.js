@@ -40,6 +40,20 @@ const NIGHT = {
 const NIGHT_KEY_TINT = new THREE.Color(0x8fb0ff);
 const NIGHT_COLOR = new THREE.Color(0x060a16);
 
+/* 血月（点子池「血月」那条，画面部分归乙）：
+ * 在夜晚的基础上再压一层血红——背景和雾往暗血红混，主光偏红，环境光再暗一档。
+ * 它是一层独立叠加，不改 NIGHT 的倍率表，所以"血月 + 白天"也能成立（血月不必是夜里）。
+ * 过渡比昼夜慢一点（2.2 秒），血月要有点"天色变了"的压迫感。 */
+const BLOOD = {
+  bgMix: 0.62,
+  fogMix: 0.58,
+  keyMix: 0.52,
+  hemi: 0.8,
+  duration: 2.2,
+};
+const BLOOD_COLOR = new THREE.Color(0x2c0608);
+const BLOOD_KEY_TINT = new THREE.Color(0xff5a44);
+
 /* ----------------------------------------------------------
  * 小工具
  * ---------------------------------------------------------- */
@@ -112,6 +126,35 @@ export function createDayNight({ scene, hemi, key, ambient } = {}) {
   let from = 0; // 本次过渡的起点
   let elapsed = 0; // 本次过渡已用时
 
+  // 血月：独立的第二层过渡，叠在昼夜之上
+  let blood = 0;
+  let bloodTarget = 0;
+  let bloodFrom = 0;
+  let bloodElapsed = BLOOD.duration;
+
+  /* 血月染色。必须在 applyProgress 之后调：那边每帧都从基线重算，
+   * 这里只做叠加，所以来回切换颜色不会越染越深。 */
+  function applyBlood(b) {
+    if (b <= 0) return;
+    if (scene && base.bg && isColor(scene.background)) {
+      scene.background.lerp(BLOOD_COLOR, BLOOD.bgMix * b);
+    }
+    if (fog && base.fogColor && isColor(fog.color)) {
+      fog.color.lerp(BLOOD_COLOR, BLOOD.fogMix * b);
+    }
+    if (key && base.keyColor && isColor(key.color)) {
+      key.color.lerp(BLOOD_KEY_TINT, BLOOD.keyMix * b);
+    }
+    if (hemi && base.hemi !== null) {
+      hemi.intensity *= lerp(1, BLOOD.hemi, b);
+    }
+  }
+
+  function repaint() {
+    applyProgress(progress);
+    applyBlood(blood);
+  }
+
   /**
    * 切昼夜。
    * @param {boolean|number} night true = 夜晚，false = 白天，数字 = 0~1 的进度
@@ -124,7 +167,7 @@ export function createDayNight({ scene, hemi, key, ambient } = {}) {
       progress = target;
       from = target;
       elapsed = NIGHT.duration;
-      applyProgress(progress);
+      repaint();
       return;
     }
 
@@ -133,27 +176,64 @@ export function createDayNight({ scene, hemi, key, ambient } = {}) {
     elapsed = 0;
   }
 
+  /**
+   * 血月开关。视觉自己会过渡，甲要的是"什么时候出 Boss"，调完再派自己的事。
+   * @param {boolean|number} on true 开血月 / false 关 / 数字 0~1 强度
+   * @param {boolean} [instant] true 立即到位（换图、重开时用）
+   */
+  function setBloodMoon(on, instant = false) {
+    bloodTarget = isNum(on) ? clamp01(on) : on === true ? 1 : 0;
+
+    if (instant) {
+      blood = bloodTarget;
+      bloodFrom = bloodTarget;
+      bloodElapsed = BLOOD.duration;
+      repaint();
+      return;
+    }
+    bloodFrom = blood;
+    bloodElapsed = 0;
+  }
+
   /** 推进过渡；dt 单位秒。 */
   function update(dt) {
-    if (progress === target) return;
-
     // 单帧最长按 0.25 秒算：切后台回来或掉帧时不要"瞬移"到终点
     const step = isNum(dt) && dt > 0 ? Math.min(dt, 0.25) : 0;
-    elapsed += step;
+    let dirty = false;
 
-    const t = clamp01(elapsed / NIGHT.duration);
-    progress = t >= 1 ? target : from + (target - from) * easeInOut(t);
-    applyProgress(progress);
+    if (progress !== target) {
+      elapsed += step;
+      const t = clamp01(elapsed / NIGHT.duration);
+      progress = t >= 1 ? target : from + (target - from) * easeInOut(t);
+      dirty = true;
+    }
+
+    if (blood !== bloodTarget) {
+      bloodElapsed += step;
+      const t = clamp01(bloodElapsed / BLOOD.duration);
+      blood = t >= 1 ? bloodTarget : bloodFrom + (bloodTarget - bloodFrom) * easeInOut(t);
+      dirty = true;
+    }
+
+    // 只在一层真正变化时才重算，常态静止时不碰材质和灯光
+    if (dirty) repaint();
   }
 
   return {
     setNight,
+    setBloodMoon,
     update,
     /** 0 = 白天，1 = 全黑 */
     getProgress: () => progress,
+    /** 0 = 没有血月，1 = 全红 */
+    getBloodProgress: () => blood,
     /** 目标状态：夜里为 true（过渡途中就已算夜晚，方便逻辑同步） */
     get isNight() {
       return target >= 0.5;
+    },
+    /** 血月是否开着（同样看目标，过渡途中就算） */
+    get isBloodMoon() {
+      return bloodTarget >= 0.5;
     },
     /** 本项目不用销毁场景，留空以免调用方报错；真要清也是一次性页面生命周期 */
     dispose() {},
