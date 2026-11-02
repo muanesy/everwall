@@ -162,7 +162,7 @@ const CONFIG = {
   tankSupport: {
     x: -5.5, z: 9.4,   // 左下方；再叫一辆就摆在它右边 spacing 格处
     spacing: 2.4,      // 第二辆在第一辆右边这么多格
-    shots: 4,          // 一轮打 4 发（原来 3 发，持续时间顺带长了一节）
+    shots: 6,          // 每辆坦克一轮打 6 发（比原来多 2 发）
     shotInterval: 0.7,
     damage: 60,
     radius: 3.9,       // 爆炸范围 3.0 → 3.9，清一片而不是只扫一条
@@ -340,9 +340,8 @@ const CONFIG = {
       { id: 14, name: '召唤者', hp: 2.2, speed: 0.72, touchLoss: 2, score: 8, baseWeight: 0, growth: 0, minWave: 999, summoner: true },
       // 时代 Boss：不参与随机抽签（minWave 999 + boss 标记双保险），
       // 只由 spawnEraBoss() 在切换时代时单独刷一只
-      // hp 60 = 同波普通僵尸的 60 倍（第 5 波约 3120 血、第 21 波约 10800 血）。
-      // 26 倍在后期成型 build 面前撑不了几秒，Boss 没有"分段节点"的分量
-      { id: 10, name: '时代Boss', hp: 60, speed: 0.5, touchLoss: 6, score: 40, baseWeight: 0, growth: 0, minWave: 999, boss: true },
+      // hp 35 = 同波普通僵尸的 35 倍（第 5 波约 1820 血、第 21 波约 6300 血）
+      { id: 10, name: '时代Boss', hp: 35, speed: 0.5, touchLoss: 6, score: 40, baseWeight: 0, growth: 0, minWave: 999, boss: true },
     ],
   },
   wave: {
@@ -3311,7 +3310,9 @@ function updateZombies(dt) {
       z.z >= CONFIG.world.touchZ &&
       Math.abs(z.x - state.player.x) < touchHalf;
 
-    if (z.boss) {
+    // 同时认 boss 标记和 type 10：防止某个生成路径漏了 boss 字段，
+    // 导致 Boss 被当成普通僵尸“贴线即删”
+    if (z.boss || z.type === 10) {
       // 被虫洞 / 击退推回半场以后就停拳，重新走上来会再启动
       if (!touching) {
         z.attacking = false;
@@ -4011,7 +4012,7 @@ function spawnZombie() {
     summonerState: type.summoner ? createSummonerState() : null,
     // 第一次吐之前随机等一会儿，不然一群远程会同时齐射，画面像被人打了一梭子
     shotTimer: type.ranged ? type.ranged.interval * (0.4 + Math.random() * 0.6) : 0,
-    boss: false,
+    boss: !!type.boss || type.id === 10,
   });
 
   if (state.spawnCounts) state.spawnCounts[type.id] += 1;
