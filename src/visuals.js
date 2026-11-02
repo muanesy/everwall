@@ -1228,15 +1228,46 @@ export function switchEra(eraIndex, mapId, opts = {}) {
   return true;
 }
 
-/* 地震：屏幕持续晃动 + 地面落灰（机制触发时机归甲，调一下就有效果）
- * 用法：triggerQuake(2.5); */
+/* 地震：屏幕持续晃动 + 地面落灰 + 地面扬尘圈
+ *
+ * 两种触发方式：
+ *   1. 甲主动调 triggerQuake(2.5)
+ *   2. 自己按周期来（点子池「地震」归乙）：局内每 16~26 秒来一下，
+ *      幅度比炸药桶（0.45）小得多，只是"地在动"的氛围，不抢战斗反馈。
+ *      甲如果想让节奏自己控，调 setQuakeAuto(false) 关掉周期触发。
+ *
+ * 僵尸停顿属于玩法数值，甲要就自己在 triggerQuake 前后加。 */
 let quakeTime = 0;
 let quakeDuration = 0;
+let quakeAuto = true;
+let quakeCycle = 12;   // 开局先给 12 秒安静时间，等玩家摸清节奏再震
+let quakeDust = 0;   // 扬尘圈的计时器（地震期间每 0.3 秒撒一圈）
 
 export function triggerQuake(duration = 2.5) {
   quakeDuration = Math.max(0.4, duration);
   quakeTime = quakeDuration;
   shake = Math.max(shake, 0.35);
+}
+
+export function setQuakeAuto(on) {
+  quakeAuto = !!on;
+  quakeCycle = quakeAuto ? 16 + Math.random() * 10 : 0;
+}
+
+/* 只在局内推进：菜单和结算页不该无缘无故抖 */
+function updateQuakeCycle(dt, playing) {
+  if (!quakeAuto || !playing) return;
+  if (quakeCycle > 0) {
+    quakeCycle -= dt;
+    if (quakeCycle > 0.001) return;
+  }
+  // 场上正震着（甲刚调过）就不叠加，等这一波震完再排下一次
+  if (quakeTime > 0) {
+    quakeCycle = 2;
+    return;
+  }
+  triggerQuake(1.5);
+  quakeCycle = 16 + Math.random() * 10;
 }
 
 /* 洪水：水位从 -2.2 升到 0（level 0~1），半透明水面 + 起伏
@@ -1291,6 +1322,20 @@ function updateQuake(dt) {
   if (Math.random() < dt * 14) {
     spawnBurst((Math.random() - 0.5) * 22, 0.2, -12 + Math.random() * 20, 0x8a7a5e, 3, {
       speed: 1.2, up: 1.6, spread: 0.8, life: 0.8,
+    });
+  }
+
+  // 地面扬起一圈圈土：震感主要靠这个，光晃屏幕容易像相机抖了
+  quakeDust += dt;
+  if (quakeDust >= 0.3) {
+    quakeDust = 0;
+    spawnRing((Math.random() - 0.5) * 16, -20 + Math.random() * 22, 0x9a8a70, 0.9);
+  }
+
+  // 零星碎石子被颠起来
+  if (Math.random() < dt * 5) {
+    spawnBurst((Math.random() - 0.5) * 18, 0.12, -18 + Math.random() * 20, 0x6a6055, 2, {
+      speed: 0.8, up: 2.2, spread: 0.4, life: 0.7, gravity: -9,
     });
   }
 }
@@ -1882,6 +1927,8 @@ export function syncScene(state, dt) {
   if (lastWave > 1 && state.wave === 1) {
     resetBarrels();                      // 桶全部复原
     clearHazards();                      // 陨石坑、地上的火一起清掉
+    quakeTime = 0;
+    quakeCycle = 10 + Math.random() * 6; // 新局第一震别来得太急
     if (dayNight) dayNight.setNight(false, true); // 立刻回到白天，不要跨局慢慢过渡
     soldierTierIndex = -1;               // 兵种档位重算（不弹晋升提示）
     tierAnnounced = false;
@@ -1943,6 +1990,7 @@ export function syncScene(state, dt) {
   if (state.status === 'playing') updateBarrels(dt);
   updateAmbientFx(dt);
   updateWater(dt);
+  updateQuakeCycle(dt, state.status === 'playing');
   updateQuake(dt);
   updateDeathQueue(dt);
   updatePropAnimations(dt);
