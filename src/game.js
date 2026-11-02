@@ -34,6 +34,41 @@ const START_MAP =
   new URLSearchParams(window.location.search).get('map') || 'city';
 
 /* ----------------------------------------------------------
+ * 地图环境事件
+ * 每张地图固定挂一个事件，进入地图时随机落在第 1/2/3 波。
+ * 事件只影响僵尸 + 给玩家一个可躲的负面效果，不做全屏眩晕。
+ * ---------------------------------------------------------- */
+const MAP_ENV = {
+  jungle: 'weather', castle: 'quake', village: 'quake', abbey: 'quake',
+  swamp: 'toxic', city: 'weather', base: 'weather', trench: 'quake',
+  beach: 'weather', warport: 'weather', desert: 'meteor', harbor: 'weather',
+  highway: 'weather', parking: 'quake', snow: 'weather', lab: 'toxic',
+  quarantine: 'toxic', biofactory: 'toxic', moon: 'meteor', station: 'emp',
+  alienwaste: 'meteor', orbitalpad: 'emp', lava: 'lava',
+  voidtemple: 'lava', timeruins: 'quake', blackhole: 'meteor',
+};
+
+const ENV_EVENTS = {
+  quake:   { name: '地震', warn: 3, active: 4 },
+  meteor:  { name: '陨石', warn: 3, active: 2 },
+  weather: { name: '恶劣天气', warn: 3, active: 6 },
+  toxic:   { name: '毒雾', warn: 3, active: 6 },
+  lava:    { name: '熔岩喷发', warn: 3, active: 5 },
+  emp:     { name: '电磁风暴', warn: 3, active: 2.5 },
+};
+
+const WEATHER_KIND = {
+  jungle: 'rain', swamp: 'fog', beach: 'storm', city: 'rain',
+  base: 'dust', warport: 'rain', harbor: 'rain', highway: 'wind',
+  snow: 'snow',
+};
+
+const WEATHER_NAMES = {
+  rain: '暴雨', fog: '浓雾', storm: '风暴', dust: '沙尘',
+  wind: '强风', snow: '暴雪',
+};
+
+/* ----------------------------------------------------------
  * 数值区：调难度和手感只改这里
  * ---------------------------------------------------------- */
 const CONFIG = {
@@ -579,6 +614,13 @@ const state = {
     version: 0,
   },
   upgradeCarry: 0,
+  // 地图环境事件：{ id, wave, phase, timer, spots, weatherKind }
+  envEvent: null,
+  envDebuff: { until: 0, moveMul: 1, fireRateMul: 1, spreadMul: 1 },
+  envZones: [],       // 毒雾/熔岩地面区：{ x, z, radius, kind, until, pct, playerDps }
+  envZoneTick: 0,
+  envSlowMul: 1,      // 恶劣天气期间僵尸移速乘子
+  envWeatherUntil: 0,
   timeScale: 1,
   // 槽位默认全部锁定，抽到对应卡才生效；level 0 = 未解锁，1-5 = 等级
   slots: { siege: false, support: false, closeDefense: false, command: false, summon: false },
@@ -725,6 +767,17 @@ initVisuals(document.getElementById('game-container'), events);
  * 失败不影响游戏——真加载不出来会退化成乘色纯地面。 */
 // 贴图名规则固定是 b-map-{地图id}，和 visuals.js 的 MAPS[].tex 一致
 preloadGroundTexture(`b-map-${START_MAP}`);
+
+// 环境事件陨石：画面层落地时派 meteorImpact，这里结算僵尸和玩家伤害
+events.addEventListener('meteorImpact', (e) => {
+  if (state.status !== 'playing') return;
+  const d = e.detail || {};
+  const radius = Number(d.radius) || 2.6;
+  damageZombiesInRadius(d.x, d.z, radius, 70);
+  if (Math.hypot(state.player.x - d.x, state.player.z - d.z) < radius) {
+    damageArmy(10, 'env');
+  }
+});
 
 // 炸药桶爆炸：乙负责画面，这里按半径结算僵尸伤害
 events.addEventListener('barrelExploded', (e) => {
@@ -898,6 +951,287 @@ function pickEraMapSet(era, preferred = null) {
 }
 
 /* ----------------------------------------------------------
+ * 地图环境事件
+ * ---------------------------------------------------------- */
+function envEventName(ev) {
+  if (!ev) return '';
+  if (ev.id === 'weather') {
+    return WEATHER_NAMES[ev.weatherKind] || ENV_EVENTS.weather.name;
+  }
+  return ENV_EVENTS[ev.id]?.name || '';
+}
+
+function prepareMapEvent() {
+  // 换地图/重开时先清掉上一张图的事件和负面状态
+  if (state.envEvent?.phase === 'active' && state.envEvent.id === 'weather') {
+    emit('envWeatherEnd', {});
+  }
+  state.envEvent = null;
+  state.envZones.length = 0;
+  state.envZoneTick = 0;
+  state.envSlowMul = 1;
+  state.envWeatherUntil = 0;
+  state.envDebuff = { until: 0, moveMul: 1, fireRateMul: 1, spreadMul: 1 };
+
+  const id = MAP_ENV[state.mapId];
+  if (!id || !ENV_EVENTS[id]) return;
+
+  state.envEvent = {
+    id,
+    mapId: state.mapId,
+    wave: 1 + Math.floor(Math.random() * CONFIG.era.everyWaves),
+    phase: 'idle',
+    timer: 0,
+    spots: [],
+    weatherKind: id === 'weather'
+      ? (WEATHER_KIND[state.mapId] || 'rain')
+      : null,
+  };
+}
+
+// 测试面板用：立刻触发当前地图的环境事件（测试模式不再等随机波次）
+function triggerEnvEventNow() {
+  if (state.status !== 'playing') return false;
+  const ev = state.envEvent;
+  if (!ev || ev.phase === 'warning' || ev.phase === 'active' ||
+      ev.mapId !== state.mapId) {
+    prepareMapEvent();
+  }
+  const next = state.envEvent;
+  if (!next || next.phase === 'warning' || next.phase === 'active') return false;
+
+  next.forced = true;
+  next.phase = 'warning';
+  next.timer = ENV_EVENTS[next.id].warn;
+  buildEnvSpots(next);
+  emit('skillNotice', {
+    text: `环境事件：${envEventName(next)} · ${next.timer} 秒后生效`,
+    kind: 'era',
+  });
+  for (const spot of next.spots) {
+    emit('envWarning', {
+      x: spot.x,
+      z: spot.z,
+      radius: spot.radius,
+      kind: spot.kind,
+    });
+  }
+  return true;
+}
+
+function buildEnvSpots(ev) {
+  const half = CONFIG.world.halfWidth;
+  const clampX = (x) => Math.max(-half + 1, Math.min(half - 1, x));
+  const playerSpot = {
+    x: clampX(state.player.x),
+    z: state.player.z - 1.5,
+    radius: 2.6,
+    kind: 'meteor',
+  };
+
+  if (ev.id === 'meteor') {
+    const points = topDensestPoints(2);
+    ev.spots = [
+      playerSpot,
+      ...points.map((p) => ({ x: p.x, z: p.z, radius: 2.6, kind: 'meteor' })),
+    ];
+    return;
+  }
+
+  if (ev.id === 'toxic' || ev.id === 'lava') {
+    const radius = ev.id === 'toxic' ? 2.5 : 2.4;
+    const points = topDensestPoints(2);
+    const playerZone = {
+      x: clampX(state.player.x + (Math.random() * 2 - 1) * 2.4),
+      z: state.player.z - 1.5,
+      radius,
+      kind: ev.id,
+    };
+    ev.spots = [
+      playerZone,
+      ...points.map((p) => ({ x: p.x, z: p.z, radius, kind: ev.id })),
+    ];
+    return;
+  }
+
+  ev.spots = [];
+}
+
+function setEnvDebuff(moveMul, fireRateMul, spreadMul, duration) {
+  state.envDebuff = {
+    until: state.time + duration,
+    moveMul,
+    fireRateMul,
+    spreadMul,
+  };
+}
+
+function startEnvActive(ev) {
+  const now = state.time;
+
+  if (ev.id === 'quake') {
+    setEnvDebuff(0.8, 1, 1.5, 3);
+    for (let i = state.zombies.length - 1; i >= 0; i--) {
+      const z = state.zombies[i];
+      z.envStunUntil = now + (z.boss ? 0.4 : 0.8);
+      const maxHp = Math.max(1, z.maxHp || z.hp);
+      damageZombieAt(i, maxHp * (z.boss ? 0.025 : 0.05));
+    }
+    emit('envQuake', {});
+    return;
+  }
+
+  if (ev.id === 'meteor') {
+    for (const spot of ev.spots) {
+      emit('meteor', { x: spot.x, z: spot.z });
+    }
+    return;
+  }
+
+  if (ev.id === 'weather') {
+    state.envSlowMul = 0.85;
+    state.envWeatherUntil = now + ENV_EVENTS.weather.active;
+    setEnvDebuff(1, 0.9, 1, ENV_EVENTS.weather.active);
+    emit('envWeatherStart', { kind: ev.weatherKind });
+    return;
+  }
+
+  if (ev.id === 'toxic' || ev.id === 'lava') {
+    const active = ENV_EVENTS[ev.id].active;
+    for (const spot of ev.spots) {
+      state.envZones.push({
+        x: spot.x,
+        z: spot.z,
+        radius: spot.radius,
+        kind: ev.id,
+        until: now + active,
+        pct: ev.id === 'toxic' ? 0.02 : 0.04,
+        playerDps: ev.id === 'toxic' ? 1 : 2,
+      });
+    }
+    emit('envZoneStart', { zones: state.envZones.slice(), duration: active });
+    return;
+  }
+
+  if (ev.id === 'emp') {
+    setEnvDebuff(1, 0.75, 1, 2);
+    for (const z of state.zombies) {
+      z.envStunUntil = now + (z.boss ? 0.5 : 1.5);
+    }
+    emit('envEmp', {});
+  }
+}
+
+function updateEnvZones(dt) {
+  if (!state.envZones.length) return;
+
+  state.envZones = state.envZones.filter((z) => state.time < z.until);
+  if (!state.envZones.length) return;
+
+  // 僵尸在毒雾/熔岩里持续掉最大生命
+  for (let i = state.zombies.length - 1; i >= 0; i--) {
+    const z = state.zombies[i];
+    let pct = 0;
+    for (const zone of state.envZones) {
+      const dx = z.x - zone.x;
+      const dz = z.z - zone.z;
+      if (dx * dx + dz * dz <= zone.radius * zone.radius) {
+        pct = Math.max(pct, zone.pct);
+      }
+    }
+    if (pct <= 0) continue;
+    const maxHp = Math.max(1, z.maxHp || z.hp);
+    damageZombieAt(i, maxHp * pct * dt);
+  }
+
+  // 玩家站在毒雾/熔岩里每秒掉兵
+  let playerDps = 0;
+  for (const zone of state.envZones) {
+    const dx = state.player.x - zone.x;
+    const dz = state.player.z - zone.z;
+    if (dx * dx + dz * dz <= zone.radius * zone.radius) {
+      playerDps = Math.max(playerDps, zone.playerDps);
+    }
+  }
+
+  if (playerDps <= 0) {
+    state.envZoneTick = 0;
+    return;
+  }
+
+  state.envZoneTick -= dt;
+  if (state.envZoneTick <= 0) {
+    state.envZoneTick = 1;
+    damageArmy(playerDps, 'env');
+  }
+}
+
+function endEnvEvent(ev) {
+  if (ev.id === 'weather') emit('envWeatherEnd', {});
+  state.envZones.length = 0;
+  state.envZoneTick = 0;
+  state.envSlowMul = 1;
+  state.envWeatherUntil = 0;
+  state.envDebuff = { until: 0, moveMul: 1, fireRateMul: 1, spreadMul: 1 };
+  ev.phase = 'done';
+  ev.timer = 0;
+  emit('envEventEnd', { id: ev.id });
+}
+
+function updateEnvEvent(dt) {
+  if (state.upgradePanel.active) return;
+  if (state.testMode && !state.envEvent?.forced) return;
+  if (!state.envEvent || state.status !== 'playing') return;
+
+  const ev = state.envEvent;
+  const db = state.envDebuff;
+  if (db.until > 0 && state.time >= db.until) {
+    state.envDebuff = { until: 0, moveMul: 1, fireRateMul: 1, spreadMul: 1 };
+  }
+  if (state.envWeatherUntil > 0 && state.time >= state.envWeatherUntil) {
+    state.envSlowMul = 1;
+    state.envWeatherUntil = 0;
+  }
+
+  const mapWave = ((state.wave - 1) % CONFIG.era.everyWaves) + 1;
+
+  if (ev.phase === 'idle') {
+    if (mapWave !== ev.wave) return;
+    ev.phase = 'warning';
+    ev.timer = ENV_EVENTS[ev.id].warn;
+    buildEnvSpots(ev);
+    emit('skillNotice', {
+      text: `环境事件：${envEventName(ev)} · ${ev.timer} 秒后生效`,
+      kind: 'era',
+    });
+    for (const spot of ev.spots) {
+      emit('envWarning', {
+        x: spot.x,
+        z: spot.z,
+        radius: spot.radius,
+        kind: spot.kind,
+      });
+    }
+    return;
+  }
+
+  if (ev.phase === 'warning') {
+    ev.timer -= dt;
+    if (ev.timer > 0) return;
+    ev.phase = 'active';
+    ev.timer = ENV_EVENTS[ev.id].active;
+    startEnvActive(ev);
+    return;
+  }
+
+  if (ev.phase === 'active') {
+    updateEnvZones(dt);
+    ev.timer -= dt;
+    if (ev.timer <= 0) endEnvEvent(ev);
+  }
+}
+
+/* ----------------------------------------------------------
  * 开局 / 复活
  * ---------------------------------------------------------- */
 function resetState(opts = {}) {
@@ -960,6 +1294,12 @@ function resetState(opts = {}) {
   state.upgradePanel.picks = 0;
   state.upgradePanel.timeLeft = 0;
   state.upgradeCarry = 0;
+  state.envEvent = null;
+  state.envDebuff = { until: 0, moveMul: 1, fireRateMul: 1, spreadMul: 1 };
+  state.envZones.length = 0;
+  state.envZoneTick = 0;
+  state.envSlowMul = 1;
+  state.envWeatherUntil = 0;
   state.timeScale = 1;
 
   state.slots.siege = false;
@@ -1048,6 +1388,7 @@ function resetState(opts = {}) {
   // 开局用的地图也要预载贴图：玩家在开始页已经选好图了，
   // 这里如果还没加载完，会先出现灰地面。预载是幂等的，重复调没代价。
   preloadGroundTexture(`b-map-${state.mapId}`);
+  prepareMapEvent();
 
   // 把画面切到开局时代和地图，静默切换，不弹提示
   switchEra(state.era, state.mapId, { fade: false, silent: true });
@@ -1100,6 +1441,10 @@ function returnToMenu() {
   state.card.choices = [];
   state.upgradePanel.active = false;
   state.upgradePanel.picks = 0;
+  state.envEvent = null;
+  state.envZones.length = 0;
+  state.envDebuff = { until: 0, moveMul: 1, fireRateMul: 1, spreadMul: 1 };
+  state.envSlowMul = 1;
   state.timeScale = 1;
   state.skillUseCd = 0;
   input.left = false;
@@ -2752,10 +3097,11 @@ function syncEraWithWave(wave) {
     const map = state.eraMaps[0] || state.mapId || START_MAP;
     state.mapId = map;
     state.usedMaps.push(map);
+    prepareMapEvent();
 
     // 旧时代没打完的技能次数折算成兵
     convertExpiredSkills();
-      ensureSummonSlot();
+    ensureSummonSlot();
 
     // 只换时代配色和地图，场上僵尸、子弹、屏障全部保留
     switchEra(eraIndex, map);
@@ -2795,6 +3141,9 @@ function syncEraWithWave(wave) {
       kind: 'era',
     });
   }
+
+  // 每张地图重新抽一次环境事件；同一张图重复出现也要重新抽
+  prepareMapEvent();
 
   // 每换一张地图一个 Boss；场上已经有一只时 spawnEraBoss 会自己跳过
   spawnEraBoss(eraIndex);
@@ -2849,6 +3198,7 @@ function update(dt) {
     if (floodLevel >= CONFIG.flood.slowFrom) emit('floodRise', { level: floodLevel });
   }
 
+  updateEnvEvent(dt);
   updateFormation();
   updatePlayer(dt);
   updateFiring(dt);
@@ -2896,8 +3246,10 @@ function updatePlayer(dt) {
   }
 
   if (dir !== 0) {
+    const envMove =
+      state.envDebuff.until > state.time ? state.envDebuff.moveMul : 1;
     const nextX = clamp(
-      state.player.x + dir * CONFIG.player.speed * state.upgrades.moveSpeed * dt,
+      state.player.x + dir * CONFIG.player.speed * state.upgrades.moveSpeed * envMove * dt,
       -CONFIG.world.halfWidth,
       CONFIG.world.halfWidth
     );
@@ -2965,9 +3317,11 @@ function updateFiring(dt) {
   const pickDamageMul = picked ? picked.damageMul : 1;
   const pickBullets = picked ? picked.bullets : 1;
 
+  const envRate =
+    state.envDebuff.until > state.time ? state.envDebuff.fireRateMul : 1;
   const effInterval =
     (baseInterval * weapon.fireIntervalMul * pickIntervalMul) /
-    (state.upgrades.fireRate * buffMul * boostRate);
+    (state.upgrades.fireRate * buffMul * boostRate * envRate);
   const totalRate = baseCount / effInterval; // 每秒多少发
   const interval = shooters / totalRate;
 
@@ -2979,7 +3333,10 @@ function updateFiring(dt) {
 
   const front = state.formation;
   const width = Math.max(0, (front.frontCount - 1) * CONFIG.formation.spacing);
-  const jitter = CONFIG.weapon.jitterBase * CONFIG.player.bulletSpeed;
+  const envSpread =
+    state.envDebuff.until > state.time ? state.envDebuff.spreadMul : 1;
+  const jitter =
+    CONFIG.weapon.jitterBase * CONFIG.player.bulletSpeed * envSpread;
 
   const origins = [];
   const offsets = shooterOffsets(shooters, width);
@@ -3745,6 +4102,9 @@ function updateZombies(dt) {
     // 被黑洞吸住：只跟着黑洞移动，不自己前进、不横移、不啃墙
     if (z.suckUntil && state.time < z.suckUntil) continue;
 
+    // 环境事件（地震/电磁风暴）造成的短暂停顿
+    if ((z.envStunUntil || 0) > state.time) continue;
+
     // 友方僵尸拦住敌人：停下互殴，不再往前走
     const blocker = state.friendlyZombies.find(
       (f) => Math.abs(f.x - z.x) < 0.9 && Math.abs(f.z - z.z) < 0.9
@@ -3760,7 +4120,10 @@ function updateZombies(dt) {
     const plagueSlow =
       (z.plagueUntil || 0) > state.time ? CONFIG.plague.slowMul : 1;
     const slowMul =
-      baseSlow * (inNapalm ? CONFIG.napalmWall.slowMul : 1) * plagueSlow;
+      baseSlow *
+      (inNapalm ? CONFIG.napalmWall.slowMul : 1) *
+      plagueSlow *
+      state.envSlowMul;
 
     const bar = state.barricade;
     const cfg = CONFIG.barricade;
@@ -3901,6 +4264,9 @@ function updateZombies(dt) {
   const touchHalf = formationHalfWidth();
   for (let i = state.zombies.length - 1; i >= 0; i--) {
     const z = state.zombies[i];
+    // 被环境事件定住的僵尸不结算贴线攻击
+    if ((z.envStunUntil || 0) > state.time) continue;
+
     const touching =
       z.z >= CONFIG.world.touchZ &&
       Math.abs(z.x - state.player.x) < touchHalf;
@@ -5288,6 +5654,7 @@ initUI(state, {
   getSkillBag,
   getUpgradePool: buildUpgradePool,
   chooseUpgrade,
+  triggerEnvEvent: triggerEnvEventNow,
 });
 
 /* ----------------------------------------------------------

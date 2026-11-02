@@ -243,6 +243,7 @@ let playerShadow = null;
 let playerRing = null;     // 玩家脚下的指挥光环
 let buffRing = null;       // 基因爆发的绿色攻速光环
 let commandMarkGroup = null; // 指挥槽的集火标记
+let envFogBackup = null;     // 恶劣天气临时改雾，结束时恢复
 let lastPlayerX = 0;
 let soldierMesh = null;
 let playerVisual = null; // 玩家的真模型（加载完成后替代蓝方块）
@@ -1315,6 +1316,67 @@ export function initVisuals(container, events) {
     spawnImplosion(d.x, d.z, 0x8a5cff, d.radius || 3);
     spawnRing(d.x, d.z, 0xc9a6ff, 0.7);
     shake = Math.max(shake, 0.4);
+  });
+
+  // 环境事件警告圈
+  events.addEventListener('envWarning', (e) => {
+    const d = e.detail;
+    const color =
+      d.kind === 'toxic' ? 0x8fe36a :
+      d.kind === 'lava' ? 0xff6a2a : 0xffb060;
+    spawnRing(d.x, d.z, color, 0.65);
+  });
+
+  // 毒雾/熔岩地面区：直接铺一层持续的区域
+  events.addEventListener('envZoneStart', (e) => {
+    const d = e.detail;
+    for (const z of d.zones || []) {
+      spawnGroundArea(
+        z.x,
+        z.z,
+        z.radius,
+        z.kind === 'lava' ? 0xff6a2a : 0x8fe36a,
+        d.duration || 5
+      );
+    }
+  });
+
+  events.addEventListener('envQuake', () => {
+    triggerQuake(3);
+  });
+
+  events.addEventListener('envEmp', () => {
+    spawnRing(0, 6, 0x6fa8ff, 1.3);
+    spawnFlash(0x6fa8ff, 0.3);
+    shake = Math.max(shake, 0.35);
+  });
+
+  // 恶劣天气：临时把雾拉近，结束后恢复原状
+  events.addEventListener('envWeatherStart', (e) => {
+    if (!scene || !scene.fog) return;
+    const kind = e.detail?.kind || 'rain';
+    const colors = {
+      rain: 0x1a2430, fog: 0x8a939c, storm: 0x141c26,
+      dust: 0x6b5438, wind: 0x3a424c, snow: 0xaebccc,
+    };
+    if (!envFogBackup) {
+      envFogBackup = {
+        near: scene.fog.near,
+        far: scene.fog.far,
+        color: scene.fog.color.clone(),
+      };
+    }
+    scene.fog.color.setHex(colors[kind] || 0x1a2430);
+    scene.fog.near = 8;
+    scene.fog.far = 46;
+  });
+
+  events.addEventListener('envWeatherEnd', () => {
+    if (!scene || !scene.fog || !envFogBackup) return;
+    scene.fog.near = envFogBackup.near;
+    scene.fog.far = envFogBackup.far;
+    scene.fog.color.copy(envFogBackup.color);
+    envFogBackup = null;
   });
 
   events.addEventListener('friendlyDie', (e) => {
@@ -2606,7 +2668,9 @@ export function triggerMeteor(x, z) {
   if (meteors.length >= 3) return false;
 
   const px = Math.max(-9, Math.min(9, Number(x) || 0));
-  const pz = Math.max(-26, Math.min(4, Number(z) || 0));
+  // 环境事件允许陨石落在玩家阵型附近（z 最大约 10），
+  // 否则玩家永远处在预警范围外，事件对玩家没有压力
+  const pz = Math.max(-26, Math.min(10, Number(z) || 0));
 
   // 落点太近就把旧的那颗撤掉，别让两个预警圈叠在一起互相干扰
   for (let i = meteors.length - 1; i >= 0; i--) {

@@ -628,6 +628,7 @@ function buildDom() {
     <div class="test-panel__section test-panel__actions">
       <button type="button" data-test-spawn>刷 20 只僵尸</button>
       <button type="button" data-test-clear>清空僵尸</button>
+      <button type="button" data-test-env>触发环境事件</button>
     </div>
   `;
   document.body.appendChild(testPanel);
@@ -833,6 +834,13 @@ function bindEvents() {
   if (clearBtn) {
     clearBtn.addEventListener('click', () => {
       if (actions && actions.clearZombies) actions.clearZombies();
+    });
+  }
+
+  const envBtn = els.testPanel.querySelector('[data-test-env]');
+  if (envBtn) {
+    envBtn.addEventListener('click', () => {
+      if (actions && actions.triggerEnvEvent) actions.triggerEnvEvent();
     });
   }
 
