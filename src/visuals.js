@@ -3528,17 +3528,15 @@ function makeBulletMesh() {
     new THREE.Color(eraBulletTint[0], eraBulletTint[1], eraBulletTint[2])
   );
 
-  const core = new THREE.Mesh(
-    new THREE.CapsuleGeometry(0.055, 0.3, 3, 8),
-    new THREE.MeshBasicMaterial({ color: bulletColor })
-  );
-  core.rotation.x = Math.PI / 2; // 胶囊默认沿 y，转成沿 z 飞
+  const core = buildBulletCore(currentEra ? currentEra.id : 0, bulletColor);
   group.add(core);
 
+  // 拖尾：跟随时代色，给弹道一点"速度感"
   const trail = new THREE.Mesh(
     new THREE.PlaneGeometry(0.22, 0.95),
     new THREE.MeshBasicMaterial({
       map: ensureTrailTexture(),
+      color: bulletColor,
       transparent: true,
       opacity: 0.55,
       blending: THREE.AdditiveBlending,
@@ -3550,6 +3548,92 @@ function makeBulletMesh() {
   group.add(trail);
 
   return group;
+}
+
+/* 按时代决定弹体外观（全部朝 -z 飞行，与子弹 vz 方向一致）：
+ *   0 中世纪 → 箭矢（木杆 + 钢镞 + 三片尾羽）
+ *   1 二战   → 拉长黄铜曳光弹
+ *   2 现代   → 白色曳光弹
+ *   3 后现代 → 青色能量弹
+ *   4 星际   → 等离子球
+ *   5 终幕   → 赤金激光束（细长发光柱）
+ * 中世纪箭矢是用户点名要的"中世纪箭武器"的画面落地；其余时代顺手做了差异化，
+ * 让六时代弹道各有辨识度。模型素材（b-weapon-*.glb）已备齐，士兵手持武器升级以后再说。 */
+function buildBulletCore(eraId, bulletColor) {
+  const core = new THREE.Group();
+
+  if (eraId === 0) {
+    // 中世纪箭矢
+    const shaft = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.022, 0.022, 0.55, 6),
+      new THREE.MeshBasicMaterial({ color: 0x7a5230 })
+    );
+    shaft.rotation.x = Math.PI / 2; // 杆身沿 z
+    core.add(shaft);
+
+    const head = new THREE.Mesh(
+      new THREE.ConeGeometry(0.06, 0.16, 8),
+      new THREE.MeshBasicMaterial({ color: 0xd8dde3 })
+    );
+    head.rotation.x = -Math.PI / 2; // 锥尖朝 -z（飞行方向）
+    head.position.z = -0.34;
+    core.add(head);
+
+    // 三片尾羽，按时代色，绕杆身分散
+    const fletchMat = new THREE.MeshBasicMaterial({ color: bulletColor, side: THREE.DoubleSide });
+    for (let i = 0; i < 3; i++) {
+      const f = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.1), fletchMat);
+      const a = (i / 3) * Math.PI * 2;
+      f.position.set(Math.cos(a) * 0.03, Math.sin(a) * 0.03, 0.26);
+      f.rotation.z = a;
+      f.rotation.y = Math.PI / 2;
+      core.add(f);
+    }
+    return core;
+  }
+
+  if (eraId === 4) {
+    // 星际：等离子球
+    const orb = new THREE.Mesh(
+      new THREE.SphereGeometry(0.09, 12, 12),
+      new THREE.MeshBasicMaterial({ color: bulletColor })
+    );
+    core.add(orb);
+    return core;
+  }
+
+  if (eraId === 5) {
+    // 终幕：激光束（细长发光柱）
+    const beam = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.03, 0.03, 1.1, 8),
+      new THREE.MeshBasicMaterial({ color: bulletColor })
+    );
+    beam.rotation.x = Math.PI / 2;
+    core.add(beam);
+    return core;
+  }
+
+  if (eraId === 3) {
+    // 后现代：能量弹（略粗的胶囊）
+    const bolt = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.06, 0.32, 3, 8),
+      new THREE.MeshBasicMaterial({ color: bulletColor })
+    );
+    bolt.rotation.x = Math.PI / 2;
+    core.add(bolt);
+    return core;
+  }
+
+  // 二战(1) / 现代(2)：标准曳光弹，二战略长一点更有"重弹"感
+  const len = eraId === 1 ? 0.42 : 0.3;
+  const radius = eraId === 1 ? 0.06 : 0.055;
+  const round = new THREE.Mesh(
+    new THREE.CapsuleGeometry(radius, len, 3, 8),
+    new THREE.MeshBasicMaterial({ color: bulletColor })
+  );
+  round.rotation.x = Math.PI / 2;
+  core.add(round);
+  return core;
 }
 
 /* ----------------------------------------------------------
