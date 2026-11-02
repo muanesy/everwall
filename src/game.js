@@ -340,6 +340,13 @@ const CONFIG = {
     rewardSoldiers: 8,   // 击败奖励：加兵
     rewardScore: 30,     // 击败奖励：额外分数（types 里的 score 40 会另算）
     toast: true,
+    // 打到防线后的连续攻击：Boss 不再"碰一下就消失"，而是站在线上反复出拳。
+    // 每一拳扣 20 兵，且必须等上一拳的动作演完才打下一拳（节奏由动画驱动）
+    attackLoss: 20,      // 每拳扣多少兵
+    attackAnim: 1.2,     // 一拳的动作要播多久。Boss 的出拳片段原始长度是 4.8 秒，
+                         // 直接播会变成"举着拳头晃半天"，所以按这个秒数做时间缩放
+    attackFallback: 1.6, // 拿不到动画结束回调时的兜底间隔（模型没加载也能按这个节奏打）
+    attackGap: 0.15,     // 一拳演完到下一拳之间的最短停顿
   },
   // 洪水（点子池「洪水上涨」）：水位随波次上升，漫过脚踝后僵尸变慢
   flood: {
@@ -664,6 +671,20 @@ events.addEventListener('zombieDie', (e) => {
     z: d.z,
     soldiers: CONFIG.boss.rewardSoldiers,
   });
+});
+
+// Boss 出拳动画演完了：画面层播完那个动作才派这条，玩法层据此允许下一拳。
+// 拿不到这条（模型没加载 / 没有出拳动作）时会走 attackFallback 的兜底间隔。
+events.addEventListener('bossAttackDone', (e) => {
+  const id = e.detail && e.detail.id;
+  const z = state.zombies.find((zb) => zb.id === id);
+  if (!z || !z.boss || !z.attackAnimating) return;
+
+  // 只留一个很短的收招停顿就开下一拳，别让动作接得太生硬
+  z.attackAnimUntil = Math.min(
+    z.attackAnimUntil,
+    state.time + CONFIG.boss.attackGap
+  );
 });
 
 /* ----------------------------------------------------------
@@ -1132,6 +1153,8 @@ if (typeof window !== 'undefined') {
   window.__useSkill = useSkill;
   window.__skillBag = getSkillBag;
   window.__convertExpiredSkills = convertExpiredSkills;
+  // 事件总线：排查"某条事件到底派没派"时只能靠它，控制台里 __events.addEventListener(...)
+  window.__events = events;
 }
 
 /* ----------------------------------------------------------
@@ -3108,14 +3131,36 @@ function updateZombies(dt) {
     emit('zombieDie', { x: z.x, z: z.z, type: z.type });
   }
 
-  // 结算：碰到士兵扣 1
+  // 结算：普通僵尸碰到士兵就消失并扣兵；Boss 不消失，改成站在线上连续出拳
+  const touchHalf = formationHalfWidth();
   for (let i = state.zombies.length - 1; i >= 0; i--) {
     const z = state.zombies[i];
-
-    if (
+    const touching =
       z.z >= CONFIG.world.touchZ &&
-      Math.abs(z.x - state.player.x) < formationHalfWidth()
-    ) {
+      Math.abs(z.x - state.player.x) < touchHalf;
+
+    if (z.boss) {
+      // 被虫洞 / 击退推回半场以后就停拳，重新走上来会再启动
+      if (!touching) {
+        z.attacking = false;
+        z.attackAnimating = false;
+        continue;
+      }
+      // 测试模式：打不死也不扣兵，方便反复观察技能
+      if (state.testMode) continue;
+
+      if (!z.attacking) {
+        z.attacking = true;
+        z.attackAnimating = false;
+        z.attackCount = 0;
+        emit('bossReachLine', { id: z.id, x: z.x, z: z.z });
+      }
+
+      advanceBossAttack(z);
+      continue;
+    }
+
+    if (touching) {
       // 测试模式：僵尸贴到士兵也不消失，方便继续测试技能
       if (state.testMode) continue;
 
@@ -3123,8 +3168,35 @@ function updateZombies(dt) {
       damageArmy(z.touchLoss, 'touch');
       continue;
     }
-
   }
+}
+
+/* Boss 的连续攻击：一拳演完才打下一拳。
+ * 节奏交给动画驱动 —— 画面层播完出拳动作派 bossAttackDone，这里才允许下一拳；
+ * 模型没加载 / 没有出拳动作时退回 CONFIG.boss.attackFallback 的固定间隔。
+ * 这样既不会"碰一下就秒消失"，也不会一帧连扣好几次兵。 */
+function advanceBossAttack(z) {
+  if (z.attackAnimating) {
+    if (state.time < (z.attackAnimUntil || 0)) return;
+    z.attackAnimating = false;
+  }
+
+  const cfg = CONFIG.boss;
+  z.attackAnimating = true;
+  z.attackAnimUntil = state.time + cfg.attackFallback;
+  z.attackCount = (z.attackCount || 0) + 1;
+
+  damageArmy(cfg.attackLoss, 'boss');
+  emit('bossAttack', {
+    id: z.id,
+    type: z.type,
+    x: z.x,
+    z: z.z,
+    count: z.attackCount,
+    // 告诉画面层这一拳要播多久：Boss 的出拳片段原长 4.8 秒，
+    // 由玩法层统一给时长、画面层做时间缩放，节奏才不会各算各的
+    animSeconds: cfg.attackAnim,
+  });
 }
 
 // 召唤槽：造一个友方僵尸

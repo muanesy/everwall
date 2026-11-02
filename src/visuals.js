@@ -704,7 +704,29 @@ function spawnModel(proto, faceDir) {
       }
       animMixers.add(mixer);
     }
-    return { root, mixer, walkAction, attackAction, deathAction, roarAction, damageAction, attacking: false };
+    const vis = { root, mixer, walkAction, attackAction, deathAction, roarAction, damageAction, attacking: false, zombieId: null };
+
+    // 出拳动作演完的那一下：Boss 的攻击节奏靠这条同步回玩法层
+    // （state 里只在收到 bossAttackDone 之后才允许打下一拳）
+    if (mixer) {
+      mixer.addEventListener('finished', (ev) => {
+        if (!attackAction || ev.action !== attackAction) return;
+
+        // 收拳：回到走路（站原地踏步），等下一拳再 reset 重播
+        if (walkAction) {
+          walkAction.reset();
+          walkAction.play();
+          walkAction.crossFadeFrom(attackAction, 0.2, false);
+        }
+        if (eventsRef && vis.zombieId != null) {
+          eventsRef.dispatchEvent(
+            new CustomEvent('bossAttackDone', { detail: { id: vis.zombieId } })
+          );
+        }
+      });
+    }
+
+    return vis;
   } catch (err) {
     console.warn('[visuals] 模型克隆失败：', err);
     return null;
@@ -1010,6 +1032,40 @@ export function initVisuals(container, events) {
 
   events.addEventListener('bulletPierce', (e) => {
     spawnRing(e.detail.x, e.detail.z, 0xb06bff, 0.16);
+  });
+
+  // Boss 出拳：单发播一次 Punch（LoopOnce），播完派 bossAttackDone 通知玩法层开下一拳。
+  // 没有模型或没有出拳动作时不派 done，让玩法层按 attackFallback 的固定间隔继续
+  events.addEventListener('bossAttack', (e) => {
+    const d = e.detail || {};
+    const entry = zombieMeshes.get(d.id);
+    const vis = entry && entry.vis;
+    if (!vis || !vis.attackAction) return;
+
+    const act = vis.attackAction;
+    // Boss 的出拳片段是 4.8 秒的超长动作（整个动捕包共用同一条时间轴），
+    // 按玩法层给的时长做时间缩放，才能"一拳就是一拳"，也才演得完、派得出 done
+    const target = d.animSeconds > 0 ? d.animSeconds : 1.2;
+    act.timeScale = act.getClip().duration / target;
+
+    act.setLoop(THREE.LoopOnce, 1);
+    act.clampWhenFinished = true;
+    act.reset();
+    act.setEffectiveWeight(1);
+    // 顺序很关键：先 play 再 crossFade，否则淡入没有起点，权重会一直是 0
+    act.play();
+    if (vis.walkAction) act.crossFadeFrom(vis.walkAction, 0.1, false);
+    vis.attacking = true;
+
+    // 拳头砸在防线上的反馈：脚下扬尘 + 一道红色冲击环 + 震屏
+    spawnRing(d.x, d.z, 0xff5a4a, 0.55);
+    spawnBurst(d.x, 0.6, d.z, 0xff8a5a, 10, {
+      speed: 2.2,
+      up: 1.6,
+      spread: 0.6,
+      life: 0.45,
+    });
+    shake = Math.max(shake, 0.5);
   });
 
   events.addEventListener('slotStrike', (e) => {
@@ -3088,6 +3144,8 @@ function syncZombies(state, dt) {
           modelLib.zombies[z.type] ||
           modelLib.zombies[0];
         const vis = spawnModel(proto, 0); // 面朝玩家（+z）
+        // 记下 id：出拳动作演完时要用它派 bossAttackDone 回玩法层
+        if (vis) vis.zombieId = z.id;
         entry = vis
           ? { isModel: true, vis }
           : { isModel: false, mesh: makeZombieMesh(z.type) };
@@ -3146,9 +3204,15 @@ function syncZombies(state, dt) {
       root.rotation.z += (targetTilt - root.rotation.z) * Math.min(1, dt * 14);
 
       // 走 ↔ 攻击切换：贴近防线（touchZ=8.2 之前一小段）就开始挥拳挠阵，
-      // 每种类型拳速不同（大块头慢而重、快鬼连挠）；切进攻击的瞬间吼一声
+      // 每种类型拳速不同（大块头慢而重、快鬼连挠）；切进攻击的瞬间吼一声。
+      // Boss 例外：它的拳头由玩法层的 bossAttack 事件单发驱动，
+      // 不能在这里循环播，否则会变成一个永远在挥拳的动画，节奏和扣兵对不上
       const vis = entry.vis;
-      if (vis.attackAction) {
+      const isBossVis = !!(ZOMBIE_LOOKS[z.type] && ZOMBIE_LOOKS[z.type].isBoss);
+      // Boss 整块跳过：它的拳头由玩法层的 bossAttack 事件单发驱动。
+      // 如果让它走下面这套自动切换，那个 `else if` 会在出拳的下一帧
+      // 把动作淡回走路 —— 出拳永远演不完，bossAttackDone 也就永远等不到
+      if (vis.attackAction && !isBossVis) {
         const wantAttack = z.z >= ZOMBIE_ATK_Z;
         if (wantAttack && !vis.attacking) {
           vis.attacking = true;
@@ -5163,6 +5227,9 @@ const slotVisuals = new Map();
 // 调试出口：和 game.js 的 window.__state 一套风格。
 // 槽位可见性出问题时只能靠它查（模型是在 renderer 内部建的，控制台拿不到）
 if (typeof window !== 'undefined') window.__slotVisuals = slotVisuals;
+
+// 僵尸渲染表：排查"这个僵尸是模型还是色块""到底有没有出拳动作"时只能靠它
+if (typeof window !== 'undefined') window.__zombieVisuals = zombieMeshes;
 
 function initSlots() {
   for (const s of SLOT_DEFS) {
