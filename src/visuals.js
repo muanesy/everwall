@@ -195,7 +195,7 @@ const GROUND_Z = -14;
 
 // 路障位置和尺寸：和 game.js 的 CONFIG.barricade 保持一致
 const BARRICADE_X = 1.7;
-const BARRICADE_Z = 3.5;
+const BARRICADE_Z = 0;
 const BARRICADE_WIDTH = 4.2;
 
 let renderer = null;
@@ -912,6 +912,18 @@ export function initVisuals(container, events) {
 
   events.addEventListener('bulletPierce', (e) => {
     spawnRing(e.detail.x, e.detail.z, 0xb06bff, 0.16);
+  });
+
+  events.addEventListener('slotStrike', (e) => {
+    spawnRing(e.detail.x, e.detail.z, e.detail.color || 0xffa64d, 0.55);
+  });
+
+  events.addEventListener('slotHeal', (e) => {
+    spawnRing(e.detail.x, e.detail.z, 0x5adf7a, 0.55);
+  });
+
+  events.addEventListener('skillCast', (e) => {
+    spawnRing(e.detail.x, e.detail.z, e.detail.color || 0xffffff, 0.7);
   });
 
   events.addEventListener('barricadeHit', (e) => {

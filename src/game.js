@@ -66,13 +66,13 @@ const CONFIG = {
   card: {
     everyWaves: 2,       // 每几波抽一次
     slowMo: 0.25,        // 抽卡时全场慢放倍率
-    duration: 6,         // 选择时间，秒
+    duration: 10,        // 选择时间，秒
   },
   slots: {
-    siege: { x: 4.5, z: 15 },        // 攻城，后排右
-    support: { x: -4.5, z: 15 },     // 支援，后排左
-    command: { x: 0, z: 15 },        // 指挥，后排中
-    closeDefense: { x: 5.5, z: 4.5 },// 近防，前排右
+    siege: { x: 4.5, z: 15, interval: 6, radius: 2.6, damage: 30 },        // 攻城，后排右
+    support: { x: -4.5, z: 15, interval: 10, heal: 1 },                    // 支援，后排左
+    command: { x: 0, z: 15, fireRate: 0.05 },                              // 指挥，后排中
+    closeDefense: { x: 5.5, z: 4.5, interval: 0.5, radius: 3.0, damage: 8 },// 近防，前排右
     // 工事就是路障本身，位置在 CONFIG.barricade
   },
   barrel: {
@@ -82,8 +82,8 @@ const CONFIG = {
   },
   barricade: {
     xMin: -0.4,          // 路障左边界，避开左边屏障通道
-    z: 3.5,              // 路障所在纵深
-    blockZ: 2.9,         // 僵尸停在墙前的位置
+    z: 0,                // 路障所在纵深，接近屏幕中央
+    blockZ: -0.6,        // 僵尸停在墙前的位置
     hitDamage: 6,        // 僵尸每啃一口的伤害
     attackInterval: 0.9, // 每只僵尸的啃咬间隔
     cooldown: 10,        // 碎掉后多久重建
@@ -212,6 +212,11 @@ const state = {
     version: 0,
   },
   timeScale: 1,
+  slotTimers: { siege: 3, support: 6, closeDefense: 0 },
+  slowUntil: 0,
+  slowMul: 1,
+  buffUntil: 0,
+  buffMul: 1,
 
   // 路障：抽到卡才出现，挡在前排，有血量，碎了冷却后重建
   barricade: {
@@ -386,6 +391,14 @@ function resetState() {
   state.card.timeLeft = 0;
   state.timeScale = 1;
 
+  state.slotTimers.siege = 3;
+  state.slotTimers.support = 6;
+  state.slotTimers.closeDefense = 0;
+  state.slowUntil = 0;
+  state.slowMul = 1;
+  state.buffUntil = 0;
+  state.buffMul = 1;
+
   state.bullets.length = 0;
   state.barriers.length = 0;
   state.zombies.length = 0;
@@ -494,6 +507,7 @@ if (typeof window !== 'undefined') {
     emit('barricadeUpgrade', { level: state.barricade.level });
   };
   window.__upgradeBarricade = upgradeBarricade;
+  window.__castSkill = castSkill;
 }
 
 /* ----------------------------------------------------------
@@ -559,10 +573,193 @@ const CARD_POOL = [
   },
 ];
 
+/* 一次性技能：抽到就立刻释放，按效果类型走通用逻辑 */
+const SKILL_DEFS = [
+  // 0 中世纪
+  { id: 'arrowRain', name: '箭雨', era: 0, type: 'line', damage: 40, radius: 2.6, color: 0xd9b36c },
+  { id: 'rollingLog', name: '滚木', era: 0, type: 'line', damage: 60, radius: 2.0, color: 0x9c6b3f },
+  { id: 'holyWater', name: '圣水', era: 0, type: 'heal', soldiers: 2, color: 0x8fe3b0 },
+  { id: 'knightCharge', name: '骑士冲锋', era: 0, type: 'aoe', damage: 50, radius: 3.0, color: 0xc9d4e0 },
+  { id: 'campfire', name: '篝火', era: 0, type: 'aoe', damage: 30, radius: 3.5, color: 0xff9a4d },
+  // 1 二战
+  { id: 'airStrike', name: '空袭', era: 1, type: 'aoe', damage: 90, radius: 4.0, color: 0xffd27a },
+  { id: 'barrage', name: '炮火覆盖', era: 1, type: 'line', damage: 70, radius: 3.0, color: 0xff8a4d },
+  { id: 'napalm', name: '燃烧弹', era: 1, type: 'aoe', damage: 45, radius: 3.5, color: 0xff6a2a },
+  { id: 'paratroopers', name: '伞兵增援', era: 1, type: 'heal', soldiers: 10, color: 0x8fb6e0 },
+  { id: 'tank', name: '坦克支援', era: 1, type: 'line', damage: 80, radius: 3.0, color: 0xb0b8a0 },
+  // 2 现代
+  { id: 'precision', name: '精确打击', era: 2, type: 'aoe', damage: 110, radius: 2.2, color: 0x9fe3ff },
+  { id: 'droneSwarm', name: '无人机蜂群', era: 2, type: 'aoe', damage: 60, radius: 4.5, color: 0x7fd4ff },
+  { id: 'emp', name: '电磁脉冲', era: 2, type: 'slow', duration: 2, mul: 0.05, color: 0x6fa8ff },
+  { id: 'apc', name: '装甲车冲锋', era: 2, type: 'line', damage: 70, radius: 3.0, color: 0x8f9a7a },
+  { id: 'supplyDrop', name: '空投补给', era: 2, type: 'heal', soldiers: 15, color: 0x5adf7a },
+  // 3 后现代
+  { id: 'virusBomb', name: '病毒炸弹', era: 3, type: 'aoe', damage: 80, radius: 4.0, color: 0x8fe36a },
+  { id: 'bioLegion', name: '生物人军团', era: 3, type: 'heal', soldiers: 8, color: 0x9c6bff },
+  { id: 'geneBurst', name: '基因爆发', era: 3, type: 'buff', duration: 5, mul: 2, color: 0x6dffb0 },
+  { id: 'timeSlow', name: '时间减速', era: 3, type: 'slow', duration: 4, mul: 0.5, color: 0x8fb6ff },
+  { id: 'memory', name: '记忆植入', era: 3, type: 'upgradeSlot', color: 0xd0a0ff },
+  // 4 星际
+  { id: 'orbital', name: '轨道轰炸', era: 4, type: 'line', damage: 130, radius: 3.5, color: 0x7fe3ff },
+  { id: 'blackHole', name: '黑洞', era: 4, type: 'pull', damage: 40, radius: 4.0, color: 0x6a4dff },
+  { id: 'wormhole', name: '虫洞', era: 4, type: 'warp', color: 0xb06bff },
+  { id: 'fleetSalvo', name: '舰队齐射', era: 4, type: 'line', damage: 100, radius: 3.0, color: 0x9fe3ff },
+  { id: 'timeDilation', name: '时间膨胀', era: 4, type: 'slow', duration: 3, mul: 0.4, color: 0x8fb6ff },
+  // 5 终幕
+  { id: 'finalJudgment', name: '终焉审判', era: 5, type: 'aoe', damage: 200, radius: 6.0, color: 0xffffff },
+  { id: 'cosmicCollapse', name: '宇宙坍缩', era: 5, type: 'pull', damage: 80, radius: 6.0, color: 0x6a4dff },
+  { id: 'sacrifice', name: '献祭', era: 5, type: 'sacrifice', damage: 300, soldiers: 20, color: 0xff5a5a },
+  { id: 'reboot', name: '重启', era: 5, type: 'clear', color: 0xffffff },
+  { id: 'entropy', name: '熵增', era: 5, type: 'slow', duration: 5, mul: 0.5, damage: 8, color: 0x8a8f99 },
+];
+
+function densestPoint() {
+  if (!state.zombies.length) return null;
+
+  let best = state.zombies[0];
+  let bestCount = -1;
+
+  for (const z of state.zombies) {
+    let count = 0;
+    for (const o of state.zombies) {
+      const dx = o.x - z.x;
+      const dz = o.z - z.z;
+      if (dx * dx + dz * dz <= 9) count += 1;
+    }
+    if (count > bestCount) {
+      bestCount = count;
+      best = z;
+    }
+  }
+
+  return { x: best.x, z: best.z };
+}
+
+function damageZombieAt(index, damage) {
+  const zb = state.zombies[index];
+  zb.hp -= damage;
+  if (zb.hp > 0) return false;
+
+  state.zombies.splice(index, 1);
+  state.score += CONFIG.zombie.types[zb.type]?.score || 1;
+  emit('zombieDie', { x: zb.x, z: zb.z, type: zb.type });
+  return true;
+}
+
+function damageZombiesInRadius(x, z, radius, damage) {
+  const r2 = radius * radius;
+  for (let i = state.zombies.length - 1; i >= 0; i--) {
+    const zb = state.zombies[i];
+    const dx = zb.x - x;
+    const dz = zb.z - z;
+    if (dx * dx + dz * dz <= r2) damageZombieAt(i, damage);
+  }
+}
+
+function damageZombiesInLine(z, radius, damage) {
+  for (let i = state.zombies.length - 1; i >= 0; i--) {
+    if (Math.abs(state.zombies[i].z - z) <= radius) damageZombieAt(i, damage);
+  }
+}
+
+function clearZombies() {
+  for (let i = state.zombies.length - 1; i >= 0; i--) {
+    damageZombieAt(i, Infinity);
+  }
+}
+
+function castSkill(id) {
+  const def = SKILL_DEFS.find((s) => s.id === id);
+  if (!def) return false;
+
+  const target = densestPoint() || { x: 0, z: -6 };
+  const announce = () => emit('skillCast', {
+    id: def.id,
+    name: def.name,
+    x: target.x,
+    z: target.z,
+    color: def.color,
+  });
+
+  switch (def.type) {
+    case 'aoe':
+      damageZombiesInRadius(target.x, target.z, def.radius, def.damage);
+      break;
+    case 'line':
+      damageZombiesInLine(target.z, def.radius, def.damage);
+      break;
+    case 'slow':
+      state.slowUntil = state.time + def.duration;
+      state.slowMul = def.mul;
+      if (def.damage) damageZombiesInRadius(target.x, target.z, 30, def.damage);
+      break;
+    case 'buff':
+      state.buffUntil = state.time + def.duration;
+      state.buffMul = def.mul;
+      break;
+    case 'heal':
+      applySoldiers(def.soldiers);
+      break;
+    case 'upgradeSlot':
+      upgradeBarricade();
+      break;
+    case 'pull':
+      for (const zb of state.zombies) {
+        const dx = target.x - zb.x;
+        const dz = target.z - zb.z;
+        const d = Math.hypot(dx, dz) || 1;
+        const step = Math.min(d, 2.5);
+        zb.x += (dx / d) * step;
+        zb.z += (dz / d) * step;
+      }
+      damageZombiesInRadius(target.x, target.z, def.radius, def.damage);
+      break;
+    case 'warp': {
+      const front = state.zombies.reduce(
+        (a, b) => (b.z > a.z ? b : a),
+        state.zombies[0]
+      );
+      if (front) {
+        front.z = -20;
+        front.aggro = false;
+      }
+      break;
+    }
+    case 'sacrifice':
+      if (state.soldiers > def.soldiers) {
+        applySoldiers(-def.soldiers);
+        damageZombiesInRadius(0, -6, 40, def.damage);
+      }
+      break;
+    case 'clear':
+      clearZombies();
+      break;
+    default:
+      break;
+  }
+
+  announce();
+  return true;
+}
+
+function buildCardPool() {
+  const skills = SKILL_DEFS
+    .filter((s) => s.era === state.era)
+    .map((s) => ({
+      id: 'skill_' + s.id,
+      name: s.name,
+      desc: '一次性技能，抽到立刻释放',
+      can: () => true,
+      apply: () => castSkill(s.id),
+    }));
+
+  return CARD_POOL.concat(skills);
+}
+
 function startCardDraw() {
   if (state.card.active) return;
 
-  const pool = CARD_POOL.filter((c) => c.can());
+  const pool = buildCardPool().filter((c) => c.can());
   if (!pool.length) return;
 
   for (let i = pool.length - 1; i > 0; i--) {
@@ -649,6 +846,7 @@ function update(dt) {
   updateFiring(dt);
   updateBarrelSpawn(dt);
   updateBullets(dt);
+  updateSlots(dt);
   updateBarriers(dt);
   updateZombies(dt);
 }
@@ -709,7 +907,9 @@ function updateFiring(dt) {
     tier.fireInterval,
     CONFIG.player.baseFireInterval / Math.max(1, state.soldiers)
   );
-  const effInterval = baseInterval / state.upgrades.fireRate;
+  const commandMul = 1 + CONFIG.slots.command.fireRate * (1 + state.era * 0.2);
+  const buffMul = state.time < state.buffUntil ? state.buffMul : 1;
+  const effInterval = baseInterval / (state.upgrades.fireRate * commandMul * buffMul);
   const totalRate = baseCount / effInterval; // 每秒多少发
   const interval = shooters / totalRate;
 
@@ -766,7 +966,8 @@ function updateBarrelSpawn(dt) {
 
   const [minX, maxX] = CONFIG.world.rightZone;
   const x = minX + Math.random() * (maxX - minX);
-  const z = -14 + Math.random() * 15;
+  // 只补在路障上方，避免桶和墙重叠
+  const z = -14 + Math.random() * 10;
   spawnBarrel(x, z);
 }
 
@@ -1041,6 +1242,47 @@ function makeSpecialBarrier(kind, x, z, wave) {
 /* ----------------------------------------------------------
  * 僵尸：从右侧大量压下来
  * ---------------------------------------------------------- */
+function updateSlots(dt) {
+  const eraMul = 1 + state.era * 0.25;
+
+  const siege = CONFIG.slots.siege;
+  state.slotTimers.siege -= dt;
+  if (state.slotTimers.siege <= 0) {
+    state.slotTimers.siege = siege.interval;
+    const target = densestPoint();
+    if (target) {
+      damageZombiesInRadius(target.x, target.z, siege.radius, siege.damage * eraMul);
+      emit('slotStrike', {
+        x: target.x,
+        z: target.z,
+        radius: siege.radius,
+        color: 0xffa64d,
+      });
+    }
+  }
+
+  const close = CONFIG.slots.closeDefense;
+  state.slotTimers.closeDefense -= dt;
+  if (state.slotTimers.closeDefense <= 0) {
+    state.slotTimers.closeDefense = close.interval;
+    damageZombiesInRadius(close.x, close.z, close.radius, close.damage * eraMul);
+    emit('slotStrike', {
+      x: close.x,
+      z: close.z,
+      radius: close.radius,
+      color: 0xff6a4a,
+    });
+  }
+
+  const support = CONFIG.slots.support;
+  state.slotTimers.support -= dt;
+  if (state.slotTimers.support <= 0) {
+    state.slotTimers.support = support.interval;
+    applySoldiers(support.heal + Math.floor(state.era / 2));
+    emit('slotHeal', { x: support.x, z: support.z });
+  }
+}
+
 function updateBarricade(dt) {
   const b = state.barricade;
   if (!b.unlocked) return;
@@ -1138,7 +1380,8 @@ function updateZombies(dt) {
         z.x += Math.sign(dx) * CONFIG.zombie.lineSlideSpeed * dt;
       }
     } else {
-      z.z += z.speed * dt;
+      const slowMul = state.time < state.slowUntil ? state.slowMul : 1;
+      z.z += z.speed * dt * slowMul;
     }
 
     z.x = clamp(z.x, -CONFIG.world.halfWidth - 1, CONFIG.world.halfWidth + 1);
