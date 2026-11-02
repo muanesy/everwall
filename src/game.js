@@ -18,6 +18,7 @@ import {
   spawnBarrel,
   switchEra,
   pickEraMap,
+  igniteFireZone,
 } from './visuals.js';
 import { initUI, updateUI } from './ui.js';
 
@@ -133,6 +134,11 @@ const CONFIG = {
     hitRadius: 0.75,   // 横向命中半径
     hitDepth: 1.1,     // 纵向命中厚度
     spawnZ: 9.8,       // 屏幕下方出生
+  },
+  campfire: {
+    radius: 3.5,
+    duration: 5,       // 火区存在 5 秒
+    dps: 12,           // 每秒伤害，总计 60
   },
   barricade: {
     xMin: -0.4,          // 路障左边界，避开左边屏障通道
@@ -321,6 +327,7 @@ const state = {
   zombies: [],  // { id, x, z, hp, speed, type }
   rollingLogs: [],   // { id, x, z, length, radius, speed, damage, spin, hit }
   knightCharges: [], // { id, x, z, speed, damage, hit }
+  campfireZones: [], // { id, x, z, radius, remaining, dps }
 
   barrierTimer: 0,
   zombieTimer: 0,
@@ -493,6 +500,7 @@ function resetState(opts = {}) {
   state.zombies.length = 0;
   state.rollingLogs.length = 0;
   state.knightCharges.length = 0;
+  state.campfireZones.length = 0;
 
   state.barrierTimer = 0.6;
   state.zombieTimer = 1.0;
@@ -526,6 +534,7 @@ function revive() {
   state.zombies.length = 0;
   state.rollingLogs.length = 0;
   state.knightCharges.length = 0;
+  state.campfireZones.length = 0;
   state.barrierTimer = 0.4;
   state.zombieTimer = 0.8;
 
@@ -916,7 +925,7 @@ const SKILL_DEFS = [
   { id: 'rollingLog', name: '滚木', era: 0, type: 'rollingLog', color: 0x9c6b3f },
   { id: 'holyWater', name: '圣水', era: 0, type: 'heal', soldiers: 20, color: 0x8fe3b0 },
   { id: 'knightCharge', name: '骑士冲锋', era: 0, type: 'knightCharge', color: 0xc9d4e0 },
-  { id: 'campfire', name: '篝火', era: 0, type: 'aoe', damage: 30, radius: 3.5, color: 0xff9a4d },
+  { id: 'campfire', name: '篝火', era: 0, type: 'campfire', radius: 3.5, color: 0xff9a4d },
   // 1 二战
   { id: 'airStrike', name: '空袭', era: 1, type: 'aoe', damage: 90, radius: 4.0, color: 0xffd27a },
   { id: 'barrage', name: '炮火覆盖', era: 1, type: 'line', damage: 70, radius: 3.0, color: 0xff8a4d },
@@ -954,7 +963,7 @@ const SKILL_DESCS = {
   rollingLog: '左侧随机出现，纵向 6 格，从左往右碾压；秒普通僵尸，不秒大块头',
   holyWater: '立刻 +20 兵',
   knightCharge: '右下随机冲 3 个骑士，向上贯穿，每个骑士对每只僵尸 50 伤害',
-  campfire: '最密处半径 3.5 内 30 伤害',
+  campfire: '最密处半径 3.5 火区，持续 5 秒，每秒 12 伤害',
   airStrike: '最密处半径 4 内 90 伤害',
   barrage: '横排炮火：半宽 3 的整条横线 70 伤害',
   napalm: '最密处半径 3.5 内 45 伤害',
@@ -1117,6 +1126,20 @@ function castSkill(id) {
     case 'knightCharge':
       spawnKnightCharge();
       break;
+    case 'campfire': {
+      const cfg = CONFIG.campfire;
+      state.campfireZones.push({
+        id: state.nextId++,
+        x: target.x,
+        z: target.z,
+        radius: cfg.radius,
+        remaining: cfg.duration,
+        dps: cfg.dps,
+      });
+      // 火区视觉由画面层负责，这里只传位置、半径和持续时间
+      igniteFireZone(target.x, target.z, cfg.radius, cfg.duration);
+      break;
+    }
     case 'slow':
       state.slowUntil = state.time + def.duration;
       state.slowMul = def.mul;
@@ -1319,6 +1342,7 @@ function update(dt) {
   updateZombies(dt);
   updateRollingLogs(dt);
   updateKnightCharges(dt);
+  updateCampfireZones(dt);
 }
 
 // 前排人数：1+2+...+r >= 士兵数，r 就是前排宽度
@@ -1960,6 +1984,20 @@ function updateRollingLogs(dt) {
     if (log.x + log.radius >= CONFIG.world.halfWidth) {
       state.rollingLogs.splice(i, 1);
     }
+  }
+}
+
+// 篝火：火区内持续掉血，5 秒后消失
+function updateCampfireZones(dt) {
+  for (let i = state.campfireZones.length - 1; i >= 0; i--) {
+    const fire = state.campfireZones[i];
+    fire.remaining -= dt;
+
+    if (fire.remaining > 0) {
+      damageZombiesInRadius(fire.x, fire.z, fire.radius, fire.dps * dt);
+    }
+
+    if (fire.remaining <= 0) state.campfireZones.splice(i, 1);
   }
 }
 

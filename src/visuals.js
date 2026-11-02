@@ -950,8 +950,8 @@ export function initVisuals(container, events) {
       spawnRing(d.x, d.z, d.color || 0x5adf7a, 0.7);
     } else if (d.id === 'arrowRain') {
       spawnArrowRain(d.x, d.z, d.radius || 4, d.color || 0xd9b36c);
-    } else if (d.type === 'rollingLog' || d.type === 'knightCharge') {
-      // 持续移动的实体由 syncRollingLogs / syncKnightCharges 负责画
+    } else if (d.type === 'rollingLog' || d.type === 'knightCharge' || d.type === 'campfire') {
+      // 滚木/骑士由 sync 负责画，篝火由 igniteFireZone 负责画
     } else {
       spawnSkyStrike(d.x, d.z, d.color || 0xffffff);
     }
@@ -1718,14 +1718,16 @@ function ensureFireTex() {
 }
 
 /* 点一片火。同一处 1.5 米内再点一次不新建，直接把旧火续满 */
-export function igniteFireZone(x, z, radius = FIRE_RADIUS) {
+export function igniteFireZone(x, z, radius = FIRE_RADIUS, duration = FIRE_LIFE) {
   if (!scene || !isFinite(x) || !isFinite(z)) return null;
 
-  const r = Math.max(0.8, Math.min(3.4, Number(radius) || FIRE_RADIUS));
+  const r = Math.max(0.8, Math.min(4.0, Number(radius) || FIRE_RADIUS));
+  const life = Math.max(0.5, Number(duration) || FIRE_LIFE);
 
   for (const f of fireZones) {
     if (Math.hypot(f.x - x, f.z - z) < 1.5) {
       f.life = 0;
+      f.maxLife = Math.max(f.maxLife || FIRE_LIFE, life);
       f.radius = Math.max(f.radius, r);
       f.glow.scale.set(f.radius * 2.3, f.radius * 2.3, 1);
       // 焦土是按初始半径建的几何体，面积变大了靠缩放跟，不重建
@@ -1774,6 +1776,7 @@ export function igniteFireZone(x, z, radius = FIRE_RADIUS) {
     x, z, radius: r,
     charRadius: r,
     life: 0,
+    maxLife: life,
     char, glow,
     phase: Math.random() * Math.PI * 2,
     acc: 0,
@@ -1786,7 +1789,7 @@ export function igniteFireZone(x, z, radius = FIRE_RADIUS) {
   if (eventsRef) {
     try {
       eventsRef.dispatchEvent(new CustomEvent('fireZoneSpawned', {
-        detail: { x, z, radius: r, duration: FIRE_LIFE },
+        detail: { x, z, radius: r, duration: zone.maxLife },
       }));
     } catch (err) {
       // 同上，事件异常不影响画面
@@ -1801,8 +1804,8 @@ export function getFireZones() {
     x: f.x,
     z: f.z,
     radius: f.radius,
-    remaining: Math.max(0, FIRE_LIFE - f.life),
-    maxLife: FIRE_LIFE,
+    remaining: Math.max(0, f.maxLife - f.life),
+    maxLife: f.maxLife,
   }));
 }
 
@@ -1811,13 +1814,13 @@ function updateFireZones(dt) {
     const f = fireZones[i];
     f.life += dt;
 
-    if (f.life >= FIRE_LIFE) {
+    if (f.life >= f.maxLife) {
       removeFireZone(f);
       fireZones.splice(i, 1);
       continue;
     }
 
-    const t = f.life / FIRE_LIFE;
+    const t = f.life / f.maxLife;
     // 最后 0.7 秒慢慢收掉，不要突然消失
     const fade = t < 0.85 ? 1 : Math.max(0, 1 - (t - 0.85) / 0.15);
 
