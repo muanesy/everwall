@@ -154,6 +154,7 @@ export function updateUI(state) {
   els.armyFill.classList.toggle('is-low', state.soldiers <= 10);
 
   updateTierBadge(state.soldiers);
+  updateCommandChip(state);
   updateLoadingBox();
   updateWaveCountdown(state);
   updateCards(state);
@@ -191,6 +192,42 @@ function updateWaveCountdown(state) {
   }
   const left = Math.max(0, Math.ceil(WAVE_SECONDS - getWaveElapsed()));
   els.waveNext.textContent = left + 's';
+}
+
+/* 指挥槽集火加成：六个时代各一枚小图标，旁边跟一个实时百分比。
+ * 只在指挥槽建起来（markBonus > 0）之后出现，平时不占 HUD 空间。 */
+const CMD_ICONS = [
+  // 中世纪：战鼓 + 旗
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="3.5" y="9.5" width="12" height="9" rx="2"/><path d="M3.5 12.6h12M3.5 15.4h12"/><path d="M18.5 4v9"/><path d="M18.5 4.4l3 1.5-3 1.5"/></svg>',
+  // 二战：电台箱 + 天线
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="4" y="10" width="12" height="8" rx="1.5"/><path d="M16 12.5h3v5h-3"/><path d="M12.5 4l3.5 6"/><circle cx="7.5" cy="13.6" r="1"/></svg>',
+  // 现代：抛物面锅 + 馈源
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 13a7.5 7.5 0 0 1 12.5-4.2"/><path d="M4 13l4.2 1"/><path d="M11 12.5v5.5"/><path d="M8 18.5h6"/><circle cx="17" cy="8.6" r="1.2"/></svg>',
+  // 后现代：横躺胶囊 + 核心
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="5" y="9" width="14" height="7" rx="3.5"/><circle cx="9" cy="12.5" r="1.8"/><path d="M14 8.6c1.4-1.5 2.8-1.5 4.2 0"/></svg>',
+  // 星际：斜面控制台 + 星点
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 16h16l-2-5H6z"/><path d="M7 16v3M17 16v3"/><circle cx="9" cy="8.4" r="1"/><circle cx="14.5" cy="6.4" r="1"/></svg>',
+  // 终幕：高方碑 + 光环
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M9 20V7h6v13"/><path d="M7 20h10"/><ellipse cx="12" cy="10" rx="7" ry="1.9"/></svg>',
+];
+let lastCmdKey = '';
+
+function updateCommandChip(state) {
+  if (!els.cmdChip) return;
+  const bonus = state.commandMarkBonus || 0;
+  const show = state.status === 'playing' && bonus > 0;
+  els.cmdChip.hidden = !show;
+  if (!show) return;
+
+  const era = Math.max(0, Math.min(CMD_ICONS.length - 1, state.era | 0));
+  const pct = (bonus * 100).toFixed(1);
+  const key = `${era}|${pct}`;
+  if (key === lastCmdKey) return;
+  lastCmdKey = key;
+
+  els.cmdIcon.innerHTML = CMD_ICONS[era];
+  els.cmdBonus.textContent = `+${pct}%`;
+  els.cmdChip.title = `集火伤害加成 +${pct}%`;
 }
 
 /* 兵种档位徽标：当前兵种 + 距下一阶还差几个兵。
@@ -462,7 +499,13 @@ function buildDom() {
       第 <span data-wave>1</span> 波
       <em class="wave__next" data-wave-next>15s</em>
     </div>
-    <div class="score" data-score>0</div>
+    <div class="score-box">
+      <div class="score" data-score>0</div>
+      <div class="cmd-chip" data-cmd-chip hidden>
+        <span class="cmd-chip__icon" data-cmd-icon></span>
+        <span data-cmd-bonus>+0%</span>
+      </div>
+    </div>
     <button class="pause-btn" type="button" data-pause aria-label="暂停">
       <span></span><span></span><span></span>
     </button>
@@ -683,6 +726,9 @@ function buildDom() {
     waveText: hud.querySelector('[data-wave]'),
     waveNext: hud.querySelector('[data-wave-next]'),
     scoreText: hud.querySelector('[data-score]'),
+    cmdChip: hud.querySelector('[data-cmd-chip]'),
+    cmdIcon: hud.querySelector('[data-cmd-icon]'),
+    cmdBonus: hud.querySelector('[data-cmd-bonus]'),
     startScreen,
     overScreen,
     finalScore: overScreen.querySelector('[data-final-score]'),
