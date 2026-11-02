@@ -526,6 +526,18 @@ canvas {
   letter-spacing: 3px;
 }
 
+/* ---------- 全屏白闪（终焉审判 / 轨道轰炸） ----------
+ * 按技能色染色，opacity 由 visuals.js 推，过渡写在 style 里 */
+
+.fx-flash {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9;
+  opacity: 0;
+  mix-blend-mode: screen;
+}
+
 /* ---------- 血月全屏暗角 ----------
  * 这台相机是 45° 俯视，画面里看不到天空，所以不做"天上红月"，
  * 用四边压血红的方式让整个画面被血雾包住。opacity 由 visuals.js 每帧推。 */

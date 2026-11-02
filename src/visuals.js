@@ -34,6 +34,8 @@ import { getEra, applyEraLook, tintMaterials } from './visuals-era.js';
 export { eraMaps, pickEraMap } from './visuals-era.js';
 import { createDayNight, nightForWave } from './visuals-daynight.js';
 import { initBarrels, updateBarrels, resetBarrels, hitTestBarrel, spawnBarrelAt } from './visuals-barrels.js';
+// 槽位正式模型：六槽位 × 六时代 × 五等级，全程序化（对应 docs/美术需求-槽位与技能.md P1）
+import { buildSlotStructure, buildLevelDots, disposeSlotStructure } from './visuals-slots.js';
 
 /* ----------------------------------------------------------
  * 地图配置表
@@ -688,6 +690,7 @@ let fxFloats = null;   // 击杀飘字的容器（绝对定位，位置每帧由
 let fxToast = null;
 let fxFade = null;        // 换图用的全屏淡入淡出遮罩
 let fxBloodMoon = null;   // 血月的全屏红色暗角
+let fxFlash = null;       // 全屏白闪（终焉审判 / 轨道轰炸）
 const FX_P_MAX = 500;
 const fxPool = Array.from({ length: FX_P_MAX }, () => ({ life: 0, maxLife: 1, vx: 0, vy: 0, vz: 0, g: 0 }));
 let fxGeo = null;
@@ -872,6 +875,7 @@ export function initVisuals(container, events) {
     <div class="fx-slow"></div>
     <div class="fx-floats"></div>
     <div class="fx-toast"></div>
+    <div class="fx-flash"></div>
     <div class="fx-bloodmoon"></div>
     <div class="fx-fade"></div>`;
   document.body.appendChild(fxLayer);
@@ -882,6 +886,7 @@ export function initVisuals(container, events) {
   fxToast = fxLayer.querySelector('.fx-toast');
   fxFade = fxLayer.querySelector('.fx-fade');
   fxBloodMoon = fxLayer.querySelector('.fx-bloodmoon');
+  fxFlash = fxLayer.querySelector('.fx-flash');
 
   window.addEventListener('resize', resize);
   resize();
@@ -1009,6 +1014,16 @@ export function initVisuals(container, events) {
 
   events.addEventListener('skillCast', (e) => {
     const d = e.detail;
+    // P0 通用打击：每个技能的差别只在参数（半径 / 颜色 / 力度 / 要不要尘土）
+    const IMPACT_TUNING = {
+      airStrike:     { power: 1.15, dust: true },   // 空袭：一整排轰炸，最大的尘土
+      precision:     { power: 0.8, dust: false },   // 精确打击：小而准，不起尘
+      droneSwarm:    { power: 0.7, dust: true },    // 无人机蜂群：轻、密
+      finalJudgment: { power: 1.6, dust: true },    // 终焉审判：最重
+      holyWater:     { power: 0.5, dust: false },
+      napalm:        { power: 0.9, dust: true },
+    };
+
     if (d.type === 'line') {
       spawnBar(d.z, d.color || 0xffffff);
     } else if (d.type === 'heal') {
@@ -1018,7 +1033,24 @@ export function initVisuals(container, events) {
     } else if (d.type === 'barrage') {
       spawnBarrageFx(d.x, d.z, d.radius || 4.5, d.color || 0xff8a4d);
     } else if (d.type === 'orbital') {
+      // 轨道轰炸：光柱 + 闪白 + 地面熔痕（文档 P0 明确要求这三样）
       spawnOrbitalBeam(d.z, d.color || 0x7fe3ff);
+      spawnFlash(d.color || 0x7fe3ff, 0.42);
+      spawnCrater(0, d.z, 2.6);
+    } else if (d.type === 'aoe') {
+      // 所有纯伤害范围技都走这一套
+      const tune = IMPACT_TUNING[d.id] || { power: 1, dust: true };
+      spawnImpact(d.x, d.z, {
+        radius: d.radius || 3,
+        color: d.color || 0xffb060,
+        power: tune.power,
+        dust: tune.dust,
+      });
+      // 终焉审判额外给一次全屏白，和普通爆炸拉开量级
+      if (d.id === 'finalJudgment') spawnFlash(0xffffff, 0.72);
+    } else if (d.type === 'pull') {
+      // 黑洞 / 宇宙坍缩：不是炸开，是往里吸
+      spawnImplosion(d.x, d.z, d.color || 0x6a4dff, d.radius || 4);
     } else if (d.type === 'weaponDrop') {
       spawnWeaponDropFx(d.x, d.z);
     } else if (d.type === 'friendlyLegion') {
@@ -3540,12 +3572,13 @@ function makeFriendlyZombieMesh() {
     group.add(arm);
   }
 
+  // 脚下光环：双层，内圈实、外圈散，混在僵尸堆里也能一眼认出是自己人
   const ring = new THREE.Mesh(
     new THREE.RingGeometry(0.36, 0.48, 20),
     new THREE.MeshBasicMaterial({
       color: 0x5adf7a,
       transparent: true,
-      opacity: 0.5,
+      opacity: 0.6,
       side: THREE.DoubleSide,
       depthWrite: false,
     })
@@ -3554,6 +3587,36 @@ function makeFriendlyZombieMesh() {
   ring.position.y = 0.02;
   group.add(ring);
 
+  const halo = new THREE.Mesh(
+    new THREE.RingGeometry(0.48, 0.62, 22),
+    new THREE.MeshBasicMaterial({
+      color: 0x9effc0,
+      transparent: true,
+      opacity: 0.22,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  halo.rotation.x = -Math.PI / 2;
+  halo.position.y = 0.015;
+  group.add(halo);
+
+  // 头顶阵营标记：一个朝下的小三角，比脚下光环更远也看得见——
+  // 俯视视角下脚环容易被尸体和粒子盖住，头顶标记是最后一道保险
+  const marker = new THREE.Mesh(
+    new THREE.ConeGeometry(0.13, 0.22, 3),
+    new THREE.MeshBasicMaterial({
+      color: 0x9effc0, transparent: true, opacity: 0.85, depthWrite: false,
+    })
+  );
+  marker.position.y = 1.68;
+  marker.rotation.x = Math.PI;   // 尖端朝下，指向自己
+  marker.userData.bob = true;
+  group.add(marker);
+
+  group.userData.marker = marker;
+  group.userData.ring = ring;
   return group;
 }
 
@@ -3570,6 +3633,13 @@ function syncFriendlyZombies(state) {
       friendlyZombieMeshes.set(f.id, mesh);
     }
     mesh.position.set(f.x, 0, f.z);
+
+    // 头顶三角上下浮 + 脚环呼吸。动起来才能在密堆里被眼睛挑出来
+    const t = performance.now() * 0.0022;
+    const mk = mesh.userData.marker;
+    const rg = mesh.userData.ring;
+    if (mk) mk.position.y = 1.68 + Math.sin(t + f.id) * 0.07;
+    if (rg) rg.material.opacity = 0.45 + Math.sin(t * 0.8 + f.id) * 0.16;
   }
 
   for (const [id, mesh] of friendlyZombieMeshes) {
@@ -4753,100 +4823,6 @@ const SLOT_DEFS = [
 
 const slotVisuals = new Map();
 
-function makeSlotStructure(id, color) {
-  const group = new THREE.Group();
-  const mainMat = new THREE.MeshStandardMaterial({
-    color,
-    emissive: color,
-    emissiveIntensity: 0.2,
-    roughness: 0.5,
-    metalness: 0.2,
-  });
-  const darkMat = new THREE.MeshStandardMaterial({
-    color: 0x2a3440,
-    roughness: 0.8,
-  });
-
-  if (id === 'siege') {
-    const base = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.35, 1.0), darkMat);
-    base.position.y = 0.18;
-    group.add(base);
-
-    const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.28, 1.1), mainMat);
-    barrel.position.set(0, 0.55, -0.15);
-    barrel.rotation.x = -0.5;
-    group.add(barrel);
-  } else if (id === 'closeDefense') {
-    const base = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.4, 0.48, 0.35, 12),
-      darkMat
-    );
-    base.position.y = 0.18;
-    group.add(base);
-
-    const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.18, 0.8), mainMat);
-    barrel.position.set(0, 0.5, -0.25);
-    barrel.rotation.x = -0.3;
-    group.add(barrel);
-  } else if (id === 'support') {
-    const tent = new THREE.Mesh(
-      new THREE.BoxGeometry(1.0, 0.6, 1.0),
-      new THREE.MeshStandardMaterial({ color: 0xe8f0e8, roughness: 0.8 })
-    );
-    tent.position.y = 0.3;
-    group.add(tent);
-
-    const crossA = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.12, 0.04), mainMat);
-    crossA.position.set(0, 0.42, 0.52);
-    group.add(crossA);
-
-    const crossB = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.5, 0.04), mainMat);
-    crossB.position.set(0, 0.42, 0.52);
-    group.add(crossB);
-  } else if (id === 'command') {
-    const base = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.35, 0.42, 0.25, 12),
-      darkMat
-    );
-    base.position.y = 0.13;
-    group.add(base);
-
-    const pole = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.05, 0.05, 1.5, 8),
-      mainMat
-    );
-    pole.position.y = 0.85;
-    group.add(pole);
-
-    const flag = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.3, 0.03), mainMat);
-    flag.position.set(0.3, 1.35, 0);
-    group.add(flag);
-  } else if (id === 'summon') {
-    const base = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.5, 0.6, 0.3, 12),
-      darkMat
-    );
-    base.position.y = 0.15;
-    group.add(base);
-
-    const pod = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.32, 0.42, 1.0, 10),
-      mainMat
-    );
-    pod.position.y = 0.85;
-    group.add(pod);
-
-    const core = new THREE.Mesh(
-      new THREE.SphereGeometry(0.2, 10, 8),
-      new THREE.MeshBasicMaterial({ color: 0x9c6bff, transparent: true, opacity: 0.9 })
-    );
-    core.position.y = 1.3;
-    group.add(core);
-  }
-
-  return group;
-}
-
 function initSlots() {
   for (const s of SLOT_DEFS) {
     const pad = new THREE.Mesh(
@@ -4870,30 +4846,79 @@ function initSlots() {
     ring.position.set(s.x, 0.09, s.z);
     scene.add(ring);
 
-    const structure = makeSlotStructure(s.id, s.color);
+    // 正式模型按「时代 + 等级」现造，时代或等级变了就整个重建
+    const era = getCurrentEraIndex();
+    const level = 1;
+    const structure = buildSlotStructure(s.id, era, level);
     structure.position.set(s.x, 0, s.z);
     scene.add(structure);
+
+    // 地基上的 1-5 级小点
+    const dots = buildLevelDots(0, s.color);
+    dots.position.set(s.x, 0, s.z);
+    scene.add(dots);
 
     slotVisuals.set(s.id, {
       pad,
       ring,
       structure,
+      dots,
       x: s.x,
       z: s.z,
       color: s.color,
+      era,
+      level,
+      spin: structure.userData.spinParts || [],
     });
   }
 }
 
-function syncSlots(state) {
+function syncSlots(state, dt) {
+  const era = getCurrentEraIndex();
+  const levels = (state && state.slotLevels) || {};
+  const t = performance.now() * 0.001;
+
   for (const [id, v] of slotVisuals) {
-    const eraLocked = id === 'summon' && state.era < 3;
+    const eraLocked = id === 'summon' && era < 3;
     const on = !!(state.slots && state.slots[id]);
+    const level = Math.max(0, Math.min(5, levels[id] | 0));
+
+    // 时代或等级变了就重建：模型是按这两个参数造出来的，
+    // 不重建就只能靠改材质色，附件和体量变不了
+    if (v.era !== era || v.level !== Math.max(1, level)) {
+      scene.remove(v.structure);
+      disposeSlotStructure(v.structure);
+      const rebuilt = buildSlotStructure(id, era, Math.max(1, level));
+      rebuilt.position.set(v.x, 0, v.z);
+      scene.add(rebuilt);
+      v.structure = rebuilt;
+      v.era = era;
+      v.level = Math.max(1, level);
+      v.spin = rebuilt.userData.spinParts || [];
+    }
 
     v.pad.visible = !eraLocked;
     v.ring.visible = !eraLocked;
+    v.dots.visible = !eraLocked;
     v.structure.visible = !eraLocked && on;
     if (!eraLocked) v.ring.material.opacity = on ? 0.8 : 0.16;
+
+    // 等级点：只显示已解锁的，未解锁的保持很淡的底点
+    v.dots.children.forEach((dot, i) => {
+      dot.material.opacity = i < level ? 1 : 0.14;
+    });
+
+    // 满级 / 星际以上的旋转件转起来（炮塔缓转、能量环转、虫巢脉动）
+    if (v.structure.visible) {
+      for (let i = 0; i < v.spin.length; i++) {
+        v.spin[i].rotation.z = t * (0.6 + i * 0.15);
+      }
+      // 5 级加一点呼吸，让"满级"不用看数字也认得出来
+      if (v.level >= 5 && v.structure.userData.mats) {
+        const gm = v.structure.userData.mats.glowSoft;
+        if (gm) gm.opacity = 0.4 + Math.sin(t * 2.4) * 0.16;
+      }
+    }
   }
 }
 
@@ -5735,6 +5760,154 @@ function spawnRing(x, z, color, maxLife) {
   effects.push({ mesh, life: 0, maxLife, type: 'ring' });
 }
 
+/* ==========================================================
+ * P0 通用范围打击特效（对应 docs/美术需求-槽位与技能.md 第一组）
+ *
+ * 一套系统覆盖八个技能：箭雨、空袭、炮火覆盖、精确打击、无人机蜂群、
+ * 轨道轰炸、舰载无人机群、终焉审判、宇宙坍缩。区别只在参数，不在实现。
+ *
+ * 五层按顺序叠，缺一层就散：
+ *   1. 落点圈  —— 贴地暗色圆盘，标"打的是这一片"
+ *   2. 火球    —— 加色膨胀球，爆炸本体
+ *   3. 冲击波  —— 贴地薄环，扩得最远，给"震开"的感觉
+ *   4. 尘土    —— 棕色粒子往外抛，落点才有重量
+ *   5. 迸射    —— 亮色粒子往上冲，补速度感
+ *
+ * 为什么不做"预警圈先出、0.4 秒后再炸"：
+ * 甲的 aoe 技能在 castSkill 里是**立刻结算伤害**的（见 game.js damageZombiesInRadius）。
+ * 视觉上延后 0.4 秒爆炸，就会变成"僵尸先死、后爆炸"，
+ * 读起来像画面卡了。要真做预警，得甲那边把伤害延后，那是玩法改动，不在美术范围里。
+ * 所以这里做的是"命中即炸"的瞬时冲击，落点圈只作为冲击的第一帧。
+ * ========================================================== */
+function spawnImpact(x, z, opts = {}) {
+  if (!scene || !isFinite(x) || !isFinite(z)) return;
+
+  const radius = Math.max(0.8, Number(opts.radius) || 3);
+  const color = opts.color != null ? opts.color : 0xffffff;
+  const power = Math.max(0.2, Math.min(1.6, Number(opts.power) || 1));
+  const dust = opts.dust !== false;
+  const coreY = 0.55 + radius * 0.08;
+
+  // 1. 落点圈：暗色圆盘，压住地面，标范围
+  const disc = new THREE.Mesh(
+    new THREE.CircleGeometry(radius, 28),
+    new THREE.MeshBasicMaterial({
+      color: 0x120c08, transparent: true, opacity: 0.5,
+      depthWrite: false, polygonOffset: true,
+      polygonOffsetFactor: -5, polygonOffsetUnits: -5,
+    })
+  );
+  disc.rotation.x = -Math.PI / 2;
+  disc.position.set(x, 0.03, z);
+  disc.renderOrder = 2;
+  scene.add(disc);
+  effects.push({ mesh: disc, life: 0, maxLife: 0.5, type: 'areaDisc' });
+
+  // 2. 火球：两层，内白外色，加色混合才有"发光"而不是"一个球"
+  const ball = new THREE.Mesh(
+    new THREE.SphereGeometry(radius * 0.42, 14, 12),
+    new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity: 0.95,
+      depthWrite: false, blending: THREE.AdditiveBlending,
+    })
+  );
+  ball.position.set(x, coreY, z);
+  scene.add(ball);
+  effects.push({
+    mesh: ball, life: 0, maxLife: 0.38,
+    type: 'fireball', baseScale: radius * 1.05, baseY: coreY,
+  });
+
+  const core = new THREE.Mesh(
+    new THREE.SphereGeometry(radius * 0.2, 10, 8),
+    new THREE.MeshBasicMaterial({
+      color: 0xffffff, transparent: true, opacity: 0.9,
+      depthWrite: false, blending: THREE.AdditiveBlending,
+    })
+  );
+  core.position.set(x, coreY + 0.1, z);
+  scene.add(core);
+  effects.push({
+    mesh: core, life: 0, maxLife: 0.26,
+    type: 'fireball', baseScale: radius * 0.62, baseY: coreY + 0.1,
+  });
+
+  // 3. 冲击波：贴地薄环，扩到 1.6 倍半径
+  const wave = new THREE.Mesh(
+    new THREE.RingGeometry(radius * 0.72, radius * 0.8, 40),
+    new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity: 0.75,
+      side: THREE.DoubleSide, depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  wave.rotation.x = -Math.PI / 2;
+  wave.position.set(x, 0.07, z);
+  scene.add(wave);
+  effects.push({ mesh: wave, life: 0, maxLife: 0.62, type: 'shockwave', baseScale: 1.6 });
+
+  // 4. 尘土：往外抛，落下来
+  if (dust) {
+    spawnBurst(x, 0.3, z, 0x6b5540, Math.round(16 * power), {
+      speed: 4.2 * power, up: 3.0 * power,
+      spread: radius * 0.55, life: 1.05, gravity: -4.5,
+    });
+  }
+
+  // 5. 迸射：亮色向上，补速度感
+  spawnBurst(x, coreY, z, color, Math.round(22 * power), {
+    speed: 6.0 * power, up: 4.6 * power,
+    spread: radius * 0.3, life: 0.55, gravity: -10,
+  });
+
+  shake = Math.max(shake, 0.3 + 0.34 * power);
+}
+
+/* 内爆：黑洞 / 宇宙坍缩。粒子和光环从外圈往中心收 */
+function spawnImplosion(x, z, color, radius) {
+  if (!scene || !isFinite(x) || !isFinite(z)) return;
+  const r = Math.max(1, Number(radius) || 4);
+
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(r * 0.68, r * 0.78, 40),
+    new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity: 0.85,
+      side: THREE.DoubleSide, depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.set(x, 0.08, z);
+  scene.add(ring);
+  effects.push({ mesh: ring, life: 0, maxLife: 0.75, type: 'implosion', baseScale: 1 });
+
+  // 单点内爆：收完之后补一下亮斑，证明"吸完了"
+  const dot = new THREE.Mesh(
+    new THREE.SphereGeometry(r * 0.16, 10, 8),
+    new THREE.MeshBasicMaterial({
+      color: 0xffffff, transparent: true, opacity: 0.9,
+      depthWrite: false, blending: THREE.AdditiveBlending,
+    })
+  );
+  dot.position.set(x, 0.6, z);
+  scene.add(dot);
+  effects.push({ mesh: dot, life: 0, maxLife: 0.55, type: 'fireball', baseScale: r * 0.5, baseY: 0.6 });
+
+  shake = Math.max(shake, 0.42);
+}
+
+/* 全屏白闪：终焉审判 / 轨道轰炸用。复用 fx-layer 里的一个 div */
+function spawnFlash(color, strength) {
+  if (!fxFlash) return;
+  fxFlash.style.background = `#${new THREE.Color(color).getHexString()}`;
+  fxFlash.style.transition = 'none';
+  fxFlash.style.opacity = String(Math.min(1, strength));
+  // 强制重排后再过渡，否则浏览器会把两次 opacity 合并成一次、闪不出来
+  void fxFlash.offsetWidth;
+  fxFlash.style.transition = 'opacity 420ms ease-out';
+  fxFlash.style.opacity = '0';
+}
+
 /* 攻城：从炮口抛一颗炮弹到落点 */
 function spawnMortar(fromX, fromZ, toX, toZ, color, flightTime = 0.5) {
   const mesh = new THREE.Mesh(
@@ -6037,6 +6210,26 @@ function updateEffects(dt) {
       const s = 1 + t * 3;
       fx.mesh.scale.set(s, s, s);
       fx.mesh.material.opacity = (1 - t) * 0.9;
+    } else if (fx.type === 'fireball') {
+      // 火球：先快速涨到最大，再在最后三成时间里收亮度。
+      // 只淡出不变小，看起来才像"烧掉"而不是"缩回去"
+      const grow = Math.min(1, t / 0.35);
+      const sc = fx.baseScale * (0.35 + grow * 0.9);
+      fx.mesh.scale.setScalar(sc);
+      fx.mesh.position.y = fx.baseY + grow * 0.45;
+      fx.mesh.material.opacity = t < 0.35 ? 0.95 : Math.max(0, (1 - t) / 0.65) * 0.95;
+    } else if (fx.type === 'shockwave') {
+      // 冲击波：贴地薄环，扩得比 ring 更快更远，透明度掉得更狠
+      const e = 1 - (1 - t) * (1 - t); // easeOutQuad：一开始猛，后面减速
+      const sc = fx.baseScale * (0.2 + e);
+      fx.mesh.scale.set(sc, sc, sc);
+      fx.mesh.material.opacity = (1 - t) * 0.75;
+    } else if (fx.type === 'implosion') {
+      // 内爆：从外圈往里收，和爆炸正好相反
+      const e = t * t;
+      const sc = fx.baseScale * (1 - e) + 0.05;
+      fx.mesh.scale.set(sc, sc, sc);
+      fx.mesh.material.opacity = 0.85 * (1 - t * 0.4);
     } else if (fx.type === 'dust') {
       fx.mesh.scale.setScalar(0.7 + t * 0.8);
       fx.mesh.material.opacity = (1 - t) * 0.32;
