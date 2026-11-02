@@ -742,6 +742,8 @@ function spawnModel(proto, faceDir) {
         damageAction.setLoop(THREE.LoopOnce, 1);
         damageAction.clampWhenFinished = true;
         damageAction.paused = true;
+        // 待命时权重为 0，避免和走路/攻击动作叠在一起
+        damageAction.setEffectiveWeight(0);
       }
       // 死亡动作待命：死的时候播一遍再消失
       if (proto.userData.deathClip) {
@@ -1159,8 +1161,11 @@ export function initVisuals(container, events) {
     act.reset();
     act.setEffectiveWeight(1);
     act.play();
-    // 只把走路淡出；出拳之间走路不再重新播放，避免两个动作各占一半权重
+    // 只把走路淡出；出拳之间走路不再重新播放，避免两个动作各占一半权重。
+    // 咆哮/受击如果还在播也一起停掉，否则会和撕咬叠成抽搐
     if (vis.walkAction) vis.walkAction.fadeOut(0.12);
+    if (vis.roarAction) vis.roarAction.fadeOut(0.12);
+    if (vis.damageAction) vis.damageAction.fadeOut(0.12);
     vis.attacking = true;
 
     // 拳头砸在防线上的反馈：脚下扬尘 + 一道红色冲击环 + 震屏
@@ -4170,13 +4175,21 @@ function onZombieHit(z) {
   // 小血雾：比死亡时少一半
   spawnBurst(z.x, 1.0, z.z, 0x8a2f22, 7, { speed: 1.8, up: 1.8, spread: 0.35, life: 0.32 });
 
+  // Boss 一直在挨打，受击动作会和撕咬动作叠在一起，出拳永远演不完整；
+  // 它的受击反馈只保留血雾，不播 Damage_Action
+  if (z.boss) return;
+
   if (entry && entry.isModel && entry.vis.damageAction) {
     const act = entry.vis.damageAction;
     act.reset();
     act.paused = false;
+    act.setEffectiveWeight(1);
     act.play();
-    // 受击动画播完停住，别一直抖
-    setTimeout(() => { act.paused = true; }, 320);
+    // 受击动画播完停住并清权重，别一直和别的动作叠着抖
+    setTimeout(() => {
+      act.paused = true;
+      act.setEffectiveWeight(0);
+    }, 320);
   }
 }
 
