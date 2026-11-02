@@ -1018,7 +1018,7 @@ export function initVisuals(container, events) {
     } else if (d.type === 'barrage') {
       spawnBarrageFx(d.x, d.z, d.radius || 4.5, d.color || 0xff8a4d);
     } else if (d.type === 'orbital') {
-      spawnOrbitalBeam(d.z, d.color || 0x7fe3ff);
+      spawnOrbitalBeam(d.z, d.color || 0x7fe3ff, d.bandMin, d.bandMax);
     } else if (d.type === 'weaponDrop') {
       spawnWeaponDropFx(d.x, d.z);
     } else if (d.type === 'friendlyLegion') {
@@ -5472,8 +5472,38 @@ function spawnBarrageFx(x, z, radius, color) {
   }
 }
 
-/* 轨道轰炸：横向光柱，z 已被甲限制在士兵阵型之前 */
-function spawnOrbitalBeam(z, color) {
+/* 轨道轰炸：只铺在被清掉的那一段（bandMin ~ bandMax），
+ * z 已被甲限制在士兵阵型之前；没有范围时退回单道光柱。
+ * 一整片淡光幕盖住清掉的纵深，近端和远端各压一条亮线，玩家一眼能看出打到哪。 */
+function spawnOrbitalBeam(z, color, bandMin, bandMax) {
+  const hasBand = Number.isFinite(bandMin) && Number.isFinite(bandMax);
+  const lo = hasBand ? Math.min(bandMin, bandMax) : z;
+  const hi = hasBand ? Math.max(bandMin, bandMax) : z;
+  const span = Math.max(0, hi - lo);
+  const midZ = (lo + hi) / 2;
+
+  const glow = new THREE.Mesh(
+    new THREE.BoxGeometry(18.6, 0.8, Math.max(1.2, span + 1.0)),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.2,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  glow.position.set(0, 2.6, midZ);
+  scene.add(glow);
+  effects.push({ mesh: glow, life: 0, maxLife: 0.75, type: 'beamGlow' });
+
+  // 亮线：范围够大就压近端 + 远端两条，太小只留中间一条
+  const lines = span > 0.6 ? [hi, lo] : [midZ];
+  for (const lz of lines) spawnOrbitalBeamAt(lz, color);
+
+  shake = Math.max(shake, 0.55);
+}
+
+function spawnOrbitalBeamAt(z, color) {
   const core = new THREE.Mesh(
     new THREE.BoxGeometry(18, 0.22, 0.22),
     new THREE.MeshBasicMaterial({
@@ -5511,8 +5541,6 @@ function spawnOrbitalBeam(z, color) {
       { speed: 1.4, up: 1.8, spread: 0.3, life: 0.5 }
     );
   }
-
-  shake = Math.max(shake, 0.55);
 }
 
 /* 空投补给：金色武器箱落到玩家脚边 */

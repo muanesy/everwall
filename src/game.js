@@ -188,6 +188,8 @@ const CONFIG = {
     aoeRadius: 1.8,    // 每发命中的小范围
   },
   orbital: {
+    // 从士兵这一侧算起，只清掉最近的 2/3 僵尸，更远的一批留在场上继续压
+    killFraction: 2 / 3,
     beamZMax: 6.9,     // 光柱最高到这条线，留出士兵阵型
     beamWidth: 3.0,
   },
@@ -1246,7 +1248,7 @@ const SKILL_DESCS = {
   geneBurst: '全队射速 ×2，持续 5 秒',
   timeSlow: '全场僵尸所有移动 ×0.5，持续 4 秒',
   memory: '路障 +1 级；未解锁则直接解锁 1 级',
-  orbital: '横向轨道光柱，直接清空全场僵尸；一局只能使用一次',
+  orbital: '横向轨道光柱，清掉离士兵最近的 2/3 僵尸（按数量，远的一批留着）；一局只能使用一次',
   blackHole: '半径 12 内僵尸吸向中心，中心半径 4 内 40 伤害',
   wormhole: '全场僵尸一起送回出生点',
   carrierDrones: '召唤 4 架大型舰载无人机，持续一波（15 秒），每 0.45 秒造成 20 点小范围伤害',
@@ -1313,6 +1315,32 @@ function clearZombies() {
   }
 }
 
+// 轨道轰炸：从士兵这一侧数起，只清掉最近的 fraction 比例僵尸，更远的一批留在场上。
+// 士兵在 z 大的那一头，所以按 z 从大到小排，取前 fraction 名。
+// 返回被打掉那一段的纵向范围，画面层拿它铺光柱。
+function bombardNearestFraction(fraction) {
+  const total = state.zombies.length;
+  if (!total) return null;
+
+  const sorted = state.zombies.slice().sort((a, b) => b.z - a.z);
+  const killCount = Math.max(1, Math.min(total, Math.round(total * fraction)));
+  const doomed = new Set(sorted.slice(0, killCount));
+
+  let nearZ = -Infinity; // 最靠近士兵的一只（z 最大）
+  let farZ = Infinity;   // 这段里最靠出生点的一只（z 最小）
+
+  // 从后往前删，避免下标错位
+  for (let i = state.zombies.length - 1; i >= 0; i--) {
+    const zb = state.zombies[i];
+    if (!doomed.has(zb)) continue;
+    nearZ = Math.max(nearZ, zb.z);
+    farZ = Math.min(farZ, zb.z);
+    damageZombieAt(i, Infinity);
+  }
+
+  return { killed: killCount, nearZ, farZ };
+}
+
 // 普通僵尸在当前波次的血量。滚木用它算伤害：1.25 倍能秒普通，大块头是 2.5 倍血，秒不掉。
 function currentNormalHp() {
   return CONFIG.zombie.baseHp + (state.wave - 1) * CONFIG.zombie.hpPerWave;
@@ -1370,6 +1398,7 @@ function castSkill(id) {
   if (!def) return false;
 
   const target = densestPoint() || { x: 0, z: -6 };
+  let castExtra = null;
   const announce = () => emit('skillCast', {
     id: def.id,
     name: def.name,
@@ -1378,6 +1407,7 @@ function castSkill(id) {
     z: target.z,
     radius: def.radius || 0,
     color: def.color,
+    ...(castExtra || {}),
   });
 
   switch (def.type) {
@@ -1399,13 +1429,30 @@ function castSkill(id) {
     case 'carrierDrones':
       spawnCarrierDrones();
       break;
-    case 'orbital':
-      clearZombies();
-      // 清屏后短暂停止刷怪，不然下一只几乎立刻补上，看起来像没清
+    case 'orbital': {
+      const band = bombardNearestFraction(CONFIG.orbital.killFraction);
+      // 清完之后留一口真空，不然下一只几乎立刻补上，看起来像没打
       state.zombieSpawnPauseUntil = state.time + 1.5;
       state.zombieTimer = Math.max(state.zombieTimer, 1.5);
-      target.z = Math.min(target.z, CONFIG.orbital.beamZMax);
+
+      // 光柱只铺在被打掉的那一段：从士兵一侧往上 2/3，永远不穿过士兵阵型。
+      // 万一被打掉的都在屏幕外，也至少在屏幕顶边留一道，玩家能看见打了
+      const zMax = CONFIG.orbital.beamZMax;
+      const zMin = CONFIG.world.screenTopZ;
+      if (band) {
+        const nearZ = Math.max(zMin, Math.min(band.nearZ, zMax));
+        const farZ = Math.max(zMin, Math.min(band.farZ, zMax));
+        target.z = (nearZ + farZ) / 2;
+        castExtra = {
+          bandMin: Math.min(nearZ, farZ),
+          bandMax: Math.max(nearZ, farZ),
+          killed: band.killed,
+        };
+      } else {
+        target.z = Math.min(target.z, zMax);
+      }
       break;
+    }
     case 'rollingLog':
       spawnRollingLog();
       break;
