@@ -19,6 +19,7 @@ import {
   switchEra,
   pickEraMap,
   spawnCampfireFx,
+  setWaterLevel,
 } from './visuals.js';
 import { initUI, updateUI } from './ui.js';
 
@@ -252,6 +253,14 @@ const CONFIG = {
     rewardScore: 30,     // 击败奖励：额外分数（types 里的 score 40 会另算）
     toast: true,
   },
+  // 洪水（点子池「洪水上涨」）：水位随波次上升，漫过脚踝后僵尸变慢
+  flood: {
+    startWave: 5,      // 第几波开始涨
+    perWave: 0.06,     // 每波涨多少（0~1 的水位值）
+    maxLevel: 0.9,     // 涨到这儿封顶，不会真把画面淹掉
+    slowFrom: 0.55,    // 水位超过这个值才开始拖慢僵尸
+    slowMul: 0.62,     // 水里僵尸移速乘这个
+  },
   // 补给箱：场上随机掉一个木箱，打碎给随机奖励
   crate: {
     interval: 16,        // 每隔多少秒尝试刷一个
@@ -378,6 +387,7 @@ const state = {
   crateTimer: 0,
   crates: [],        // 补给箱：{ id, x, z, y, landed, reward }
   enemyShots: [],    // 远程僵尸吐出来的酸液：{ id, x, z, tx, tz, speed, damage }
+  floodLevel: 0,     // 当前水位 0~1，给画面层和僵尸减速共用
   nextId: 1,
   spawnCounts: new Array(14).fill(0), // 调试用：统计每种僵尸刷了多少只（0-13）
 };
@@ -599,6 +609,8 @@ function resetState(opts = {}) {
   state.crateTimer = CONFIG.crate.firstDelay;
   state.crates.length = 0;
   state.enemyShots.length = 0;
+  state.floodLevel = 0;
+  setWaterLevel(0);
   state.nextId = 1;
   state.spawnCounts.fill(0);
   resetBarricade();
@@ -1594,6 +1606,18 @@ function update(dt) {
     }
   }
 
+  // 洪水：水位按波次上涨，漫过脚踝后整场僵尸变慢。
+  // 只在数值真的变了才调画面层，免得每帧都写一遍水面
+  const floodLevel = Math.min(
+    CONFIG.flood.maxLevel,
+    Math.max(0, (state.wave - CONFIG.flood.startWave) * CONFIG.flood.perWave)
+  );
+  if (Math.abs(floodLevel - state.floodLevel) > 0.001) {
+    state.floodLevel = floodLevel;
+    setWaterLevel(floodLevel);
+    if (floodLevel >= CONFIG.flood.slowFrom) emit('floodRise', { level: floodLevel });
+  }
+
   updateFormation();
   updatePlayer(dt);
   updateFiring(dt);
@@ -2365,7 +2389,9 @@ function updateZombies(dt) {
       }
     } else {
       const slowMul = state.time < state.slowUntil ? state.slowMul : 1;
-      z.z += z.speed * dt * slowMul;
+      // 水里走不动：水位漫过脚踝后整场僵尸都慢下来
+      const waterMul = state.floodLevel >= CONFIG.flood.slowFrom ? CONFIG.flood.slowMul : 1;
+      z.z += z.speed * dt * slowMul * waterMul;
     }
 
     z.x = clamp(z.x, -CONFIG.world.halfWidth - 1, CONFIG.world.halfWidth + 1);
