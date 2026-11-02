@@ -519,8 +519,15 @@ function loadModels() {
       const soldierProto = (raw, clip) => {
         if (!raw) return null;
         const p = skeletonClone(raw);
+        // skeletonClone（Object3D.clone）会把 userData 做 JSON 拷贝，把真实的
+        // AnimationClip 引用毁成普通对象（track 失去 createInterpolant 方法），
+        // 克隆士兵时一调 clipAction 就崩、整队士兵消失。这里必须把全部动画真引用补回，
+        // 和 prepareZombieType 的做法一致。
         p.userData.clip = clip;
         p.userData.attackClip = raw.userData.attackClip;
+        p.userData.damageClip = raw.userData.damageClip;
+        p.userData.deathClip = raw.userData.deathClip;
+        p.userData.roarClip = raw.userData.roarClip;
         return preparePrototype(p, MODEL_TARGET.soldierHeight);
       };
 
@@ -807,6 +814,7 @@ export function initVisuals(container, events) {
   );
   soldierMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   soldierMesh.count = 0;
+  soldierMesh.frustumCulled = false; // 实例散落在原点之外（z≈9），基准包围球会被误剔除，整批不画
   scene.add(soldierMesh);
 
   // 枪口火光点光源：shoot 时点亮、每帧快速衰减
@@ -1428,7 +1436,9 @@ function soldierSlot(i, state) {
 
   return {
     x: state.player.x + (col - (width - 1) / 2) * spacing,
-    z: state.player.z + 0.25 + row * rowGap,
+    // 阵型在玩家"前方"（朝敌人，z 减小）：原本 +0.25 把兵放在玩家身后（更靠相机、压在底部 HUD 上），
+    // 既不合战术逻辑也让兵看不见。改到身前，兵落在画面中下段、看得清。
+    z: state.player.z - 1.5 - row * rowGap,
   };
 }
 
