@@ -291,6 +291,10 @@ const ZOMBIE_LOOKS = [
   { src: 'cyber',  scale: 1.0,  tint: [0.86, 0.92, 1.05], walkSpeed: 1.25, attackSpeed: 1.4, score: 5 },   // 9 生化改造体（后现代·雪地）
   // 10 号是 Boss：模型自带咆哮/撕咬/死亡全套动画，体型大、走得慢、碰兵扣得多
   { src: 'boss',   scale: 1.0,  tint: [0.58, 0.54, 0.56], walkSpeed: 0.5, attackSpeed: 0.7, score: 40, isBoss: true, emissive: 0.10 },
+  // 11 自爆：体型鼓、橙红自发光，像一颗要走路的炸弹——远远就该认出它
+  { src: 'male',   scale: 1.15, tint: [1.15, 0.62, 0.42], walkSpeed: 1.0, attackSpeed: 1.0, score: 4, emissive: 0.30, color: 0xff6a3a },
+  // 12 护甲：金属灰、体型略大，一眼看上去"很硬"
+  { src: 'male',   scale: 1.2,  tint: [0.72, 0.76, 0.82], walkSpeed: 0.9, attackSpeed: 0.95, score: 4, color: 0x8a95a4 },
 ];
 
 /* 地图 → 僵尸模型覆盖：换地图时，同一种 type 换上本地图专属的模型。
@@ -1076,6 +1080,27 @@ export function initVisuals(container, events) {
     const d = e.detail || {};
     if (isFinite(d.x) && isFinite(d.z)) triggerMeteor(d.x, d.z);
     else triggerMeteorRandom();
+  });
+
+  // 自爆僵尸炸开：一圈橙红冲击 + 火球 + 震屏，半径由甲传过来，光比伤害半径略小一点
+  events.addEventListener('zombieExplode', (e) => {
+    const d = e.detail || {};
+    const x = Number(d.x);
+    const z = Number(d.z);
+    if (!isFinite(x) || !isFinite(z)) return;
+
+    const r = Math.max(1, Math.min(4, Number(d.radius) || 2.8));
+    shake = Math.max(shake, 0.34);
+    spawnRing(x, z, 0xffb060, 0.34);
+    spawnRing(x, z, 0xff5a24, 0.5);
+    spawnBurst(x, 0.55, z, 0xff8a3a, 20, {
+      speed: 4.4, up: 3.6, spread: 0.7, life: 0.5, gravity: -8,
+    });
+    spawnBurst(x, 0.35, z, 0x4a3a30, 12, {
+      speed: 2.6, up: 2.0, spread: r * 0.5, life: 0.9, gravity: -2.5,
+    });
+    // 地上留一小片烧痕，让人看得出这儿炸过
+    spawnRing(x, z, 0x9a3010, 0.9);
   });
 }
 
@@ -4119,14 +4144,16 @@ function updateBarrierAppearance(mesh, bar) {
 
 function makeZombieMesh(type) {
   // 色块版的五色：和 ZOMBIE_LOOKS 的 tint 方向一致（普通绿/暗红灰/黄绿/灰白/灰绿）
+  // 11 自爆=橙红、12 护甲=金属灰，按 type 取，取不到回落到普通
   const colors = [0x6f8f6a, 0x8f5a4a, 0x9aa04a, 0xb8bcc4, 0x647f68];
+  const COLOR_BY_TYPE = { 10: 0x6b6068, 11: 0xd85a2a, 12: 0x8a95a4 };
   const look = ZOMBIE_LOOKS[type] || ZOMBIE_LOOKS[0];
 
   const mesh = new THREE.Mesh(
     new THREE.BoxGeometry(0.7, 1.15, 0.7),
     new THREE.MeshStandardMaterial({
       // 色块版也跟地图氛围走，和模型版观感一致
-      color: tintHex(colors[type % colors.length], MAP_TINT),
+      color: tintHex(COLOR_BY_TYPE[type] ?? colors[type % colors.length], MAP_TINT),
       roughness: 0.85,
     })
   );

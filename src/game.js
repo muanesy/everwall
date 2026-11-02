@@ -217,6 +217,10 @@ const CONFIG = {
       { id: 2, name: '快鬼',   hp: 0.5, speed: 1.50, touchLoss: 1, score: 1, baseWeight: 22, growth: 0,                    minWave: 1 },
       { id: 3, name: '精英',   hp: 3.5, speed: 0.85, touchLoss: 3, score: 5, baseWeight: 6,  growth: 0.5, maxWeight: 12, minWave: 3 },
       { id: 4, name: '女僵尸', hp: 1.2, speed: 1.10, touchLoss: 1, score: 2, baseWeight: 12, growth: 0,                    minWave: 1 },
+      // 11 自爆：死了炸一圈，逼玩家优先点掉它，别让它贴近阵型
+      { id: 11, name: '自爆', hp: 1.6, speed: 0.90, touchLoss: 2, score: 4, baseWeight: 6, growth: 0.4, maxWeight: 12, minWave: 4, explode: { radius: 2.8, hpMul: 4 } },
+      // 12 护甲：子弹伤害打对折，靠技能或集火处理
+      { id: 12, name: '护甲', hp: 2.0, speed: 0.85, touchLoss: 2, score: 4, baseWeight: 8, growth: 0.3, maxWeight: 14, minWave: 5, armor: 0.5 },
       // 时代 Boss：不参与随机抽签（minWave 999 + boss 标记双保险），
       // 只由 spawnEraBoss() 在切换时代时单独刷一只
       // hp 9 = 同波普通僵尸的 9 倍（第 5 波约 470 血），40 兵对准约 20 秒能打完
@@ -356,7 +360,7 @@ const state = {
   zombieTimer: 0,
   barrelTimer: 0,
   nextId: 1,
-  spawnCounts: new Array(11).fill(0), // 调试用：统计每种僵尸刷了多少只（0-10，10 是 Boss）
+  spawnCounts: new Array(13).fill(0), // 调试用：统计每种僵尸刷了多少只（0-12）
 };
 
 // 调试用：浏览器控制台输入 __state 可以看实时数据
@@ -449,6 +453,18 @@ events.addEventListener('barrelExploded', (e) => {
 // 全都派 zombieDie，所以奖励在这里单点结算，不会漏也不会重复。
 events.addEventListener('zombieDie', (e) => {
   const d = e.detail || {};
+
+  // 自爆僵尸：死后炸一圈。伤害按"本波普通僵尸血量 × hpMul"算，
+  // 所以它越晚死、周围僵尸越硬，炸得越狠；连锁引爆是允许的（死者已先被移出数组，不会重复炸）
+  if (d.type === 11) {
+    const cfg = zombieTypeById(11)?.explode;
+    if (cfg && Number.isFinite(d.x) && Number.isFinite(d.z)) {
+      const baseHp = CONFIG.zombie.baseHp + (state.wave - 1) * CONFIG.zombie.hpPerWave;
+      emit('zombieExplode', { x: d.x, z: d.z, radius: cfg.radius });
+      damageZombiesInRadius(d.x, d.z, cfg.radius, baseHp * cfg.hpMul);
+    }
+  }
+
   if (d.type !== 10) return;
 
   state.soldiers = Math.min(
@@ -1791,7 +1807,7 @@ function updateBullets(dt) {
           break;
         }
 
-        z.hp -= b.damage;
+        z.hp -= b.damage * (z.armor ?? 1);
 
         if (z.hp <= 0) {
           state.zombies.splice(j, 1);
@@ -2370,6 +2386,9 @@ function spawnZombie() {
     touchLoss: type.touchLoss,
     type: type.id,
     aggro: false,
+    armor: type.armor || 1,        // 子弹伤害乘子（护甲僵尸 0.5）
+    explode: type.explode || null, // 自爆僵尸：死了按这个半径和倍率炸
+    boss: false,
   });
 
   if (state.spawnCounts) state.spawnCounts[type.id] += 1;
@@ -2404,6 +2423,8 @@ function spawnEraBoss(eraIndex) {
     touchLoss: type.touchLoss,
     type: type.id,
     aggro: false,
+    armor: type.armor || 1,
+    explode: type.explode || null,
     boss: true,
     era: eraIndex,
   };
