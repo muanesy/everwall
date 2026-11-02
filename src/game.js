@@ -723,8 +723,10 @@ function castSkill(id) {
   const announce = () => emit('skillCast', {
     id: def.id,
     name: def.name,
+    type: def.type,
     x: target.x,
     z: target.z,
+    radius: def.radius || 0,
     color: def.color,
   });
 
@@ -1303,6 +1305,9 @@ function updateSlots(dt) {
       if (target) {
         damageZombiesInRadius(target.x, target.z, siege.radius, siege.damage * eraMul);
         emit('slotStrike', {
+          kind: 'siege',
+          fromX: siege.x,
+          fromZ: siege.z,
           x: target.x,
           z: target.z,
           radius: siege.radius,
@@ -1318,9 +1323,28 @@ function updateSlots(dt) {
     if (state.slotTimers.closeDefense <= 0) {
       state.slotTimers.closeDefense = close.interval;
       damageZombiesInRadius(close.x, close.z, close.radius, close.damage * eraMul);
+
+      // 找最近的僵尸，画一条曳光过去
+      let tx = close.x;
+      let tz = close.z;
+      let best = Infinity;
+      for (const zb of state.zombies) {
+        const dx = zb.x - close.x;
+        const dz = zb.z - close.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 < close.radius * close.radius && d2 < best) {
+          best = d2;
+          tx = zb.x;
+          tz = zb.z;
+        }
+      }
+
       emit('slotStrike', {
-        x: close.x,
-        z: close.z,
+        kind: 'closeDefense',
+        fromX: close.x,
+        fromZ: close.z,
+        x: tx,
+        z: tz,
         radius: close.radius,
         color: 0xff6a4a,
       });

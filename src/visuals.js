@@ -915,7 +915,13 @@ export function initVisuals(container, events) {
   });
 
   events.addEventListener('slotStrike', (e) => {
-    spawnRing(e.detail.x, e.detail.z, e.detail.color || 0xffa64d, 0.55);
+    const d = e.detail;
+    if (d.kind === 'siege') {
+      spawnMortar(d.fromX, d.fromZ, d.x, d.z, d.color || 0xffa64d);
+    } else if (d.kind === 'closeDefense') {
+      spawnTracer(d.fromX, d.fromZ, d.x, d.z, d.color || 0xff6a4a);
+    }
+    spawnRing(d.x, d.z, d.color || 0xffa64d, 0.5);
   });
 
   events.addEventListener('slotHeal', (e) => {
@@ -923,7 +929,14 @@ export function initVisuals(container, events) {
   });
 
   events.addEventListener('skillCast', (e) => {
-    spawnRing(e.detail.x, e.detail.z, e.detail.color || 0xffffff, 0.7);
+    const d = e.detail;
+    if (d.type === 'line') {
+      spawnBar(d.z, d.color || 0xffffff);
+    } else if (d.type === 'heal') {
+      spawnRing(d.x, d.z, d.color || 0x5adf7a, 0.7);
+    } else {
+      spawnSkyStrike(d.x, d.z, d.color || 0xffffff);
+    }
   });
 
   events.addEventListener('slotUnlock', (e) => {
@@ -3016,6 +3029,79 @@ const SLOT_DEFS = [
 
 const slotVisuals = new Map();
 
+function makeSlotStructure(id, color) {
+  const group = new THREE.Group();
+  const mainMat = new THREE.MeshStandardMaterial({
+    color,
+    emissive: color,
+    emissiveIntensity: 0.2,
+    roughness: 0.5,
+    metalness: 0.2,
+  });
+  const darkMat = new THREE.MeshStandardMaterial({
+    color: 0x2a3440,
+    roughness: 0.8,
+  });
+
+  if (id === 'siege') {
+    const base = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.35, 1.0), darkMat);
+    base.position.y = 0.18;
+    group.add(base);
+
+    const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.28, 1.1), mainMat);
+    barrel.position.set(0, 0.55, -0.15);
+    barrel.rotation.x = -0.5;
+    group.add(barrel);
+  } else if (id === 'closeDefense') {
+    const base = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.4, 0.48, 0.35, 12),
+      darkMat
+    );
+    base.position.y = 0.18;
+    group.add(base);
+
+    const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.18, 0.8), mainMat);
+    barrel.position.set(0, 0.5, -0.25);
+    barrel.rotation.x = -0.3;
+    group.add(barrel);
+  } else if (id === 'support') {
+    const tent = new THREE.Mesh(
+      new THREE.BoxGeometry(1.0, 0.6, 1.0),
+      new THREE.MeshStandardMaterial({ color: 0xe8f0e8, roughness: 0.8 })
+    );
+    tent.position.y = 0.3;
+    group.add(tent);
+
+    const crossA = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.12, 0.04), mainMat);
+    crossA.position.set(0, 0.42, 0.52);
+    group.add(crossA);
+
+    const crossB = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.5, 0.04), mainMat);
+    crossB.position.set(0, 0.42, 0.52);
+    group.add(crossB);
+  } else if (id === 'command') {
+    const base = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.35, 0.42, 0.25, 12),
+      darkMat
+    );
+    base.position.y = 0.13;
+    group.add(base);
+
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.05, 0.05, 1.5, 8),
+      mainMat
+    );
+    pole.position.y = 0.85;
+    group.add(pole);
+
+    const flag = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.3, 0.03), mainMat);
+    flag.position.set(0.3, 1.35, 0);
+    group.add(flag);
+  }
+
+  return group;
+}
+
 function initSlots() {
   for (const s of SLOT_DEFS) {
     const pad = new THREE.Mesh(
@@ -3039,22 +3125,14 @@ function initSlots() {
     ring.position.set(s.x, 0.09, s.z);
     scene.add(ring);
 
-    const post = new THREE.Mesh(
-      new THREE.BoxGeometry(0.22, 0.55, 0.22),
-      new THREE.MeshStandardMaterial({
-        color: s.color,
-        emissive: s.color,
-        emissiveIntensity: 0.25,
-        roughness: 0.5,
-      })
-    );
-    post.position.set(s.x, 0.28, s.z);
-    scene.add(post);
+    const structure = makeSlotStructure(s.id, s.color);
+    structure.position.set(s.x, 0, s.z);
+    scene.add(structure);
 
     slotVisuals.set(s.id, {
       pad,
       ring,
-      post,
+      structure,
       x: s.x,
       z: s.z,
       color: s.color,
@@ -3065,7 +3143,7 @@ function initSlots() {
 function syncSlots(state) {
   for (const [id, v] of slotVisuals) {
     const on = !!(state.slots && state.slots[id]);
-    v.post.visible = on;
+    v.structure.visible = on;
     v.ring.material.opacity = on ? 0.8 : 0.16;
   }
 }
@@ -3310,6 +3388,71 @@ function spawnRing(x, z, color, maxLife) {
   effects.push({ mesh, life: 0, maxLife, type: 'ring' });
 }
 
+/* 攻城：从炮口抛一颗炮弹到落点 */
+function spawnMortar(fromX, fromZ, toX, toZ, color) {
+  const mesh = new THREE.Mesh(
+    new THREE.SphereGeometry(0.16, 8, 8),
+    new THREE.MeshBasicMaterial({ color })
+  );
+  mesh.position.set(fromX, 1.2, fromZ);
+  scene.add(mesh);
+  effects.push({
+    mesh,
+    life: 0,
+    maxLife: 0.5,
+    type: 'arc',
+    from: { x: fromX, y: 1.2, z: fromZ },
+    to: { x: toX, y: 0.3, z: toZ },
+    arc: 2.2,
+  });
+}
+
+/* 技能范围打击：从天上砸下来 */
+function spawnSkyStrike(x, z, color) {
+  const mesh = new THREE.Mesh(
+    new THREE.SphereGeometry(0.2, 8, 8),
+    new THREE.MeshBasicMaterial({ color })
+  );
+  mesh.position.set(x, 12, z);
+  scene.add(mesh);
+  effects.push({
+    mesh,
+    life: 0,
+    maxLife: 0.4,
+    type: 'arc',
+    from: { x, y: 12, z },
+    to: { x, y: 0.3, z },
+    arc: 0,
+  });
+}
+
+/* 近防：从炮塔拉一条曳光到目标 */
+function spawnTracer(fromX, fromZ, toX, toZ, color) {
+  const dx = toX - fromX;
+  const dz = toZ - fromZ;
+  const len = Math.hypot(dx, dz) || 0.1;
+
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(0.06, 0.06, len),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9 })
+  );
+  mesh.position.set((fromX + toX) / 2, 0.8, (fromZ + toZ) / 2);
+  mesh.lookAt(toX, 0.8, toZ);
+  scene.add(mesh);
+  effects.push({ mesh, life: 0, maxLife: 0.15, type: 'fade' });
+}
+
+/* 横排技能：一道贯穿全屏的光带 */
+function spawnBar(z, color) {
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(18, 0.15, 0.5),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85 })
+  );
+  mesh.position.set(0, 0.6, z);
+  scene.add(mesh);
+  effects.push({ mesh, life: 0, maxLife: 0.45, type: 'fade' });
+}
+
 // 从粒子池里借位置发射一簇粒子（血雾/魂火/尘土共用）
 const fxC = new THREE.Color();
 function spawnBurst(x, y, z, color, count, opts = {}) {
@@ -3377,6 +3520,9 @@ function updateEffects(dt) {
     const t = fx.life / fx.maxLife;
 
     if (t >= 1) {
+      if (fx.type === 'arc') {
+        spawnRing(fx.to.x, fx.to.z, fx.mesh.material.color.getHex(), 0.5);
+      }
       scene.remove(fx.mesh);
       disposeMesh(fx.mesh);
       effects.splice(i, 1);
@@ -3390,6 +3536,16 @@ function updateEffects(dt) {
     } else if (fx.type === 'dust') {
       fx.mesh.scale.setScalar(0.7 + t * 0.8);
       fx.mesh.material.opacity = (1 - t) * 0.32;
+    } else if (fx.type === 'arc') {
+      const x = fx.from.x + (fx.to.x - fx.from.x) * t;
+      const z = fx.from.z + (fx.to.z - fx.from.z) * t;
+      const y =
+        fx.from.y +
+        (fx.to.y - fx.from.y) * t +
+        Math.sin(Math.PI * t) * fx.arc;
+      fx.mesh.position.set(x, y, z);
+    } else if (fx.type === 'fade') {
+      fx.mesh.material.opacity = (1 - t) * 0.9;
     } else {
       fx.mesh.scale.setScalar(1 + t * 0.6);
       fx.mesh.material.opacity = 1 - t;
