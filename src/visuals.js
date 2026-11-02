@@ -671,6 +671,7 @@ const knightChargeMeshes = new Map();
 const apcMeshes = new Map();
 const carrierDroneMeshes = new Map();
 const friendlyZombieMeshes = new Map();
+const virusBombMeshes = new Map();
 let tankSupportMesh = null;
 const effects = [];
 
@@ -974,6 +975,17 @@ export function initVisuals(container, events) {
     });
   });
 
+  events.addEventListener('virusBombImpact', (e) => {
+    const d = e.detail;
+    spawnRing(d.x, d.z, 0x8fe36a, 0.8);
+    spawnBurst(d.x, 0.8, d.z, 0x8fe36a, 24, {
+      speed: 3.2,
+      up: 2.4,
+      spread: d.radius || 2.6,
+      life: 0.8,
+    });
+  });
+
   events.addEventListener('slotHeal', (e) => {
     spawnRing(e.detail.x, e.detail.z, 0x5adf7a, 0.55);
   });
@@ -990,13 +1002,18 @@ export function initVisuals(container, events) {
       spawnBarrageFx(d.x, d.z, d.radius || 4.5, d.color || 0xff8a4d);
     } else if (d.type === 'orbital') {
       spawnOrbitalBeam(d.z, d.color || 0x7fe3ff);
+    } else if (d.type === 'weaponDrop') {
+      spawnWeaponDropFx(d.x, d.z);
+    } else if (d.type === 'friendlyLegion') {
+      spawnRing(0, 8.5, 0x9c6bff, 0.8);
     } else if (
       d.type === 'rollingLog' ||
       d.type === 'knightCharge' ||
       d.type === 'campfire' ||
       d.type === 'tank' ||
       d.type === 'apc' ||
-      d.type === 'carrierDrones'
+      d.type === 'carrierDrones' ||
+      d.type === 'virusBomb'
     ) {
       // 持续实体由各自的 sync 负责画
     } else {
@@ -2482,6 +2499,7 @@ export function syncScene(state, dt) {
   syncApcs(state);
   syncCarrierDrones(state);
   syncFriendlyZombies(state);
+  syncVirusBombs(state);
 
   updateEffects(dt);
   updateParticleFx(dt);
@@ -3451,6 +3469,7 @@ function syncFriendlyZombies(state) {
     let mesh = friendlyZombieMeshes.get(f.id);
     if (!mesh) {
       mesh = makeFriendlyZombieMesh();
+      if (f.converted) mesh.scale.setScalar(1.08);
       scene.add(mesh);
       friendlyZombieMeshes.set(f.id, mesh);
     }
@@ -3462,6 +3481,67 @@ function syncFriendlyZombies(state) {
       scene.remove(mesh);
       disposeMesh(mesh);
       friendlyZombieMeshes.delete(id);
+    }
+  }
+}
+
+/* 病毒炸弹：绿色罐体 + 地面预警圈 */
+function makeVirusBombEntry(bomb) {
+  const group = new THREE.Group();
+
+  const canister = new THREE.Mesh(
+    new THREE.SphereGeometry(0.3, 10, 8),
+    new THREE.MeshStandardMaterial({
+      color: 0x8fe36a,
+      emissive: 0x3a7a22,
+      emissiveIntensity: 0.7,
+      roughness: 0.5,
+    })
+  );
+  canister.position.y = 6.5;
+  group.add(canister);
+
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(bomb.radius - 0.07, bomb.radius, 44),
+    new THREE.MeshBasicMaterial({
+      color: 0x8fe36a,
+      transparent: true,
+      opacity: 0.25,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.04;
+  group.add(ring);
+
+  return { group, canister, ring };
+}
+
+function syncVirusBombs(state) {
+  const alive = new Set();
+
+  for (const bomb of state.virusBombs || []) {
+    alive.add(bomb.id);
+    let entry = virusBombMeshes.get(bomb.id);
+    if (!entry) {
+      entry = makeVirusBombEntry(bomb);
+      scene.add(entry.group);
+      virusBombMeshes.set(bomb.id, entry);
+    }
+
+    const fall = bomb.fallTime || 0.8;
+    const t = Math.max(0, Math.min(1, bomb.timeLeft / fall));
+    entry.group.position.set(bomb.x, 0, bomb.z);
+    entry.canister.position.y = 0.35 + t * 6;
+    entry.ring.material.opacity = 0.18 + (1 - t) * 0.3;
+  }
+
+  for (const [id, entry] of virusBombMeshes) {
+    if (!alive.has(id)) {
+      scene.remove(entry.group);
+      disposeMesh(entry.group);
+      virusBombMeshes.delete(id);
     }
   }
 }
@@ -5303,6 +5383,33 @@ function spawnOrbitalBeam(z, color) {
   }
 
   shake = Math.max(shake, 0.55);
+}
+
+/* 空投补给：金色武器箱落到玩家脚边 */
+function spawnWeaponDropFx(x, z) {
+  const crate = new THREE.Mesh(
+    new THREE.BoxGeometry(0.5, 0.4, 0.5),
+    new THREE.MeshBasicMaterial({ color: 0xffd27a })
+  );
+  crate.position.set(x, 8, z);
+  scene.add(crate);
+  effects.push({
+    mesh: crate,
+    life: 0,
+    maxLife: 0.6,
+    type: 'arc',
+    from: { x, y: 8, z },
+    to: { x, y: 0.3, z },
+    arc: 0,
+  });
+
+  spawnRing(x, z, 0xffd27a, 0.8);
+  spawnBurst(x, 0.4, z, 0xffd27a, 14, {
+    speed: 2.2,
+    up: 2,
+    spread: 0.5,
+    life: 0.6,
+  });
 }
 
 /* 地面范围圈：给圆形技能标出覆盖范围 */

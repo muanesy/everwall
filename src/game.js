@@ -187,37 +187,22 @@ const CONFIG = {
     beamZMax: 6.9,     // 光柱最高到这条线，留出士兵阵型
     beamWidth: 3.0,
   },
-  tankSupport: {
-    x: -5.5, z: 9.4,   // 左下方
-    shots: 3,          // 一轮打 3 发
-    shotInterval: 0.7,
-    damage: 60,
-    radius: 3.0,
-    flightTime: 0.5,   // 炮弹飞行时间
-    retreatDelay: 0.8, // 打完多久开始撤
-    retreatSpeed: 4.5,
+  weaponDrop: {
+    duration: 12,      // 空投重武器持续时间
+    damageMul: 2.0,
+    rateMul: 1.5,
   },
-  apc: {
-    speed: 7.5,        // 比骑士慢很多
-    damage: 90,        // 撞击伤害，每只僵尸一次
-    hitRadius: 1.1,
-    hitDepth: 1.2,
-    spawnZ: 9.8,
-    mgInterval: 0.35,  // 机枪间隔
-    mgDamage: 12,
-    mgRange: 8,
+  virusBomb: {
+    count: 2,
+    radius: 2.6,
+    maxConvert: 8,     // 每枚最多转化几只
+    flightTime: 0.8,
   },
-  carrierDrones: {
-    count: 4,
-    life: 4.0,
-    damage: 10,
-    interval: 0.5,
-    range: 16,
-    radius: 1.6,       // 无人机绕最密点转的半径
-  },
-  orbital: {
-    beamZMax: 6.9,     // 光柱最高到这条线，留出士兵阵型
-    beamWidth: 3.0,
+  bioLegion: {
+    count: 20,
+    hp: 36,
+    damage: 7,
+    speed: 3.4,
   },
   barricade: {
     xMin: -0.4,          // 路障左边界，避开左边屏障通道
@@ -460,8 +445,12 @@ const state = {
   tankSupport: null, // { x, z, shotsLeft, timer, retreating, retreatDelay }
   apcCharges: [],    // { id, x, z, speed, damage, hit, mgTimer }
   carrierDrones: [], // { id, x, z, baseX, baseZ, life, mgTimer, phase }
-  friendlyZombies: [], // { id, x, z, hp, maxHp, speed, damage, attackTimer, life }
+  friendlyZombies: [], // { id, x, z, hp, maxHp, speed, damage, attackTimer, life, converted }
+  virusBombs: [],    // { id, x, z, timeLeft, radius, maxConvert }
   usedSkills: [],    // 一局只能用一次的技能 id，目前是轨道轰炸
+  weaponBoostUntil: 0,
+  weaponBoostDamage: 1,
+  weaponBoostRate: 1,
 
   barrierTimer: 0,
   zombieTimer: 0,
@@ -667,6 +656,9 @@ function resetState(opts = {}) {
   state.skillBagVersion += 1;
   state.skillUseCd = 0;
   state.usedSkills = [];
+  state.weaponBoostUntil = 0;
+  state.weaponBoostDamage = 1;
+  state.weaponBoostRate = 1;
 
   state.slotTimers.siege = 3;
   state.slotTimers.support = 6;
@@ -691,6 +683,7 @@ function resetState(opts = {}) {
   state.apcCharges.length = 0;
   state.carrierDrones.length = 0;
   state.friendlyZombies.length = 0;
+  state.virusBombs.length = 0;
 
   state.barrierTimer = 0.6;
   state.zombieTimer = 1.0;
@@ -735,6 +728,10 @@ function revive() {
   state.apcCharges.length = 0;
   state.carrierDrones.length = 0;
   state.friendlyZombies.length = 0;
+  state.virusBombs.length = 0;
+  state.weaponBoostUntil = 0;
+  state.weaponBoostDamage = 1;
+  state.weaponBoostRate = 1;
   state.barrierTimer = 0.4;
   state.zombieTimer = 0.8;
 
@@ -1172,10 +1169,10 @@ const SKILL_DEFS = [
   { id: 'droneSwarm', name: '无人机蜂群', era: 2, type: 'aoe', damage: 60, radius: 4.5, color: 0x7fd4ff },
   { id: 'emp', name: '电磁脉冲', era: 2, type: 'freeze', duration: 2, color: 0x6fa8ff },
   { id: 'apc', name: '装甲车冲锋', era: 2, type: 'apc', color: 0x8f9a7a },
-  { id: 'supplyDrop', name: '空投补给', era: 2, type: 'heal', soldiers: 15, color: 0x5adf7a },
+  { id: 'supplyDrop', name: '空投补给', era: 2, type: 'weaponDrop', color: 0x5adf7a },
   // 3 后现代
-  { id: 'virusBomb', name: '病毒炸弹', era: 3, type: 'aoe', damage: 80, radius: 4.0, color: 0x8fe36a },
-  { id: 'bioLegion', name: '生物人军团', era: 3, type: 'heal', soldiers: 8, color: 0x9c6bff },
+  { id: 'virusBomb', name: '病毒炸弹', era: 3, type: 'virusBomb', radius: 2.6, color: 0x8fe36a },
+  { id: 'bioLegion', name: '生物人军团', era: 3, type: 'friendlyLegion', color: 0x9c6bff },
   { id: 'geneBurst', name: '基因爆发', era: 3, type: 'buff', duration: 5, mul: 2, color: 0x6dffb0 },
   { id: 'timeSlow', name: '时间减速', era: 3, type: 'slow', duration: 4, mul: 0.5, color: 0x8fb6ff },
   { id: 'memory', name: '记忆植入', era: 3, type: 'upgradeSlot', color: 0xd0a0ff },
@@ -1224,9 +1221,9 @@ const SKILL_DESCS = {
   droneSwarm: '最密处半径 4.5 内 60 伤害',
   emp: '全场僵尸原地停顿 2 秒',
   apc: '慢速向上冲锋，撞到每只僵尸 90 伤害，同时机枪点射最近僵尸',
-  supplyDrop: '立刻 +15 兵',
-  virusBomb: '最密处半径 4 内 80 伤害',
-  bioLegion: '立刻 +8 兵',
+  supplyDrop: '空投重武器：12 秒内子弹伤害 ×2、射速 ×1.5',
+  virusBomb: '最密处投放 2 枚病毒炸弹，范围内僵尸变成己方单位反冲（每枚最多 8 只）',
+  bioLegion: '瞬间生成 20 名己方僵尸，向前对冲',
   geneBurst: '全队射速 ×2，持续 5 秒',
   timeSlow: '全场僵尸移速 ×0.5，持续 4 秒',
   memory: '路障 +1 级；未解锁则直接解锁 1 级',
@@ -1392,6 +1389,22 @@ function castSkill(id) {
       break;
     case 'knightCharge':
       spawnKnightCharge();
+      break;
+    case 'weaponDrop': {
+      const cfg = CONFIG.weaponDrop;
+      state.weaponBoostUntil = state.time + cfg.duration;
+      state.weaponBoostDamage = cfg.damageMul;
+      state.weaponBoostRate = cfg.rateMul;
+      target.x = state.player.x;
+      target.z = state.player.z;
+      emit('skillNotice', { text: '空投重武器 · 子弹伤害 ×2、射速 ×1.5', kind: 'skill' });
+      break;
+    }
+    case 'virusBomb':
+      spawnVirusBombs(target);
+      break;
+    case 'friendlyLegion':
+      spawnFriendlyLegion();
       break;
     case 'campfire': {
       const cfg = CONFIG.campfire;
@@ -1788,6 +1801,7 @@ function update(dt) {
   updateBullets(dt);
   updateSlots(dt);
   updateBarriers(dt);
+  updateVirusBombs(dt);
   updateFriendlyZombies(dt);
   updateZombies(dt);
   updateSiegeShots(dt);
@@ -1859,7 +1873,11 @@ function updateFiring(dt) {
     ? 1 + slotStats('command').bonus
     : 1;
   const buffMul = state.time < state.buffUntil ? state.buffMul : 1;
-  const effInterval = baseInterval / (state.upgrades.fireRate * commandMul * buffMul);
+  const boostActive = state.time < state.weaponBoostUntil;
+  const boostRate = boostActive ? state.weaponBoostRate : 1;
+  const boostDamage = boostActive ? state.weaponBoostDamage : 1;
+  const effInterval = baseInterval /
+    (state.upgrades.fireRate * commandMul * buffMul * boostRate);
   const totalRate = baseCount / effInterval; // 每秒多少发
   const interval = shooters / totalRate;
 
@@ -1892,7 +1910,7 @@ function updateFiring(dt) {
       z: state.player.z - 0.1,
       vx,
       vz: -CONFIG.player.bulletSpeed,
-      damage: CONFIG.player.bulletDamage * tier.damage * state.upgrades.damage,
+      damage: CONFIG.player.bulletDamage * tier.damage * state.upgrades.damage * boostDamage,
       pierces: 0,
     });
 
@@ -2621,6 +2639,96 @@ function spawnFriendlyZombie(stats) {
     life: 0,
   });
   emit('friendlySpawn', { x, z: cfg.z + 0.3 });
+}
+
+// 生物人军团：瞬间在阵型前沿生成 20 名友方僵尸
+function spawnFriendlyLegion() {
+  const cfg = CONFIG.bioLegion;
+  const n = cfg.count;
+
+  for (let i = 0; i < n; i++) {
+    const x = -7 + (i / Math.max(1, n - 1)) * 14;
+    const z = 8.4 + Math.random() * 0.4;
+    state.friendlyZombies.push({
+      id: state.nextId++,
+      x,
+      z,
+      hp: cfg.hp,
+      maxHp: cfg.hp,
+      speed: cfg.speed,
+      damage: cfg.damage,
+      attackTimer: Math.random() * 0.5,
+      life: 0,
+      converted: false,
+    });
+  }
+
+  emit('friendlySpawn', { x: 0, z: 8.5 });
+}
+
+// 病毒炸弹：在最密点周围落两枚，落地把范围内僵尸转成友方
+function spawnVirusBombs(target) {
+  const cfg = CONFIG.virusBomb;
+
+  for (let i = 0; i < cfg.count; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = 0.4 + Math.random() * 1.4;
+    const x = Math.max(-7.4, Math.min(7.4, target.x + Math.cos(a) * r));
+    const z = Math.max(-20, Math.min(5.5, target.z + Math.sin(a) * r));
+
+    state.virusBombs.push({
+      id: state.nextId++,
+      x,
+      z,
+      timeLeft: cfg.flightTime,
+      fallTime: cfg.flightTime,
+      radius: cfg.radius,
+      maxConvert: cfg.maxConvert,
+    });
+  }
+}
+
+function updateVirusBombs(dt) {
+  for (let i = state.virusBombs.length - 1; i >= 0; i--) {
+    const bomb = state.virusBombs[i];
+    bomb.timeLeft -= dt;
+    if (bomb.timeLeft > 0) continue;
+
+    let converted = 0;
+    for (let j = state.zombies.length - 1; j >= 0 && converted < bomb.maxConvert; j--) {
+      const zb = state.zombies[j];
+      const dx = zb.x - bomb.x;
+      const dz = zb.z - bomb.z;
+      if (dx * dx + dz * dz > bomb.radius * bomb.radius) continue;
+
+      const maxHp = zb.maxHp || zb.hp;
+      const typeHp = CONFIG.zombie.types[zb.type]?.hp || 1;
+
+      state.zombies.splice(j, 1);
+      state.friendlyZombies.push({
+        id: state.nextId++,
+        x: zb.x,
+        z: zb.z,
+        hp: Math.max(1, Math.round(maxHp * 0.6)),
+        maxHp: Math.max(1, Math.round(maxHp * 0.6)),
+        speed: 3.2,
+        damage: Math.max(6, Math.round(10 * typeHp)),
+        attackTimer: Math.random() * 0.4,
+        life: 0,
+        converted: true,
+        type: zb.type,
+      });
+      converted += 1;
+    }
+
+    emit('virusBombImpact', {
+      x: bomb.x,
+      z: bomb.z,
+      radius: bomb.radius,
+      count: converted,
+    });
+    state.virusBombs.splice(i, 1);
+  }
 }
 
 // 友方僵尸：冲向最近敌人，贴身互殴；12 秒后自然消失
