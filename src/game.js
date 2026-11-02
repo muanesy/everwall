@@ -4157,8 +4157,6 @@ initUI(state, {
   setEra: setEraForTest,
   spawnTestZombies,
   clearZombies: clearTestZombies,
-  // 测试模式下每 2 波才自然抽一次卡，想验证卡池很麻烦，给个手动入口
-  drawCard: () => startCardDraw(),
   getTestData,
   getSlotInfo,
   useSkill,

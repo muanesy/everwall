@@ -543,7 +543,6 @@ function buildDom() {
     <div class="test-panel__section test-panel__actions">
       <button type="button" data-test-spawn>刷 20 只僵尸</button>
       <button type="button" data-test-clear>清空僵尸</button>
-      <button type="button" data-test-draw>抽一次卡</button>
     </div>
   `;
   document.body.appendChild(testPanel);
@@ -684,14 +683,6 @@ function bindEvents() {
   if (clearBtn) {
     clearBtn.addEventListener('click', () => {
       if (actions && actions.clearZombies) actions.clearZombies();
-    });
-  }
-
-  // 测试模式默认不抽卡（每 2 波才抽一次），想验证槽位卡得等很久，给个手动入口
-  const drawBtn = els.testPanel.querySelector('[data-test-draw]');
-  if (drawBtn) {
-    drawBtn.addEventListener('click', () => {
-      if (actions && actions.drawCard) actions.drawCard();
     });
   }
 
