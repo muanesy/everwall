@@ -2044,9 +2044,8 @@ function soldierSlot(i, state) {
 
   return {
     x: state.player.x + (col - (width - 1) / 2) * spacing,
-    // 阵型在玩家"前方"（朝敌人，z 减小）：原本 +0.25 把兵放在玩家身后（更靠相机、压在底部 HUD 上），
-    // 既不合战术逻辑也让兵看不见。改到身前，兵落在画面中下段、看得清。
-    z: state.player.z - 1.5 - row * rowGap,
+    // 阵型在玩家身后（z 更大，靠近屏幕底部），第 0 排贴着玩家，往后每排再退一点
+    z: state.player.z + 0.25 + row * rowGap,
   };
 }
 
