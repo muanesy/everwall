@@ -21,6 +21,9 @@ import {
   spawnCampfireFx,
   setWaterLevel,
 } from './visuals.js';
+import { pickZombieTypeForEra, eraWeaponProfile } from './game-era-rules.js';
+import { SUMMONER, createSummonerState, updateSummoner } from './game-summoner.js';
+import { createChain, chainDetour, isBlockedByChain } from './game-chainbarricade.js';
 import { initUI, updateUI } from './ui.js';
 
 // 起始地图：开始页传入的 ?map=，默认废墟街道
@@ -224,6 +227,10 @@ const CONFIG = {
       { id: 12, name: '护甲', hp: 2.0, speed: 0.85, touchLoss: 2, score: 4, baseWeight: 8, growth: 0.3, maxWeight: 14, minWave: 5, armor: 0.5 },
       // 13 远程：走到半场就停住，隔着距离往阵型吐酸液，逼玩家优先点掉它
       { id: 13, name: '远程', hp: 1.4, speed: 0.95, touchLoss: 1, score: 5, baseWeight: 7, growth: 0.35, maxWeight: 13, minWave: 7, ranged: { stopZ: -13, interval: 2.6, damage: 1, speed: 7 } },
+      // 14 召唤者：不参与随机抽签（baseWeight 0 + minWave 999 双保险），
+      // 由 spawnSummoner() 单独刷。理由同 Boss：它是"全场唯一"的特殊单位，
+      // 放进随机池会一次刷出好几只、每只都在召孩子，直接把场上刷满
+      { id: 14, name: '召唤者', hp: 2.2, speed: 0.72, touchLoss: 2, score: 8, baseWeight: 0, growth: 0, minWave: 999, summoner: true },
       // 时代 Boss：不参与随机抽签（minWave 999 + boss 标记双保险），
       // 只由 spawnEraBoss() 在切换时代时单独刷一只
       // hp 9 = 同波普通僵尸的 9 倍（第 5 波约 470 血），40 兵对准约 20 秒能打完
@@ -260,6 +267,12 @@ const CONFIG = {
     maxLevel: 0.9,     // 涨到这儿封顶，不会真把画面淹掉
     slowFrom: 0.55,    // 水位超过这个值才开始拖慢僵尸
     slowMul: 0.62,     // 水里僵尸移速乘这个
+  },
+  // 锁链路障（点子池「锁链路障」）：挡半条通道，僵尸必须绕过去
+  chain: {
+    startWave: 6,      // 第几波开始出现
+    z: -6,             // 摆在半场偏下，给玩家留反应时间
+    widthRatio: 0.52,  // 占通道宽度的比例，0.5 左右 = 挡半边
   },
   // 补给箱：场上随机掉一个木箱，打碎给随机奖励
   crate: {
@@ -388,8 +401,9 @@ const state = {
   crates: [],        // 补给箱：{ id, x, z, y, landed, reward }
   enemyShots: [],    // 远程僵尸吐出来的酸液：{ id, x, z, tx, tz, speed, damage }
   floodLevel: 0,     // 当前水位 0~1，给画面层和僵尸减速共用
+  chains: [],        // 锁链：{ id, x, z, width, xMin, xMax, nearZ, farZ }
   nextId: 1,
-  spawnCounts: new Array(14).fill(0), // 调试用：统计每种僵尸刷了多少只（0-13）
+  spawnCounts: new Array(15).fill(0), // 调试用：统计每种僵尸刷了多少只（0-14）
 };
 
 // 调试用：浏览器控制台输入 __state 可以看实时数据
@@ -611,6 +625,7 @@ function resetState(opts = {}) {
   state.enemyShots.length = 0;
   state.floodLevel = 0;
   setWaterLevel(0);
+  state.chains.length = 0;
   state.nextId = 1;
   state.spawnCounts.fill(0);
   resetBarricade();
@@ -1596,6 +1611,12 @@ function update(dt) {
     syncEraWithWave(nextWave);
     emit('waveStart', { wave: nextWave });
 
+    // 召唤者：第 9 波起每波检查一次，场上没有就补一只（场上最多一只）
+    if (nextWave >= SUMMONER_START_WAVE && !state.testMode) spawnSummoner();
+
+    // 锁链：第 6 波起每波重摆一条（位置随波次变，玩家每波都要重新找路）
+    if (nextWave >= CONFIG.chain.startWave && !state.testMode) spawnChain(nextWave);
+
     // 每 2 波结束抽一次；测试模式不抽卡，避免打断观察
     if (
       !state.testMode &&
@@ -1628,6 +1649,7 @@ function update(dt) {
   updateSlots(dt);
   updateBarriers(dt);
   updateZombies(dt);
+  updateSummoners(dt);
   updateSiegeShots(dt);
   updateRollingLogs(dt);
   updateKnightCharges(dt);
@@ -1694,7 +1716,12 @@ function updateFiring(dt) {
     ? 1 + slotStats('command').bonus
     : 1;
   const buffMul = state.time < state.buffUntil ? state.buffMul : 1;
-  const effInterval = baseInterval / (state.upgrades.fireRate * commandMul * buffMul);
+  // 时代武器档位（点子池「时代规则」）：弩慢而重，冲锋枪快而轻。
+  // 乘在升级倍率之后，所以玩家升级的收益在任何时代都成立，只是基数不同。
+  const weapon = eraWeaponProfile(state.era);
+  const effInterval =
+    (baseInterval * weapon.fireIntervalMul) /
+    (state.upgrades.fireRate * commandMul * buffMul);
   const totalRate = baseCount / effInterval; // 每秒多少发
   const interval = shooters / totalRate;
 
@@ -1727,7 +1754,11 @@ function updateFiring(dt) {
       z: state.player.z - 0.1,
       vx,
       vz: -CONFIG.player.bulletSpeed,
-      damage: CONFIG.player.bulletDamage * tier.damage * state.upgrades.damage,
+      damage:
+        CONFIG.player.bulletDamage *
+        tier.damage *
+        state.upgrades.damage *
+        weapon.damageMul,
       pierces: 0,
     });
 
@@ -2358,7 +2389,14 @@ function updateZombies(dt) {
       z.aggro = true;
     }
 
-    if (z.aggro && Math.abs(dx) > 0.12) {
+    // 有锁链时"绕链"优先于"追人"，两者必须互斥：
+    // 同时加两个方向的力会互相抵消，僵尸会贴着链子原地磨
+    const chain = state.chains.length ? state.chains[0] : null;
+    const detour = chain ? chainDetour(chain, z.x, z.z) : null;
+
+    if (detour && detour.dir !== 0) {
+      z.x += detour.dir * CONFIG.zombie.turnSpeed * dt;
+    } else if (z.aggro && Math.abs(dx) > 0.12) {
       z.x += Math.sign(dx) * CONFIG.zombie.turnSpeed * dt;
     }
 
@@ -2395,6 +2433,11 @@ function updateZombies(dt) {
     }
 
     z.x = clamp(z.x, -CONFIG.world.halfWidth - 1, CONFIG.world.halfWidth + 1);
+
+    // 撞链不穿模：停在链子近端（nearZ 已含僵尸半径，别自己再减）
+    if (chain && isBlockedByChain(chain, z.x, z.z)) {
+      z.z = Math.min(z.z, chain.nearZ);
+    }
   }
 
   if (!frozen) separateZombies();
@@ -2553,24 +2596,18 @@ function typeWeight(type, wave) {
   return Math.max(0, w);
 }
 
+/* 旧的按权重直抽，已被 era-rules 的 pickZombieTypeForEra 取代。
+ * 保留成一行转发：万一有调试脚本还在调它，不至于报 undefined。 */
 function pickZombieType(wave) {
-  const pool = CONFIG.zombie.types
-    .map((t) => ({ type: t, weight: typeWeight(t, wave) }))
-    .filter((e) => e.weight > 0);
-
-  const total = pool.reduce((sum, e) => sum + e.weight, 0);
-  let roll = Math.random() * total;
-
-  for (const e of pool) {
-    roll -= e.weight;
-    if (roll <= 0) return e.type;
-  }
-  return pool[pool.length - 1].type;
+  return pickZombieTypeForEra(CONFIG.zombie.types, state.era, wave);
 }
 
 function spawnZombie() {
   const [minX, maxX] = CONFIG.world.rightZone;
-  const type = pickZombieType(state.wave);
+  // 按时代抽：不同时代能刷出的类型和权重不一样（点子池「时代规则」）。
+  // 用 state.era 而不是按波次重算，这样测试模式下面板切时代能立刻生效。
+  const type = pickZombieTypeForEra(CONFIG.zombie.types, state.era, state.wave);
+  const newId = state.nextId++;
 
   const baseHp =
     CONFIG.zombie.baseHp + (state.wave - 1) * CONFIG.zombie.hpPerWave;
@@ -2580,7 +2617,7 @@ function spawnZombie() {
   const hp = baseHp * type.hp;
 
   state.zombies.push({
-    id: state.nextId++,
+    id: newId,
     x: minX + Math.random() * (maxX - minX),
     z: CONFIG.world.spawnZ - Math.random() * 4,
     hp,
@@ -2595,6 +2632,9 @@ function spawnZombie() {
     armor: type.armor || 1,        // 子弹伤害乘子（护甲僵尸 0.5）
     explode: type.explode || null, // 自爆僵尸：死了按这个半径和倍率炸
     ranged: type.ranged || null,   // 远程僵尸：停下吐东西的参数
+    // 召唤者：每只自带一份召唤计时和"我召出来的孩子"上限
+    summonerCfg: type.summoner ? { ...SUMMONER, id: null } : null,
+    summonerState: type.summoner ? createSummonerState() : null,
     // 第一次吐之前随机等一会儿，不然一群远程会同时齐射，画面像被人打了一梭子
     shotTimer: type.ranged ? type.ranged.interval * (0.4 + Math.random() * 0.6) : 0,
     boss: false,
@@ -2644,6 +2684,128 @@ function spawnEraBoss(eraIndex) {
   state.spawnCounts[type.id] = (state.spawnCounts[type.id] || 0) + 1;
   emit('bossSpawn', { x: boss.x, z: boss.z, hp, wave: state.wave, era: eraIndex });
   return boss;
+}
+
+/* ----------------------------------------------------------
+ * 召唤者（点子池「召唤僵尸」）
+ *
+ * 和 Boss 一样是"全场唯一"的特殊单位：第 9 波起，场上没有就补一只。
+ * 它自己走得很慢、血也不算厚，真正的威胁是不断召快鬼——
+ * 玩家必须优先点掉它，否则会被源源不断的小怪拖死。
+ * 具体召唤节奏和上限在 game-summoner.js 里，这里只做接线。
+ * ---------------------------------------------------------- */
+const SUMMONER_START_WAVE = 9;
+
+function spawnSummoner() {
+  const type = CONFIG.zombie.types.find((t) => t.summoner);
+  if (!type) return null;
+  if (state.zombies.some((z) => z.type === type.id)) return null;
+
+  const [minX, maxX] = CONFIG.world.rightZone;
+  const baseHp = CONFIG.zombie.baseHp + (state.wave - 1) * CONFIG.zombie.hpPerWave;
+  const hp = baseHp * type.hp;
+  const id = state.nextId++;
+
+  const summons = createSummonerState();
+  const z = {
+    id,
+    x: minX + Math.random() * (maxX - minX),
+    z: CONFIG.world.spawnZ - 1,
+    hp,
+    maxHp: hp,
+    speed: Math.min(CONFIG.zombie.speedCap, CONFIG.zombie.baseSpeed * type.speed),
+    touchLoss: type.touchLoss,
+    type: type.id,
+    aggro: false,
+    armor: type.armor || 1,
+    explode: null,
+    ranged: null,
+    summonerCfg: { ...SUMMONER, id },
+    summonerState: summons,
+    shotTimer: 0,
+    boss: false,
+  };
+
+  state.zombies.push(z);
+  state.spawnCounts[type.id] = (state.spawnCounts[type.id] || 0) + 1;
+  emit('summonerSpawn', { x: z.x, z: z.z, id });
+  return z;
+}
+
+/* 每帧让所有召唤者推进一次。召唤请求直接落成新僵尸，
+ * 用 summonerId 标记"谁生的"，上限才能按只统计。 */
+function updateSummoners(dt) {
+  for (const z of state.zombies) {
+    if (!z.summonerCfg || !z.summonerState) continue;
+
+    // 只数它自己生的孩子，别的召唤者生多少跟它无关
+    let own = 0;
+    for (const c of state.zombies) if (c.summonerId === z.summonerCfg.id) own++;
+
+    const reqs = updateSummoner(z.summonerCfg, z.summonerState, {
+      dt,
+      aliveCount: own,
+      isInsideArena: (x, zz) =>
+        x >= CONFIG.world.rightZone[0] - 0.4 &&
+        x <= CONFIG.world.rightZone[1] + 0.4 &&
+        zz >= -28,
+    });
+
+    for (const r of reqs) {
+      const baseHp = CONFIG.zombie.baseHp + (state.wave - 1) * CONFIG.zombie.hpPerWave;
+      const childType = zombieTypeById(r.type);
+      const hp = baseHp * (childType ? childType.hp : 1) * r.hpMul;
+      state.zombies.push({
+        id: state.nextId++,
+        x: r.x,
+        z: r.z,
+        hp,
+        maxHp: hp,
+        speed: Math.min(
+          CONFIG.zombie.speedCap,
+          CONFIG.zombie.baseSpeed * (childType ? childType.speed : 1)
+        ),
+        touchLoss: childType ? childType.touchLoss : 1,
+        type: r.type,
+        aggro: false,
+        armor: 1,
+        explode: null,
+        ranged: null,
+        summonerCfg: null,
+        summonerState: null,
+        summonerId: z.summonerCfg.id,  // 归属：计入上限统计
+        shotTimer: 0,
+        boss: false,
+      });
+    }
+  }
+}
+
+/* ----------------------------------------------------------
+ * 锁链路障（点子池「锁链路障」）
+ *
+ * 和路障的区别：路障是"停下来啃"，锁链是"过不去、必须绕"。
+ * 所以锁链不可破坏，只占半条通道——另外半条留出来给僵尸绕。
+ * 判定和绕行方向都在 game-chainbarricade.js 里算，这里只负责摆放。
+ *
+ * 位置按波次交替左右，玩家不能靠"记住上次从哪边绕"过关。
+ * ---------------------------------------------------------- */
+function spawnChain(wave) {
+  const [laneMin, laneMax] = CONFIG.world.rightZone;
+  const laneWidth = laneMax - laneMin;
+  const width = laneWidth * CONFIG.chain.widthRatio;
+
+  // 只挡半边：奇数波挡左边（留右侧缝），偶数波挡右边（留左侧缝）
+  const onLeft = wave % 2 === 1;
+  const x = onLeft
+    ? laneMin + width / 2
+    : laneMax - width / 2;
+
+  state.chains.length = 0;
+  const chain = createChain({ x, z: CONFIG.chain.z, width, laneMin, laneMax });
+  state.chains.push(chain);
+  emit('chainSpawn', { x: chain.x, z: chain.z, width: chain.width });
+  return chain;
 }
 
 function damageArmy(amount, cause) {
