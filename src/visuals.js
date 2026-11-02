@@ -4405,6 +4405,51 @@ function viewHalfXAt(z) {
   return Math.max(6, depth * tanH);
 }
 
+/* 侧景物件的内侧边缘必须越过的世界 x。
+ * 屏障横到 ±7.6、僵尸通道到 7.6，战场名义半宽 8.0，取 8.6 留 0.6 余量。 */
+const ARENA_CLEAR_X = 8.6;
+
+/* 战场纵深：z 在这个范围内的道具会盖住可玩区域。
+ * 起点取 -29（Boss 出生点在 -34，已经在线外，不用管）；
+ * 终点取 11（玩家站位 9、士兵阵 8.2，再往前一点留余量）。
+ * z 全在这条线之后的属于"通道尽头背景"，投影和通道重叠是正常的。 */
+const ARENA_CLEAR_Z = [-29, 11];
+
+function keepArenaClear(group) {
+  const box = new THREE.Box3();
+  for (const child of group.children) {
+    box.setFromObject(child);
+    if (box.isEmpty()) continue;
+    // 完全在战场纵深之外：不挡，跳过
+    if (box.max.z < ARENA_CLEAR_Z[0] || box.min.z > ARENA_CLEAR_Z[1]) continue;
+
+    const crossesMid = box.min.x < 0 && box.max.x > 0;
+    const height = box.max.y - box.min.y;
+    // 只豁免**真正贴地**的薄片：地砖、熔岩纹、水面、地面网格线。
+    // 判据是"又薄又低"（厚度 < 0.35 且底面 < 0.15），不是只看厚度。
+    // 之前阈值给到 1.2，结果 0.4~1.2 高的矮台、管道、矮石既没被推走、
+    // 又实实在在压在中线上（实测 abbey/station/desert 画面正中有 250~440 个
+    // 采样点被这些东西盖住），属于漏网。
+    if (crossesMid && height < 0.35 && box.min.y < 0.15) continue;
+
+    let push = 0;
+    if (box.min.x >= 0) {
+      // 纯右侧：让 min.x 抬到 ARENA_CLEAR_X
+      if (box.min.x < ARENA_CLEAR_X) push = ARENA_CLEAR_X - box.min.x;
+    } else if (box.max.x <= 0) {
+      // 纯左侧：让 max.x 压到 -ARENA_CLEAR_X
+      if (box.max.x > -ARENA_CLEAR_X) push = -ARENA_CLEAR_X - box.max.x;
+    } else {
+      // 横跨中线且够高（比如一堵长墙）：推一边还是会挡另一边，
+      // 只能让它退到战场后面去，当远景
+      child.position.z -= 40;
+      continue;
+    }
+
+    if (push !== 0) child.position.x += push;
+  }
+}
+
 function buildProps(mapId = MAP_ID) {
   const group = new THREE.Group();
   const rng = mulberry32(20261101);
@@ -4466,16 +4511,38 @@ function buildProps(mapId = MAP_ID) {
       const h = 0.7 + rng() * 1.3;
       const w = 0.8 + rng() * 1.8;
       const block = new THREE.Mesh(new THREE.BoxGeometry(w, h, w * 0.8), silMat);
+      /* 位置必须退到战场纵深之外。
+       *
+       * 原来是 z=16.5~20（比玩家还近、画面最下缘），那个深度的可见半宽只有约 6，
+       * 而 x 从 4.2 起 —— 投影到屏幕上正好是画面下方 78%~100% 那一片，
+       * 也就是左右两条屏障（绿/红）所在的位置，直接把它们盖住了。
+       *
+       * 现在放到 z=-30~-34：这个深度可见半宽约 17.5，x 从 8.8 起就完全在
+       * 战场投影之外，同时仍在画面内（8.8/17.5 → 屏幕约 75%），
+       * 作为通道尽头的两侧暗影，纵深还在，但不再挡任何可玩元素。 */
+      const backZ = -30 - rng() * 4;
       block.position.set(
-        side * (4.2 + rng() * 7.5),
+        side * (8.8 + rng() * 3.4),
         h / 2 - 0.15,
-        16.5 + rng() * 3.5
+        backZ
       );
       block.rotation.y = rng() * Math.PI;
       block.rotation.z = (rng() - 0.5) * 0.12;
       group.add(block);
     }
   }
+
+  /* 兜底：把挡住战场的道具推到战场之外。
+   *
+   * 为什么要在这一层统一做，而不是让每张地图各自注意：
+   * 26 张地图各有自己的摆位代码（原有 9 张是早先写的，新 17 张用 bandX），
+   * 它们都只约束了"物件中心"的世界坐标，没有一个知道自己造出来的东西有多宽。
+   * 一栋 3.6 宽的房子中心在 9.0 时，内侧边缘只有 7.2，已经压进战场 ——
+   * 表现就是用户看到的"中世纪村庄把左边那些绿条红条挡住了"。
+   *
+   * 这里在道具全部造完之后逐个量包围盒，越线的往外推。
+   * 一处收口，26 张图一起受益，也不用去改那 9 个早先写的地图函数。 */
+  keepArenaClear(group);
 
   /* 加进场景 + 返回引用，两件事必须都在这里，一处都不能少：
    *   - 少了 scene.add：道具全在内存里，画面上什么都没有（之前就是这个状态）
