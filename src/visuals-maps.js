@@ -1674,15 +1674,41 @@ const FLANK_CONF = {
  * @param {Function} rng
  * @param {string} mapId
  */
+/* 把颜色按 HSL 提亮：保住色相和饱和度关系，只抬明度。
+ *
+ * 为什么必须提：这些色原本是照"远景剪影"的思路选的（0x2c333c 这类近黑），
+ * 但近景件是要被看见的主体。实测道具像素均亮 38.6、地面 34.5 —— 差 4，
+ * 等于隐形。抬到 0.30~0.62 明度区间后，才和地面的 30~40 拉开可见差距。 */
+function liftColor(hex, mul) {
+  const c = new THREE.Color(hex);
+  const hsl = { h: 0, s: 0, l: 0 };
+  c.getHSL(hsl);
+  c.setHSL(hsl.h, Math.min(1, hsl.s * 1.05), Math.min(0.6, hsl.l * mul + 0.16));
+  return c.getHex();
+}
+
+/**
+ * 给一张地图铺近景两侧大件。
+ *
+ * 摆位用**屏幕比例**反算世界坐标，不用世界坐标硬凑：
+ * 目标是"物件中心落在画面 78%~92% 宽度处"，这样它本身就有一小半在画面外，
+ * 形成真实的框景；而中心一定可见，不会整块跑到画外。
+ *
+ * 第一版是反过来做的——把世界 x 上限写成 `可见半宽 × 1.05`，
+ * 结果 z=8 那种贴近相机的位置上，一个 3 单位宽的墙被投影放大到 300px，
+ * 中心落在画面 96% 处，只剩一条边露在画面里。实测差分像素只占 0.69%。
+ */
 export function buildFlank(g, ctx, rng, mapId) {
   const conf = FLANK_CONF[mapId] || FLANK_CONF.city;
   const recipe = FLANK_KINDS[conf.kind] || fxRock;
+  const mainA = liftColor(conf.a, 2.05);
+  const mainB = liftColor(conf.b || conf.a, 1.85);
 
-  // 两段纵深：贴近相机的（1~8）和稍远一点的（−10~0）。
-  // 近段被画面边缘裁掉一部分，是"框景"的主要来源。
+  // 两段纵深：贴近相机的（−2~+7）和稍远一点的（−16~−4）。
+  // pMin/pMax 是"物件中心该落在画面宽度的哪个比例"，两段都保持在画面内。
   const bands = [
-    { z0: 1.0, z1: 8.0, count: 3, hMul: 1.0 },
-    { z0: -10.0, z1: 0.0, count: 3, hMul: 1.35 },
+    { z0: -2.0, z1: 7.0,  count: 3, pMin: 0.80, pMax: 0.94, hMul: 1.0 },
+    { z0: -16.0, z1: -4.0, count: 3, pMin: 0.76, pMax: 0.92, hMul: 1.25 },
   ];
 
   for (const band of bands) {
@@ -1691,16 +1717,20 @@ export function buildFlank(g, ctx, rng, mapId) {
         const t = (i + 0.5) / band.count;
         const z = band.z0 + (band.z1 - band.z0) * t + (rng() - 0.5) * 1.2;
         const half = ctx.viewHalfX(z);
-        // 允许略微超出画面边缘（×1.05）：露出半个身子才像框景
-        const maxX = half * 1.05;
-        const minX = ARENA_HALF_X + 0.25;
-        if (maxX <= minX) continue;
-        const x = side * (minX + rng() * (maxX - minX));
+
+        // 屏幕比例 p → 世界 x。sx = (x/(half))*0.5+0.5 = p  ⇒  x = (2p−1)·half
+        const p = band.pMin + rng() * (band.pMax - band.pMin);
+        let x = side * (2 * p - 1) * half;
+
+        // 不能压进战场：否则会挡住玩家走位和僵尸通道
+        const minAbs = ARENA_HALF_X + 0.4;
+        if (Math.abs(x) < minAbs) x = side * minAbs;
+        // 但这个深度的可见半宽如果连 minAbs 都不够，说明这条带没空间，跳过
+        if (Math.abs(x) > half * 0.99) continue;
 
         const piece = new THREE.Group();
-        recipe(piece, rng, conf.a, conf.b);
+        recipe(piece, rng, mainA, mainB);
         piece.position.set(x, 0, z);
-        // 让物件侧向战场，朝向不做严格限制，转角就够
         piece.rotation.y = Math.atan2(-x, 0) + (rng() - 0.5) * 0.5;
         piece.scale.setScalar(band.hMul * (0.9 + rng() * 0.35));
         g.add(piece);
