@@ -1177,7 +1177,71 @@ export function initVisuals(container, events) {
     spawnRing(x, z, 0x9a3010, 0.9);
   });
 
-  // 酸液打到阵型：一小片绿雾 + 轻微震屏，让玩家知道"被远程点到了"
+  // 地面塌陷：土石往下掉 + 震屏。落下去的是"塌"，不是"炸"，所以用碎石而不是火
+  events.addEventListener('pitSpawn', (e) => {
+    const d = e.detail || {};
+    const x = Number(d.x);
+    const z = Number(d.z);
+    if (!isFinite(x) || !isFinite(z)) return;
+    const r = Math.max(0.8, Number(d.r) || 1.35);
+
+    shake = Math.max(shake, 0.5);
+    spawnRing(x, z, 0x6a5540, 0.7);
+    spawnBurst(x, 0.25, z, 0x8a7458, Math.round(20 * r), {
+      speed: 3.4, up: 2.6, spread: r * 0.7, life: 0.9, gravity: -7,
+    });
+    spawnBurst(x, 0.15, z, 0x3a2e22, Math.round(10 * r), {
+      speed: 1.6, up: 1.2, spread: r * 0.9, life: 1.2, gravity: -2,
+    });
+  });
+
+  // 回填：一圈淡土扬起来，提示"这块地能走了"
+  events.addEventListener('pitFill', (e) => {
+    const d = e.detail || {};
+    const x = Number(d.x);
+    const z = Number(d.z);
+    if (!isFinite(x) || !isFinite(z)) return;
+    spawnRing(x, z, 0x9a8a70, 0.5);
+    spawnBurst(x, 0.2, z, 0xa09078, 8, {
+      speed: 1.4, up: 1.0, spread: 0.6, life: 0.6, gravity: -3,
+    });
+  });
+
+  // 武器箱落地：轻震一下，别用爆炸那种分量
+  events.addEventListener('pickupLand', (e) => {
+    const d = e.detail || {};
+    const x = Number(d.x);
+    const z = Number(d.z);
+    if (!isFinite(x) || !isFinite(z)) return;
+    spawnRing(x, z, 0xbcd0e0, 0.32);
+    spawnBurst(x, 0.15, z, 0x9aa8b8, 7, {
+      speed: 1.6, up: 1.2, spread: 0.45, life: 0.45, gravity: -6,
+    });
+    shake = Math.max(shake, 0.12);
+  });
+
+  // 捡到武器：一圈武器色光爆 + 提示条，让"换枪了"这件事被看见
+  events.addEventListener('weaponPickup', (e) => {
+    const d = e.detail || {};
+    const tint = d.tint || 0xffd45a;
+    const px = currentState ? currentState.player.x : 0;
+    const pz = currentState ? currentState.player.z : 9;
+
+    spawnRing(px, pz, tint, 0.6);
+    spawnBurst(px, 0.8, pz, tint, 18, {
+      speed: 3.0, up: 2.6, spread: 0.5, life: 0.6, gravity: -6,
+    });
+    shake = Math.max(shake, 0.2);
+    pushToast(`换上 ${d.name}`, 'pickup');
+  });
+
+  // 临时武器到期：提示换回时代武器，不然玩家会以为是枪"坏了"
+  events.addEventListener('weaponExpired', (e) => {
+    const d = e.detail || {};
+    pushToast(`${d.name} 用尽 · 换回旧枪`, 'pickup-off');
+  });
+
+  // 酸液打到阵型：一小片绿雾 + 轻微震屏，让玩家知道"被远程点到了'
   events.addEventListener('enemyShotHit', (e) => {
     const d = e.detail || {};
     const x = Number(d.x);
@@ -2455,6 +2519,8 @@ export function syncScene(state, dt) {
     clearHazards();                      // 陨石坑、地上的火一起清掉
     clearCrates();                       // 补给箱模型也清掉，别留到新局
     clearChains();                       // 锁链也清掉
+    clearPits();                         // 坑洞回填
+    clearPickups();                      // 武器箱也清掉
     quakeTime = 0;
     quakeCycle = 10 + Math.random() * 6; // 新局第一震别来得太急
     if (dayNight) dayNight.setNight(false, true); // 立刻回到白天，不要跨局慢慢过渡
@@ -2513,6 +2579,8 @@ export function syncScene(state, dt) {
   syncSlots(state);
   syncCrates(state);
   syncChains(state);
+  syncPits(state);
+  syncPickups(state);
   updateBossPresence(state);
   updateZombieHitFeedback(state);
 
@@ -5035,6 +5103,256 @@ function syncChains(state) {
     scene.remove(entry.group);
     chainVisuals.delete(id);
   }
+}
+
+/* ----------------------------------------------------------
+ * 地面坑洞（点子池「地面塌陷」）
+ *
+ * 难点是「怎么让俯视画面里的一个圆看起来是个洞，而不是一块黑斑」：
+ *   1. 洞底要接近纯黑（比任何阴影都深），否则读成污渍
+ *   2. 洞沿要有一圈亮的碎裂土层，光从上方打下来，近沿比远沿更亮
+ *   3. 洞沿外侧再补一圈很淡的塌陷阴影，把洞「压」进地面
+ * 三层叠起来才有下陷感。只画一层黑圆是最常见的失败做法。
+ * ---------------------------------------------------------- */
+const pitVisuals = new Map();
+let pitTex = null;
+let pitGeo = null;
+
+function ensurePitTex() {
+  if (pitTex) return pitTex;
+
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const c = size / 2;
+
+  // 洞外一圈塌陷阴影：很淡，作用是把洞压进地面
+  const outer = ctx.createRadialGradient(c, c, size * 0.36, c, c, size * 0.5);
+  outer.addColorStop(0, 'rgba(58,46,34,0.55)');
+  outer.addColorStop(1, 'rgba(58,46,34,0)');
+  ctx.fillStyle = outer;
+  ctx.beginPath();
+  ctx.arc(c, c, size * 0.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 洞沿：亮一点的碎裂土层，做成不规则边
+  ctx.beginPath();
+  const segs = 26;
+  for (let i = 0; i <= segs; i++) {
+    const a = (i / segs) * Math.PI * 2;
+    const jag = 0.40 + Math.sin(a * 5.3) * 0.018 + Math.sin(a * 11.7) * 0.012;
+    const r = size * jag;
+    const x = c + Math.cos(a) * r;
+    const y = c + Math.sin(a) * r;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(122,100,72,0.9)';
+  ctx.fill();
+
+  // 洞内：接近纯黑，往下渐变更深
+  const inner = ctx.createRadialGradient(c, c * 0.94, size * 0.02, c, c, size * 0.40);
+  inner.addColorStop(0, 'rgba(4,3,2,1)');
+  inner.addColorStop(0.62, 'rgba(10,7,5,0.98)');
+  inner.addColorStop(1, 'rgba(26,18,12,0.94)');
+  ctx.beginPath();
+  for (let i = 0; i <= segs; i++) {
+    const a = (i / segs) * Math.PI * 2;
+    const jag = 0.355 + Math.sin(a * 7.1 + 1.4) * 0.014;
+    const r = size * jag;
+    const x = c + Math.cos(a) * r;
+    const y = c + Math.sin(a) * r;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fillStyle = inner;
+  ctx.fill();
+
+  // 从洞沿往外的放射裂纹
+  for (let i = 0; i < 16; i++) {
+    const a = (i / 16) * Math.PI * 2 + Math.random() * 0.2;
+    const r0 = size * 0.41;
+    const r1 = size * (0.45 + Math.random() * 0.045);
+    ctx.strokeStyle = `rgba(22,16,11,${0.45 + Math.random() * 0.3})`;
+    ctx.lineWidth = size * (0.008 + Math.random() * 0.012);
+    ctx.beginPath();
+    ctx.moveTo(c + Math.cos(a) * r0, c + Math.sin(a) * r0);
+    ctx.lineTo(c + Math.cos(a) * r1, c + Math.sin(a) * r1);
+    ctx.stroke();
+  }
+
+  pitTex = new THREE.CanvasTexture(canvas);
+  pitTex.colorSpace = THREE.SRGBColorSpace;
+  return pitTex;
+}
+
+function syncPits(state) {
+  if (!scene) return;
+  const list = state.pits || [];
+  const alive = new Set();
+
+  if (!pitGeo) pitGeo = new THREE.PlaneGeometry(2, 2);
+
+  for (const p of list) {
+    alive.add(p.id);
+    let mesh = pitVisuals.get(p.id);
+    if (!mesh) {
+      mesh = new THREE.Mesh(
+        pitGeo,
+        new THREE.MeshBasicMaterial({
+          map: ensurePitTex(),
+          transparent: true,
+          depthWrite: false,
+          polygonOffset: true,
+          polygonOffsetFactor: -6,
+          polygonOffsetUnits: -6,
+        })
+      );
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.rotation.z = Math.random() * Math.PI * 2;
+      mesh.renderOrder = 2;
+      scene.add(mesh);
+      pitVisuals.set(p.id, mesh);
+    }
+    mesh.position.set(p.x, 0.035, p.z);
+    // 平面几何体是 2×2，半径 r 的坑要缩放到 2r
+    mesh.scale.setScalar(p.r);
+
+    // 最后 3 秒慢慢回填：淡出比"啪一下消失"自然
+    const left = (p.life != null && p.maxLife) ? p.maxLife - p.life : 99;
+    mesh.material.opacity = left < 3 ? Math.max(0, left / 3) : 1;
+  }
+
+  for (const [id, mesh] of pitVisuals) {
+    if (alive.has(id)) continue;
+    scene.remove(mesh);
+    mesh.material.dispose();
+    pitVisuals.delete(id);
+  }
+}
+
+/* ----------------------------------------------------------
+ * 武器箱（点子池「掉落拾取」）
+ *
+ * 必须和补给箱一眼分开：补给箱是木色 + 金角（要打碎），
+ * 武器箱做成金属箱 + 武器色发光带 + 头顶一圈旋转光环。
+ * 玩家在混战里靠"发光 + 转圈"这两个动态特征就能认出来。
+ * ---------------------------------------------------------- */
+const pickupVisuals = new Map();
+let pickupGeo = null;
+
+function ensurePickupGeo() {
+  if (pickupGeo) return;
+  pickupGeo = {
+    body: new THREE.BoxGeometry(0.62, 0.34, 0.62),
+    lid: new THREE.BoxGeometry(0.66, 0.07, 0.66),
+    ring: new THREE.TorusGeometry(0.46, 0.035, 6, 20),
+    bar: new THREE.BoxGeometry(0.5, 0.05, 0.9),
+  };
+}
+
+function makePickupMesh(tint) {
+  ensurePickupGeo();
+  const g = new THREE.Group();
+
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: 0x3f4650, roughness: 0.5, metalness: 0.65,
+  });
+  const accentMat = new THREE.MeshStandardMaterial({
+    color: tint,
+    emissive: tint,
+    emissiveIntensity: 1.4,
+    roughness: 0.35,
+    metalness: 0.3,
+  });
+  const ringMat = new THREE.MeshBasicMaterial({
+    color: tint, transparent: true, opacity: 0.75,
+  });
+
+  const body = new THREE.Mesh(pickupGeo.body, bodyMat);
+  body.position.y = 0.17;
+  g.add(body);
+
+  // 箱盖和一条发光带：发光带是"这是什么武器"的颜色标识
+  const lid = new THREE.Mesh(pickupGeo.lid, bodyMat);
+  lid.position.y = 0.37;
+  g.add(lid);
+
+  const bar = new THREE.Mesh(pickupGeo.bar, accentMat);
+  bar.position.y = 0.25;
+  g.add(bar);
+
+  // 头顶光环，慢慢转
+  const ring = new THREE.Mesh(pickupGeo.ring, ringMat);
+  ring.position.y = 0.72;
+  ring.rotation.x = Math.PI / 2;
+  g.add(ring);
+
+  return { group: g, ring, bodyMat, accentMat, ringMat, tint };
+}
+
+function syncPickups(state) {
+  if (!scene) return;
+  const list = state.pickups || [];
+  const alive = new Set();
+
+  for (const b of list) {
+    alive.add(b.id);
+    let entry = pickupVisuals.get(b.id);
+    if (!entry) {
+      const tint = (b.weapon && b.weapon.tint) || 0xffd45a;
+      entry = makePickupMesh(tint);
+      entry.phase = Math.random() * Math.PI * 2;
+      scene.add(entry.group);
+      pickupVisuals.set(b.id, entry);
+    }
+    entry.group.position.set(b.x, b.y || 0, b.z);
+
+    // 落地前翻滚，落地后只转光环
+    if (!b.landed) {
+      entry.group.rotation.y += 0.16;
+      entry.group.rotation.z += 0.05;
+    } else {
+      entry.group.rotation.z *= 0.88;
+      entry.group.rotation.y += 0.012;
+    }
+    entry.ring.rotation.z = performance.now() * 0.003 + entry.phase;
+
+    // 呼吸式发光，让它在暗场里也显眼
+    const pulse = 1.1 + Math.sin(performance.now() * 0.005 + entry.phase) * 0.45;
+    entry.accentMat.emissiveIntensity = pulse;
+    entry.ringMat.opacity = 0.55 + Math.sin(performance.now() * 0.005 + entry.phase) * 0.2;
+  }
+
+  for (const [id, entry] of pickupVisuals) {
+    if (alive.has(id)) continue;
+    scene.remove(entry.group);
+    entry.bodyMat.dispose();
+    entry.accentMat.dispose();
+    entry.ringMat.dispose();
+    pickupVisuals.delete(id);
+  }
+}
+
+function clearPickups() {
+  for (const [, entry] of pickupVisuals) {
+    scene.remove(entry.group);
+    entry.bodyMat.dispose();
+    entry.accentMat.dispose();
+    entry.ringMat.dispose();
+  }
+  pickupVisuals.clear();
+}
+
+function clearPits() {
+  for (const [, mesh] of pitVisuals) {
+    scene.remove(mesh);
+    mesh.material.dispose();
+  }
+  pitVisuals.clear();
 }
 
 function clearChains() {
