@@ -157,7 +157,6 @@ export function updateUI(state) {
   updateCommandChip(state);
   updateLoadingBox();
   updateWaveCountdown(state);
-  updateCards(state);
   updateUpgradePanel(state);
   updateTestPanel(state);
   updateSkillRail(state);
@@ -284,38 +283,6 @@ function updateLoadingBox() {
     loadingDone = true;
     els.loadingBox.classList.add('is-done');
   }
-}
-
-/* 抽卡：慢放时底部弹出三张，倒计时结束自动选 */
-function updateCards(state) {
-  if (!els.cardLayer) return;
-
-  const show = state.status === 'playing' && state.card && state.card.active;
-  els.cardLayer.classList.toggle('hidden', !show);
-  if (!show) return;
-
-  els.cardTimer.textContent = `${Math.max(0, Math.ceil(state.card.timeLeft))}s`;
-
-  if (els.cardVersion !== state.card.version) {
-    els.cardVersion = state.card.version;
-    renderCards(state.card.choices);
-  }
-}
-
-function renderCards(choices) {
-  els.cardRow.innerHTML = choices.map((c, i) => `
-    <button class="card-choice" data-card-index="${i}">
-      <em>${i + 1}</em>
-      <strong>${c.name}</strong>
-      <span>${c.desc}</span>
-    </button>
-  `).join('');
-
-  els.cardRow.querySelectorAll('[data-card-index]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      if (actions && actions.chooseCard) actions.chooseCard(Number(btn.dataset.cardIndex));
-    });
-  });
 }
 
 /* ---------- 地图结束升级面板 ---------- */
@@ -585,21 +552,7 @@ function buildDom() {
   `;
   document.body.appendChild(overScreen);
 
-  // 抽卡层：慢放时从底部滑出，不暂停游戏
-  const cardLayer = document.createElement('div');
-  cardLayer.className = 'card-layer hidden';
-  cardLayer.innerHTML = `
-    <div class="card-panel">
-      <div class="card-layer__head">
-        <span>选择一张强化</span>
-        <span class="card-layer__timer" data-card-timer>6s</span>
-      </div>
-      <div class="card-layer__row" data-card-row></div>
-    </div>
-  `;
-  document.body.appendChild(cardLayer);
-
-  // 地图结束的升级面板：3 次选择，10 秒慢放，没选完的次数累计到下一次
+  // 地图结束的升级面板：3 次选择，30 秒暂停，没选完的次数累计到下一次
   const upgradeLayer = document.createElement('div');
   upgradeLayer.className = 'card-layer upgrade-layer hidden';
   upgradeLayer.innerHTML = `
@@ -746,10 +699,6 @@ function buildDom() {
     loadingFill: startScreen.querySelector('[data-loading-fill]'),
     loadingText: startScreen.querySelector('[data-loading-text]'),
     startBest,
-    cardLayer,
-    cardTimer: cardLayer.querySelector('[data-card-timer]'),
-    cardRow: cardLayer.querySelector('[data-card-row]'),
-    cardVersion: -1,
     upgradeLayer,
     upgradeTimer: upgradeLayer.querySelector('[data-upgrade-timer]'),
     upgradePicks: upgradeLayer.querySelector('[data-upgrade-picks]'),

@@ -111,9 +111,7 @@ const CONFIG = {
     maxSoldiers: 120,    // 最多显示多少个士兵
   },
   card: {
-    everyWaves: 2,       // 每几波抽一次
-    slowMo: 0.25,        // 抽卡时全场慢放倍率
-    duration: 10,        // 选择时间，秒
+    everyWaves: 2,       // 每几波自动获得一个技能
   },
   slots: {
     // 每个槽位 1-5 级。等级只改规模：伤害倍率、半径、间隔、回兵数。
@@ -600,12 +598,6 @@ const state = {
     barrelDamage: 1,    // 炸药桶伤害倍率
     fireRate: 1,        // 射速倍率
   },
-  card: {
-    active: false,
-    choices: [],
-    timeLeft: 0,
-    version: 0,
-  },
   // 地图结束后的升级面板：3 次选择，没选完的次数累计到下一次
   upgradePanel: {
     active: false,
@@ -863,11 +855,6 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (state.paused) return;
-
-  if (state.card.active && (e.key === '1' || e.key === '2' || e.key === '3')) {
-    chooseCard(Number(e.key) - 1);
-    return;
-  }
 
   if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') input.left = true;
   if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') input.right = true;
@@ -1287,9 +1274,6 @@ function resetState(opts = {}) {
   state.upgrades.barrelDamage = 1;
   state.upgrades.fireRate = 1;
 
-  state.card.active = false;
-  state.card.choices = [];
-  state.card.timeLeft = 0;
   state.upgradePanel.active = false;
   state.upgradePanel.picks = 0;
   state.upgradePanel.timeLeft = 0;
@@ -1437,8 +1421,6 @@ function applyStartingLoadout(era) {
 function returnToMenu() {
   state.paused = false;
   state.status = 'menu';
-  state.card.active = false;
-  state.card.choices = [];
   state.upgradePanel.active = false;
   state.upgradePanel.picks = 0;
   state.envEvent = null;
@@ -2045,17 +2027,6 @@ const SKILL_CHARGES = {
   // 终幕
   finalJudgment: 1, cosmicCollapse: 1, sacrifice: 1, reboot: 1, entropy: 2,
 };
-
-// 终幕卡池权重：越强的技能越难抽到。基础卡统一按 2 算。
-// 只影响抽到哪张，不影响抽到后给几次使用机会。
-const FINALE_CARD_WEIGHTS = {
-  finalJudgment: 1,
-  cosmicCollapse: 1.5,
-  sacrifice: 2,
-  reboot: 2,
-  entropy: 3,
-};
-const BASE_CARD_WEIGHT = 2;
 
 const SKILL_DESCS = {
   arrowRain: '圆形箭雨：半径 4 内 50 伤害（直径 8，约屏幕宽度一半）',
@@ -2895,52 +2866,6 @@ function convertExpiredSkills() {
   });
 }
 
-function buildCardPool() {
-  const base = CARD_POOL.map((c) => ({
-    ...c,
-    desc: typeof c.desc === 'function' ? c.desc() : c.desc,
-    weight: BASE_CARD_WEIGHT,
-  }));
-
-  const skills = SKILL_DEFS
-    .filter((s) => s.era === state.era)
-    .map((s) => ({
-      id: 'skill_' + s.id,
-      name: s.name,
-      desc: `${SKILL_DESCS[s.id] || '一次性技能'}。获得 ${skillCharges(s)} 次使用机会`,
-      can: () => skillCanAppear(s),
-      apply: () => gainSkill(s.id),
-      weight: FINALE_CARD_WEIGHTS[s.id] ?? 2,
-    }));
-
-  return base.concat(skills);
-}
-
-// 按权重不放回抽 count 张，给终幕用
-function pickWeightedCards(pool, count) {
-  const items = pool.slice();
-  const picked = [];
-
-  while (picked.length < count && items.length) {
-    const total = items.reduce((sum, c) => sum + (c.weight || 1), 0);
-    let roll = Math.random() * total;
-    let idx = items.length - 1;
-
-    for (let i = 0; i < items.length; i++) {
-      roll -= items[i].weight || 1;
-      if (roll <= 0) {
-        idx = i;
-        break;
-      }
-    }
-
-    picked.push(items[idx]);
-    items.splice(idx, 1);
-  }
-
-  return picked;
-}
-
 // 地图结束后的升级面板：只列槽位和基础卡，技能已经改成每 2 波自动获得
 function buildUpgradePool() {
   return CARD_POOL
@@ -3021,59 +2946,6 @@ function updateUpgradePanel(realDt) {
   if (state.upgradePanel.timeLeft <= 0) {
     closeUpgradePanel(true);
   }
-}
-
-function startCardDraw() {
-  if (state.card.active) return;
-
-  const pool = buildCardPool().filter((c) => c.can());
-  if (!pool.length) return;
-
-  if (state.era === CONFIG.era.count - 1) {
-    // 终幕之后没有下一个时代，抽卡会无限重复，改成按强度加权
-    state.card.choices = pickWeightedCards(pool, 3);
-  } else {
-    for (let i = pool.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [pool[i], pool[j]] = [pool[j], pool[i]];
-    }
-    state.card.choices = pool.slice(0, 3);
-  }
-
-  state.card.active = true;
-  state.card.timeLeft = CONFIG.card.duration;
-  state.card.version += 1;
-  state.timeScale = CONFIG.card.slowMo;
-  emit('cardStart', { choices: state.card.choices.map((c) => c.id) });
-}
-
-function chooseCard(index) {
-  if (!state.card.active) return;
-
-  const card = state.card.choices[index];
-  if (!card) return;
-
-  card.apply();
-  state.card.active = false;
-  state.card.choices = [];
-  state.card.timeLeft = 0;
-  state.timeScale = 1;
-  emit('cardChosen', { id: card.id });
-}
-
-function updateCard(realDt) {
-  if (!state.card.active) return;
-
-  state.card.timeLeft -= realDt;
-  if (state.card.timeLeft > 0) return;
-
-  // 超时优先拿防御类，没有再拿第一张
-  const preferred = state.card.choices.findIndex(
-    (c) => c.id === 'armor' ||
-      c.id === 'barricadeUnlock' ||
-      c.id === 'barricadeUpgrade'
-  );
-  chooseCard(preferred >= 0 ? preferred : 0);
 }
 
 /* ----------------------------------------------------------
@@ -5597,7 +5469,6 @@ function damageArmy(amount, cause) {
   if (state.soldiers <= 0) {
     state.soldiers = 0;
     state.status = 'over';
-    state.card.active = false;
     state.upgradePanel.active = false;
     state.upgradePanel.picks = 0;
     state.upgradeCarry = 0;
@@ -5620,7 +5491,6 @@ function applySoldiers(delta, opts = {}) {
   if (state.soldiers <= 0) {
     state.soldiers = 0;
     state.status = 'over';
-    state.card.active = false;
     state.upgradePanel.active = false;
     state.upgradePanel.picks = 0;
     state.upgradeCarry = 0;
@@ -5642,7 +5512,6 @@ initUI(state, {
   setPaused,
   returnToMenu,
   revive: revive,
-  chooseCard,
   castSkill,
   setSlotLevel,
   setEra: setEraForTest,
@@ -5677,7 +5546,6 @@ function loop(now) {
       updateUpgradePanel(realDt);
       syncScene(state, 0);
     } else {
-      updateCard(realDt);          // 旧的抽卡倒计时（已停用，保留兼容）
       const dt = realDt * state.timeScale;
       update(dt);
       syncScene(state, dt);
