@@ -295,6 +295,18 @@ const CONFIG = {
     damage: 7,
     speed: 3.4,
   },
+  // 记忆植入：从地图外打进一枚传染炮弹，感染会在僵尸之间扩散
+  plague: {
+    flightTime: 0.6,
+    radius: 2.2,        // 落点初始感染范围
+    infectCount: 4,     // 落点最多直接感染几只
+    duration: 6,        // 每只感染持续时间
+    damagePct: 0.03,    // 每秒扣最大生命的比例
+    slowMul: 0.7,       // 感染期间移速 ×0.7
+    spreadInterval: 0.9,
+    spreadRadius: 2.2,
+    maxInfected: 15,    // 全场同时感染上限
+  },
   barricade: {
     xMin: -0.4,          // 路障左边界，避开左边屏障通道
     z: 0,                // 路障所在纵深，接近屏幕中央
@@ -558,6 +570,14 @@ const state = {
     timeLeft: 0,
     version: 0,
   },
+  // 地图结束后的升级面板：3 次选择，没选完的次数累计到下一次
+  upgradePanel: {
+    active: false,
+    picks: 0,
+    timeLeft: 0,
+    version: 0,
+  },
+  upgradeCarry: 0,
   timeScale: 1,
   // 槽位默认全部锁定，抽到对应卡才生效；level 0 = 未解锁，1-5 = 等级
   slots: { siege: false, support: false, closeDefense: false, command: false, summon: false },
@@ -570,7 +590,6 @@ const state = {
   // 一次性技能栏：抽到卡后存次数，点左侧图标使用
   skillBag: [],        // [{ id, charges }]
   skillBagVersion: 0,  // UI 重建用
-  lastSkillId: null,   // 本局上一次成功释放的一次性技能，记忆植入用来复刻
   skillUseCd: 0,
   slowUntil: 0,
   slowMul: 1,
@@ -615,6 +634,8 @@ const state = {
   friendlyZombies: [], // 见 docs/接口约定.md；召唤槽兵种额外带 unitType/cost/role/scale
   summonNextPreferred: null, // 升级后下一只优先出的新兵种
   blackHoles: [], // 黑洞：{ id, x, z, timeLeft, duration, radius, pullRadius, pullFactor, damagePct, bossPctMul }
+  plagueShots: [],   // 记忆植入的传染炮弹：{ id, x, z, timeLeft, radius, infectCount }
+  plagueSpreadTimer: 0,
   virusBombs: [],    // { id, x, z, timeLeft, radius, maxConvert }
   usedSkills: [],    // 一局只能用一次的技能 id，目前是轨道轰炸
   weaponBoostUntil: 0,
@@ -932,6 +953,10 @@ function resetState(opts = {}) {
   state.card.active = false;
   state.card.choices = [];
   state.card.timeLeft = 0;
+  state.upgradePanel.active = false;
+  state.upgradePanel.picks = 0;
+  state.upgradePanel.timeLeft = 0;
+  state.upgradeCarry = 0;
   state.timeScale = 1;
 
   state.slots.siege = false;
@@ -945,7 +970,6 @@ function resetState(opts = {}) {
   state.commandMarkTimer = 0;
   state.skillBag = [];
   state.skillBagVersion += 1;
-  state.lastSkillId = null;
   state.skillUseCd = 0;
   state.usedSkills = [];
   state.weaponBoostUntil = 0;
@@ -985,6 +1009,8 @@ function resetState(opts = {}) {
   state.friendlyZombies.length = 0;
   state.summonNextPreferred = null;
   state.blackHoles.length = 0;
+  state.plagueShots.length = 0;
+  state.plagueSpreadTimer = 0;
   state.virusBombs.length = 0;
 
   state.barrierTimer = 0.6;
@@ -1067,6 +1093,8 @@ function returnToMenu() {
   state.status = 'menu';
   state.card.active = false;
   state.card.choices = [];
+  state.upgradePanel.active = false;
+  state.upgradePanel.picks = 0;
   state.timeScale = 1;
   state.skillUseCd = 0;
   input.left = false;
@@ -1098,6 +1126,8 @@ function revive() {
   state.friendlyZombies.length = 0;
   state.summonNextPreferred = null;
   state.blackHoles.length = 0;
+  state.plagueShots.length = 0;
+  state.plagueSpreadTimer = 0;
   state.virusBombs.length = 0;
   state.weaponBoostUntil = 0;
   state.weaponBoostDamage = 1;
@@ -1606,7 +1636,7 @@ const SKILL_DEFS = [
   { id: 'bioLegion', name: '生物人军团', era: 3, type: 'friendlyLegion', color: 0x9c6bff },
   { id: 'geneBurst', name: '基因爆发', era: 3, type: 'buff', duration: 5, mul: 2, color: 0x6dffb0 },
   { id: 'timeSlow', name: '时间减速', era: 3, type: 'slow', duration: 4, mul: 0.5, color: 0x8fb6ff },
-  { id: 'memory', name: '记忆植入', era: 3, type: 'memory', color: 0xd0a0ff },
+  { id: 'memory', name: '记忆植入', era: 3, type: 'plague', color: 0x8fe36a },
   // 4 星际
   { id: 'orbital', name: '轨道轰炸', era: 4, type: 'orbital', color: 0x7fe3ff },
   // 黑洞：持续吸附 1.2 秒，结束时按最大生命百分比结算。
@@ -1697,7 +1727,7 @@ const SKILL_DESCS = {
   bioLegion: '瞬间生成 20 名己方僵尸，向前对冲',
   geneBurst: '全队射速 ×2，持续 5 秒',
   timeSlow: '全场僵尸所有移动 ×0.5，持续 4 秒',
-  memory: '复刻本局上一次用过的技能，不消耗它的次数；没有可复刻的技能时，给技能栏里次数最少的一个 +1 次',
+  memory: '从地图外打进一枚传染炮弹，落点感染最多 4 只；感染者每秒扣 3% 最大生命、减速 30%，并在僵尸之间扩散，同时最多 15 只',
   orbital: '横向轨道光柱，清掉离士兵最近的 2/3 僵尸（按数量，远的一批留着）；一局只能使用一次',
   blackHole: '半径 12 内僵尸被持续吸向中心 1.2 秒；结束时中心半径 3 内扣 12% 最大生命（Boss 减半）',
   wormhole: '全场僵尸一起送回出生点',
@@ -2179,46 +2209,18 @@ function castSkill(id) {
     case 'heal':
       applySoldiers(def.soldiers);
       break;
-    case 'memory': {
-      // 复刻上一个用过的普通技能。一局只能拿一次/用一次的技能（轨道轰炸、
-      // 重启、献祭、审判、坍缩）不复刻，否则会被记忆植入绕开限制。
-      const lastId = state.lastSkillId;
-      const lastDef = lastId ? skillDef(lastId) : null;
-      const replayable =
-        lastDef && lastId !== 'memory' && skillCharges(lastDef) > 1;
-
-      if (replayable && castSkill(lastId)) {
-        castExtra = {
-          x: state.player.x,
-          z: state.player.z,
-          replayId: lastId,
-          replayName: lastDef.name,
-        };
-        emit('skillNotice', {
-          text: `记忆植入：复刻 ${lastDef.name}`,
-          kind: 'skill',
-        });
-        break;
-      }
-
-      // 没有可复刻的技能：给技能栏里次数最少的另一个技能 +1 次
-      let target = null;
-      for (const s of state.skillBag) {
-        if (s.id === 'memory') continue;
-        const d = skillDef(s.id);
-        const max = d && d.id === 'orbital' ? 1 : SKILL_MAX_CHARGES;
-        if (s.charges >= max) continue;
-        if (!target || s.charges < target.charges) target = s;
-      }
-      if (!target) return false;
-
-      target.charges += 1;
-      state.skillBagVersion += 1;
-      castExtra = { x: state.player.x, z: state.player.z };
-      emit('skillNotice', {
-        text: `记忆植入：${skillDef(target.id)?.name || target.id} +1 次`,
-        kind: 'skill',
+    case 'plague': {
+      // 记忆植入：从地图外打进一枚传染炮弹，落地后感染一片并继续扩散
+      const cfg = CONFIG.plague;
+      state.plagueShots.push({
+        id: state.nextId++,
+        x: target.x,
+        z: target.z,
+        timeLeft: cfg.flightTime,
+        radius: cfg.radius,
+        infectCount: cfg.infectCount,
       });
+      castExtra = { radius: cfg.radius, delay: cfg.flightTime };
       break;
     }
     case 'upgradeSlot':
@@ -2446,18 +2448,16 @@ function gainSkill(id) {
   } else if (state.skillBag.length < SKILL_BAG_MAX) {
     state.skillBag.push({ id, charges: add });
   } else {
-    // 技能栏满了：替换次数最少的那个，按剩余次数和强度折算成兵
-    let idx = 0;
-    for (let i = 1; i < state.skillBag.length; i++) {
-      if (state.skillBag[i].charges < state.skillBag[idx].charges) idx = i;
-    }
-
+    // 技能栏满了：按获得顺序替换最早的那个（FIFO），
+    // 剩余次数折算成兵。以前替换次数最少的，会让 1 次强技能被 3 次弱技能挤掉。
+    const idx = 0;
     const old = state.skillBag[idx];
     const oldDef = skillDef(old.id);
     const soldiers = old.charges * (oldDef ? skillStrengthValue(oldDef) : 5);
 
     applySoldiers(soldiers);
-    state.skillBag[idx] = { id, charges: add };
+    state.skillBag.splice(idx, 1);
+    state.skillBag.push({ id, charges: add });
 
     emit('skillNotice', {
       text: `技能栏已满：${oldDef ? oldDef.name : old.id}×${old.charges} 折算 +${soldiers} 兵，换入 ${def.name}×${add}`,
@@ -2466,6 +2466,21 @@ function gainSkill(id) {
   }
 
   state.skillBagVersion += 1;
+}
+
+// 每 2 波自动获得一个当前时代技能。完全随机，不按强度加权。
+function grantRandomSkill() {
+  const pool = SKILL_DEFS.filter(
+    (s) => s.era === state.era && skillCanAppear(s)
+  );
+  if (!pool.length) return;
+
+  const def = pool[Math.floor(Math.random() * pool.length)];
+  gainSkill(def.id);
+  emit('skillNotice', {
+    text: `自动获得技能：${def.name}`,
+    kind: 'skill',
+  });
 }
 
 // 使用一次技能。技能失败（兵不够、路障满级）时不扣次数。
@@ -2486,9 +2501,6 @@ function useSkill(id) {
   }
 
   if (id === 'orbital') state.usedSkills.push('orbital');
-
-  // 记下这次用的技能，记忆植入复刻用；记忆植入自己不算
-  if (id !== 'memory') state.lastSkillId = id;
 
   entry.charges -= 1;
   if (entry.charges <= 0) {
@@ -2577,6 +2589,89 @@ function pickWeightedCards(pool, count) {
   return picked;
 }
 
+// 地图结束后的升级面板：只列槽位和基础卡，技能已经改成每 2 波自动获得
+function buildUpgradePool() {
+  return CARD_POOL
+    .map((c) => ({
+      ...c,
+      desc: typeof c.desc === 'function' ? c.desc() : c.desc,
+    }))
+    .filter((c) => c.can());
+}
+
+function openUpgradePanel() {
+  if (state.status !== 'playing' || state.testMode) return;
+  if (state.upgradePanel.active) return;
+
+  const picks = 3 + state.upgradeCarry;
+  state.upgradeCarry = 0;
+
+  if (!buildUpgradePool().length) {
+    // 没什么可升的了，次数直接折算成兵
+    if (picks > 0) applySoldiers(picks * 10);
+    return;
+  }
+
+  state.upgradePanel.active = true;
+  state.upgradePanel.picks = picks;
+  state.upgradePanel.timeLeft = 10;
+  state.upgradePanel.version += 1;
+  state.timeScale = 0.25;
+  emit('upgradePanelOpen', { picks });
+}
+
+function closeUpgradePanel(carryRemaining = false) {
+  if (!state.upgradePanel.active) return;
+
+  if (carryRemaining && state.upgradePanel.picks > 0) {
+    const left = state.upgradePanel.picks;
+    state.upgradeCarry += left;
+    emit('skillNotice', {
+      text: `还有 ${left} 次升级没用，累计到下一次`,
+      kind: 'skill',
+    });
+  }
+
+  state.upgradePanel.active = false;
+  state.upgradePanel.picks = 0;
+  state.upgradePanel.timeLeft = 0;
+  state.upgradePanel.version += 1;
+  state.timeScale = 1;
+}
+
+function chooseUpgrade(id) {
+  if (!state.upgradePanel.active || state.upgradePanel.picks <= 0) return false;
+
+  const card = buildUpgradePool().find((c) => c.id === id);
+  if (!card) return false;
+
+  card.apply();
+  state.upgradePanel.picks -= 1;
+  state.upgradePanel.version += 1;
+
+  if (state.upgradePanel.picks <= 0) {
+    closeUpgradePanel(false);
+  } else if (!buildUpgradePool().length) {
+    // 能升的都升完了，剩下的次数累计到下一次
+    closeUpgradePanel(true);
+  }
+  return true;
+}
+
+function updateUpgradePanel(realDt) {
+  if (!state.upgradePanel.active) return;
+  if (state.status !== 'playing') {
+    closeUpgradePanel(false);
+    return;
+  }
+  if (state.paused) return;
+
+  state.upgradePanel.timeLeft -= realDt;
+  if (state.upgradePanel.timeLeft <= 0) {
+    closeUpgradePanel(true);
+  }
+}
+
 function startCardDraw() {
   if (state.card.active) return;
 
@@ -2654,9 +2749,7 @@ function syncEraWithWave(wave) {
 
     // 旧时代没打完的技能次数折算成兵
     convertExpiredSkills();
-    // 旧时代技能已经折算掉，记忆植入也不能再复刻它们
-    state.lastSkillId = null;
-    ensureSummonSlot();
+      ensureSummonSlot();
 
     // 只换时代配色和地图，场上僵尸、子弹、屏障全部保留
     switchEra(eraIndex, map);
@@ -2664,6 +2757,7 @@ function syncEraWithWave(wave) {
 
     // 新地图开场：一只 Boss 压下来当分段节点
     spawnEraBoss(eraIndex);
+    openUpgradePanel();
     return;
   }
 
@@ -2698,6 +2792,7 @@ function syncEraWithWave(wave) {
 
   // 每换一张地图一个 Boss；场上已经有一只时 spawnEraBoss 会自己跳过
   spawnEraBoss(eraIndex);
+  openUpgradePanel();
 }
 
 function update(dt) {
@@ -2726,13 +2821,13 @@ function update(dt) {
       state.pitTimer = 0;
     }
 
-    // 每 2 波结束抽一次；测试模式不抽卡，避免打断观察
+    // 每 2 波自动获得 1 个当前时代的技能，完全随机；测试模式不抽
     if (
       !state.testMode &&
       completed > 0 &&
       completed % CONFIG.card.everyWaves === 0
     ) {
-      startCardDraw();
+      grantRandomSkill();
     }
   }
 
@@ -2762,6 +2857,8 @@ function update(dt) {
   updateNapalmWalls(dt);
   updateFriendlyZombies(dt);
   updateBlackHoles(dt);
+  updatePlagueShots(dt);
+  updatePlague(dt);
   updatePits(dt);
   updateZombies(dt);
   updateSummoners(dt);
@@ -3654,7 +3751,10 @@ function updateZombies(dt) {
         Math.abs(z.x - w.x) <= w.width / 2 &&
         Math.abs(z.z - w.z) <= w.depth / 2
     );
-    const slowMul = baseSlow * (inNapalm ? CONFIG.napalmWall.slowMul : 1);
+    const plagueSlow =
+      (z.plagueUntil || 0) > state.time ? CONFIG.plague.slowMul : 1;
+    const slowMul =
+      baseSlow * (inNapalm ? CONFIG.napalmWall.slowMul : 1) * plagueSlow;
 
     const bar = state.barricade;
     const cfg = CONFIG.barricade;
@@ -4028,6 +4128,95 @@ function updateVirusBombs(dt) {
       count: converted,
     });
     state.virusBombs.splice(i, 1);
+  }
+}
+
+// 记忆植入：传染炮弹落地，感染落点附近的一批僵尸
+function updatePlagueShots(dt) {
+  const cfg = CONFIG.plague;
+
+  for (let i = state.plagueShots.length - 1; i >= 0; i--) {
+    const s = state.plagueShots[i];
+    s.timeLeft -= dt;
+    if (s.timeLeft > 0) continue;
+
+    state.plagueShots.splice(i, 1);
+
+    let infected = 0;
+    const r2 = s.radius * s.radius;
+    for (const z of state.zombies) {
+      if (infected >= s.infectCount) break;
+      const dx = z.x - s.x;
+      const dz = z.z - s.z;
+      if (dx * dx + dz * dz > r2) continue;
+      z.plagueUntil = state.time + cfg.duration;
+      infected += 1;
+    }
+
+    emit('plagueImpact', {
+      x: s.x,
+      z: s.z,
+      radius: s.radius,
+      count: infected,
+    });
+  }
+}
+
+// 感染者持续掉血，并每隔一段时间向附近未感染的僵尸扩散
+function updatePlague(dt) {
+  const cfg = CONFIG.plague;
+
+  let infectedCount = 0;
+  for (let i = state.zombies.length - 1; i >= 0; i--) {
+    const z = state.zombies[i];
+    if ((z.plagueUntil || 0) <= state.time) continue;
+    infectedCount += 1;
+    const maxHp = Math.max(1, z.maxHp || z.hp);
+    damageZombieAt(i, maxHp * cfg.damagePct * dt);
+  }
+
+  if (infectedCount === 0) {
+    state.plagueSpreadTimer = 0;
+    return;
+  }
+
+  state.plagueSpreadTimer -= dt;
+  if (state.plagueSpreadTimer > 0) return;
+  state.plagueSpreadTimer = cfg.spreadInterval;
+
+  if (infectedCount >= cfg.maxInfected) return;
+
+  // 感染者是传播源；Boss 只吃伤害和减速，不负责传播
+  const sources = state.zombies.filter(
+    (z) => (z.plagueUntil || 0) > state.time && !z.boss
+  );
+
+  for (const src of sources) {
+    if (infectedCount >= cfg.maxInfected) break;
+
+    let best = null;
+    let bestD2 = cfg.spreadRadius * cfg.spreadRadius;
+
+    for (const z of state.zombies) {
+      if ((z.plagueUntil || 0) > state.time) continue;
+      const dx = z.x - src.x;
+      const dz = z.z - src.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 <= bestD2) {
+        bestD2 = d2;
+        best = z;
+      }
+    }
+
+    if (!best) continue;
+    best.plagueUntil = state.time + cfg.duration;
+    infectedCount += 1;
+    emit('plagueSpread', {
+      fromX: src.x,
+      fromZ: src.z,
+      x: best.x,
+      z: best.z,
+    });
   }
 }
 
@@ -5037,6 +5226,9 @@ function damageArmy(amount, cause) {
     state.soldiers = 0;
     state.status = 'over';
     state.card.active = false;
+    state.upgradePanel.active = false;
+    state.upgradePanel.picks = 0;
+    state.upgradeCarry = 0;
     state.timeScale = 1;
   }
 }
@@ -5057,6 +5249,9 @@ function applySoldiers(delta, opts = {}) {
     state.soldiers = 0;
     state.status = 'over';
     state.card.active = false;
+    state.upgradePanel.active = false;
+    state.upgradePanel.picks = 0;
+    state.upgradeCarry = 0;
     state.timeScale = 1;
   }
 }
@@ -5085,6 +5280,8 @@ initUI(state, {
   getSlotInfo,
   useSkill,
   getSkillBag,
+  getUpgradePool: buildUpgradePool,
+  chooseUpgrade,
 });
 
 /* ----------------------------------------------------------
@@ -5103,7 +5300,8 @@ function loop(now) {
       // 暂停时画面冻结：用 dt=0 同步一次，不推进任何计时和动画
       syncScene(state, 0);
     } else {
-      updateCard(realDt);          // 抽卡倒计时用真实时间
+      updateUpgradePanel(realDt);  // 升级面板倒计时用真实时间
+      updateCard(realDt);          // 旧的抽卡倒计时（已停用，保留兼容）
       const dt = realDt * state.timeScale;
       update(dt);
       syncScene(state, dt);

@@ -805,6 +805,7 @@ const swarmDroneMeshes = new Map();
 const friendlyZombieMeshes = new Map();
 const virusBombMeshes = new Map();
 const blackHoleMeshes = new Map();
+const plagueMeshes = new Map();
 const tankSupportMeshes = new Map(); // 坦克可以同时有多辆，key 是 t.id
 const effects = [];
 
@@ -1275,6 +1276,25 @@ export function initVisuals(container, events) {
     spawnTracer(d.fromX, d.fromZ, d.x, d.z, 0x8fe36a, 0.7);
   });
 
+  // 记忆植入：炮弹落地，绿色毒雾
+  events.addEventListener('plagueImpact', (e) => {
+    const d = e.detail;
+    spawnImpact(d.x, d.z, {
+      radius: d.radius || 2.2,
+      color: 0x8fe36a,
+      power: 0.6,
+      dust: false,
+    });
+    if (d.count > 0) spawnRing(d.x, d.z, 0x8fe36a, 0.7);
+  });
+
+  // 感染扩散：一条绿色连线加落点小环
+  events.addEventListener('plagueSpread', (e) => {
+    const d = e.detail;
+    spawnTracer(d.fromX, d.fromZ, d.x, d.z, 0x8fe36a, 0.7);
+    spawnRing(d.x, d.z, 0x8fe36a, 0.3);
+  });
+
   // 黑洞结束：猛地一缩 + 紫环扩散
   events.addEventListener('blackHoleImpact', (e) => {
     const d = e.detail;
@@ -1325,9 +1345,15 @@ export function initVisuals(container, events) {
     } else if (d.type === 'buff') {
       // 增益光环由 syncScene 按 buffUntil 持续画，这里不再往僵尸堆里砸东西
       spawnRing(d.x, d.z, d.color || 0x6dffb0, 1.1);
-    } else if (d.type === 'memory') {
-      // 记忆回放：玩家脚下紫色圆环，复刻的技能会自己播自己的特效
-      spawnRing(d.x, d.z, d.color || 0xd0a0ff, 0.9);
+    } else if (d.type === 'plague') {
+      // 传染炮弹：从地图外落下来。spawnSkyStrike 本身要飞 0.4 秒，
+      // 这里提前 0.4 秒放出，让画面落地时间和实际感染时间对齐
+      spawnSkyStrike(
+        d.x,
+        d.z,
+        d.color || 0x8fe36a,
+        Math.max(0, (d.delay || 0.6) - 0.4)
+      );
     } else if (d.id === 'arrowRain') {
       spawnArrowRain(d.x, d.z, d.radius || 4, d.color || 0xd9b36c);
     } else if (d.type === 'barrage') {
@@ -3160,6 +3186,7 @@ export function syncScene(state, dt) {
   syncChains(state);
   syncPits(state);
   syncBlackHoles(state, dt);
+  syncPlague(state, dt);
   syncPickups(state);
   updateBossPresence(state);
   updateZombieHitFeedback(state);
@@ -6308,6 +6335,73 @@ function syncBlackHoles(state, dt) {
     scene.remove(mesh);
     disposeMesh(mesh);
     blackHoleMeshes.delete(id);
+  }
+}
+
+/* 记忆植入：被感染的僵尸脚下一圈绿色毒环，头顶一颗小毒球 */
+function makePlagueMark() {
+  const group = new THREE.Group();
+
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.5, 0.68, 24),
+    new THREE.MeshBasicMaterial({
+      color: 0x8fe36a,
+      transparent: true,
+      opacity: 0.55,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.05;
+  group.add(ring);
+
+  const orb = new THREE.Mesh(
+    new THREE.SphereGeometry(0.09, 8, 6),
+    new THREE.MeshBasicMaterial({
+      color: 0xb8ff8a,
+      transparent: true,
+      opacity: 0.8,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  orb.position.y = 1.35;
+  group.add(orb);
+
+  group.userData.ring = ring;
+  group.userData.orb = orb;
+  return group;
+}
+
+function syncPlague(state, dt) {
+  if (!scene) return;
+  const alive = new Set();
+
+  for (const z of state.zombies || []) {
+    if ((z.plagueUntil || 0) <= state.time) continue;
+    alive.add(z.id);
+
+    let mesh = plagueMeshes.get(z.id);
+    if (!mesh) {
+      mesh = makePlagueMark();
+      scene.add(mesh);
+      plagueMeshes.set(z.id, mesh);
+    }
+
+    mesh.position.set(z.x, 0, z.z);
+    const now = performance.now();
+    mesh.userData.orb.position.y = 1.35 + Math.sin(now * 0.006 + z.id) * 0.08;
+    mesh.userData.ring.material.opacity =
+      0.4 + Math.sin(now * 0.008 + z.id) * 0.16;
+  }
+
+  for (const [id, mesh] of plagueMeshes) {
+    if (alive.has(id)) continue;
+    scene.remove(mesh);
+    disposeMesh(mesh);
+    plagueMeshes.delete(id);
   }
 }
 

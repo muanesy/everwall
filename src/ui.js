@@ -153,6 +153,7 @@ export function updateUI(state) {
   updateLoadingBox();
   updateWaveCountdown(state);
   updateCards(state);
+  updateUpgradePanel(state);
   updateTestPanel(state);
   updateSkillRail(state);
 
@@ -274,6 +275,33 @@ function renderCards(choices) {
       if (actions && actions.chooseCard) actions.chooseCard(Number(btn.dataset.cardIndex));
     });
   });
+}
+
+/* ---------- 地图结束升级面板 ---------- */
+
+function updateUpgradePanel(state) {
+  if (!els.upgradeLayer) return;
+
+  const active =
+    state.status === 'playing' &&
+    state.upgradePanel &&
+    state.upgradePanel.active;
+  els.upgradeLayer.classList.toggle('hidden', !active);
+  if (!active) return;
+
+  els.upgradeTimer.textContent = `${Math.max(0, Math.ceil(state.upgradePanel.timeLeft))}s`;
+  els.upgradePicks.textContent = `剩余 ${state.upgradePanel.picks} 次`;
+
+  if (els.upgradeVersion !== state.upgradePanel.version) {
+    els.upgradeVersion = state.upgradePanel.version;
+    const pool = actions && actions.getUpgradePool ? actions.getUpgradePool() : [];
+    els.upgradeGrid.innerHTML = pool.map((c) => `
+      <button class="upgrade-choice" type="button" data-upgrade-id="${c.id}">
+        <strong>${c.name}</strong>
+        <span>${c.desc}</span>
+      </button>
+    `).join('');
+  }
 }
 
 /* ---------- 测试模式面板 ---------- */
@@ -509,6 +537,21 @@ function buildDom() {
   `;
   document.body.appendChild(cardLayer);
 
+  // 地图结束的升级面板：3 次选择，10 秒慢放，没选完的次数累计到下一次
+  const upgradeLayer = document.createElement('div');
+  upgradeLayer.className = 'card-layer upgrade-layer hidden';
+  upgradeLayer.innerHTML = `
+    <div class="card-panel upgrade-panel">
+      <div class="card-layer__head">
+        <span>地图完成 · 选择升级</span>
+        <span class="card-layer__timer" data-upgrade-timer>10s</span>
+      </div>
+      <p class="upgrade-picks" data-upgrade-picks>剩余 3 次</p>
+      <div class="upgrade-grid" data-upgrade-grid></div>
+    </div>
+  `;
+  document.body.appendChild(upgradeLayer);
+
   // 左侧技能栏：抽到一次性技能卡后存次数，点图标或按数字键使用
   const skillRail = document.createElement('aside');
   skillRail.className = 'skill-rail hidden';
@@ -633,6 +676,11 @@ function buildDom() {
     cardTimer: cardLayer.querySelector('[data-card-timer]'),
     cardRow: cardLayer.querySelector('[data-card-row]'),
     cardVersion: -1,
+    upgradeLayer,
+    upgradeTimer: upgradeLayer.querySelector('[data-upgrade-timer]'),
+    upgradePicks: upgradeLayer.querySelector('[data-upgrade-picks]'),
+    upgradeGrid: upgradeLayer.querySelector('[data-upgrade-grid]'),
+    upgradeVersion: -1,
     skillRail,
     skillVersion: -1,
     testToggle: startScreen.querySelector('[data-test-toggle]'),
@@ -785,6 +833,15 @@ function bindEvents() {
   els.menuBtn.addEventListener('click', () => {
     playClick();
     if (actions && actions.returnToMenu) actions.returnToMenu();
+  });
+
+  // 升级面板：按钮会随版本重绘，用事件委托接点击
+  els.upgradeGrid.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-upgrade-id]');
+    if (!btn) return;
+    initAudio();
+    playClick();
+    if (actions && actions.chooseUpgrade) actions.chooseUpgrade(btn.dataset.upgradeId);
   });
 
   // 技能栏数字键 1-4
