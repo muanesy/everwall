@@ -193,6 +193,11 @@ const GROUND_H = 76;     // 从 z=+24 铺到 z=-52：地面要比战斗区远一
                          // 后面的火山/雪脊/楼群这些大件才有地方站，不会悬空
 const GROUND_Z = -14;
 
+// 路障位置和尺寸：和 game.js 的 CONFIG.barricade 保持一致
+const BARRICADE_X = 1.7;
+const BARRICADE_Z = 6.5;
+const BARRICADE_WIDTH = 4.2;
+
 let renderer = null;
 let scene = null;
 let camera = null;
@@ -210,6 +215,12 @@ let playerRing = null;     // 玩家脚下的指挥光环
 let lastPlayerX = 0;
 let soldierMesh = null;
 let playerVisual = null; // 玩家的真模型（加载完成后替代蓝方块）
+
+let barricadeGroup = null;
+let barricadeHpBar = null;
+let barricadeCountdown = null;
+let barricadeCountdownSec = -1;
+const countdownTextures = new Map();
 
 // 昼夜轮转：初始化时创建，波次切换时改状态，每帧推进过渡
 let dayNight = null;
@@ -752,6 +763,9 @@ export function initVisuals(container, events) {
   // 爆炸伤害归甲，这里只负责桶的样子、爆炸特效，以及给甲查命中用的 hitTestBarrel
   initBarrels({ scene, events });
 
+  // 路障：前排一段可破坏的墙
+  initBarricade();
+
   // 队长
   playerMesh = new THREE.Mesh(
     new THREE.BoxGeometry(0.9, 1.35, 0.9),
@@ -897,6 +911,29 @@ export function initVisuals(container, events) {
 
   events.addEventListener('bulletPierce', (e) => {
     spawnRing(e.detail.x, e.detail.z, 0xb06bff, 0.16);
+  });
+
+  events.addEventListener('barricadeHit', (e) => {
+    spawnBurst(e.detail.x, 0.3, e.detail.z, 0x8a7a5a, 2, {
+      speed: 1.0,
+      up: 0.8,
+      spread: 0.3,
+      life: 0.25,
+    });
+  });
+
+  events.addEventListener('barricadeBreak', () => {
+    spawnBurst(BARRICADE_X, 0.5, BARRICADE_Z, 0x8a7a5a, 14, {
+      speed: 2.4,
+      up: 1.8,
+      spread: 0.5,
+      life: 0.6,
+    });
+    shake = Math.max(shake, 0.22);
+  });
+
+  events.addEventListener('barricadeRebuild', () => {
+    spawnRing(BARRICADE_X, BARRICADE_Z, 0x5adf7a, 0.4);
   });
 
   events.addEventListener('armyHurt', (e) => {
@@ -1305,6 +1342,7 @@ export function syncScene(state, dt) {
 
   // 僵尸
   syncZombies(state, dt);
+  syncBarricade(state);
   updateBossPresence(state);
   updateZombieHitFeedback(state);
 
@@ -2939,6 +2977,108 @@ function getHpBarTexture() {
   hpBarTex = new THREE.CanvasTexture(c);
   hpBarTex.needsUpdate = true;
   return hpBarTex;
+}
+
+/* ----------------------------------------------------------
+ * 路障：前排一段可破坏的墙 + 下方血条 + 冷却倒计时
+ * ---------------------------------------------------------- */
+function initBarricade() {
+  barricadeGroup = new THREE.Group();
+  barricadeGroup.position.set(BARRICADE_X, 0, BARRICADE_Z);
+
+  const woodMat = new THREE.MeshStandardMaterial({
+    color: 0x7a6648,
+    roughness: 0.85,
+    metalness: 0.05,
+  });
+  const darkMat = new THREE.MeshStandardMaterial({
+    color: 0x5c4a30,
+    roughness: 0.9,
+  });
+
+  const wall = new THREE.Mesh(
+    new THREE.BoxGeometry(BARRICADE_WIDTH, 0.55, 0.5),
+    woodMat
+  );
+  wall.position.y = 0.28;
+  barricadeGroup.add(wall);
+
+  for (let i = 0; i < 6; i++) {
+    const block = new THREE.Mesh(
+      new THREE.BoxGeometry(0.62, 0.26, 0.42),
+      i % 2 ? darkMat : woodMat
+    );
+    block.position.set(-1.75 + i * 0.7, 0.68, 0);
+    block.rotation.y = i % 2 ? 0.08 : -0.06;
+    barricadeGroup.add(block);
+  }
+
+  scene.add(barricadeGroup);
+
+  barricadeHpBar = makeHpBar(2.4);
+  barricadeHpBar.group.position.set(BARRICADE_X, 0.12, BARRICADE_Z + 0.5);
+
+  barricadeCountdown = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: getCountdownTexture(10),
+      transparent: true,
+      depthTest: false,
+    })
+  );
+  barricadeCountdown.scale.set(1.5, 0.75, 1);
+  barricadeCountdown.position.set(BARRICADE_X, 0.95, BARRICADE_Z + 0.2);
+  barricadeCountdown.renderOrder = 21;
+  barricadeCountdown.visible = false;
+  scene.add(barricadeCountdown);
+}
+
+function syncBarricade(state) {
+  const b = state.barricade;
+  if (!b || !barricadeGroup) return;
+
+  const active = !!b.active;
+  barricadeGroup.visible = active;
+  barricadeHpBar.group.visible = active;
+  barricadeCountdown.visible = !active;
+
+  if (active) {
+    const ratio = b.maxHp ? Math.max(0, Math.min(1, b.hp / b.maxHp)) : 0;
+    barricadeHpBar.fill.scale.x = barricadeHpBar.width * ratio;
+    barricadeHpBar.fill.position.x = -barricadeHpBar.width / 2;
+    barricadeHpBar.fill.material.color.setHex(
+      ratio > 0.5 ? 0x5adf7a : ratio > 0.25 ? 0xffc24a : 0xff5a44
+    );
+  } else {
+    const sec = Math.max(0, Math.ceil(b.cooldown));
+    if (sec !== barricadeCountdownSec) {
+      barricadeCountdownSec = sec;
+      barricadeCountdown.material.map = getCountdownTexture(sec);
+      barricadeCountdown.material.needsUpdate = true;
+    }
+  }
+}
+
+function getCountdownTexture(sec) {
+  const key = String(sec);
+  const cached = countdownTextures.get(key);
+  if (cached) return cached;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 192;
+  canvas.height = 96;
+
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, 192, 96);
+  ctx.font = 'bold 52px "Microsoft YaHei", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#ffd27a';
+  ctx.fillText(`${sec}s`, 96, 50);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  countdownTextures.set(key, tex);
+  return tex;
 }
 
 function makeHpBar(width) {

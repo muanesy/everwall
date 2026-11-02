@@ -68,6 +68,17 @@ const CONFIG = {
     damagePerWave: 4,    // 每波增加的伤害
     spawnInterval: 12,   // 每隔多少秒尝试补一个桶
   },
+  barricade: {
+    xMin: -0.4,          // 路障左边界，避开左边屏障通道
+    xMax: 3.8,           // 路障右边界
+    z: 6.5,              // 路障所在纵深
+    blockZ: 5.9,         // 僵尸停在墙前的位置
+    hp: 240,
+    hitDamage: 6,        // 僵尸每啃一口的伤害
+    attackInterval: 0.9, // 每只僵尸的啃咬间隔
+    cooldown: 10,        // 碎掉后多久重建
+    bossMultiplier: 3,   // Boss 对路障的伤害倍率
+  },
   barrier: {
     speed: 6.5,            // 压下来的速度
     spawnInterval: 2.4,
@@ -165,6 +176,14 @@ const state = {
   // 阵型：前排人数，由士兵总数算出来
   formation: {
     frontCount: 1,
+  },
+
+  // 路障：挡在前排，有血量，碎了冷却后重建
+  barricade: {
+    hp: CONFIG.barricade.hp,
+    maxHp: CONFIG.barricade.hp,
+    active: true,
+    cooldown: 0,
   },
 
   bullets: [],  // { id, x, z, vz, damage }
@@ -317,6 +336,7 @@ function resetState() {
   state.barrelTimer = CONFIG.barrel.spawnInterval;
   state.nextId = 1;
   state.spawnCounts.fill(0);
+  resetBarricade();
 
   // 把画面拉回第一个时代和起始地图，静默切换，不弹提示
   switchEra(0, START_MAP, { fade: false, silent: true });
@@ -337,6 +357,14 @@ function revive() {
   state.zombies.length = 0;
   state.barrierTimer = 0.4;
   state.zombieTimer = 0.8;
+  resetBarricade();
+}
+
+function resetBarricade() {
+  state.barricade.hp = CONFIG.barricade.hp;
+  state.barricade.maxHp = CONFIG.barricade.hp;
+  state.barricade.active = true;
+  state.barricade.cooldown = 0;
 }
 
 /* ----------------------------------------------------------
@@ -766,7 +794,21 @@ function makeSpecialBarrier(kind, x, z, wave) {
 /* ----------------------------------------------------------
  * 僵尸：从右侧大量压下来
  * ---------------------------------------------------------- */
+function updateBarricade(dt) {
+  const b = state.barricade;
+  if (b.active) return;
+
+  b.cooldown -= dt;
+  if (b.cooldown <= 0) {
+    b.active = true;
+    b.hp = b.maxHp;
+    b.cooldown = 0;
+    emit('barricadeRebuild', {});
+  }
+}
+
 function updateZombies(dt) {
+  updateBarricade(dt);
   state.zombieTimer -= dt;
 
   const spawnInterval = Math.max(
@@ -785,6 +827,43 @@ function updateZombies(dt) {
 
   // 移动：进入下半场且离士兵够近时，开始横向追人
   for (const z of state.zombies) {
+    const bar = state.barricade;
+    const cfg = CONFIG.barricade;
+
+    // 路障挡在前排：范围内的僵尸停下来啃墙
+    if (bar.active && z.z < cfg.z && z.x >= cfg.xMin && z.x <= cfg.xMax) {
+      z.z = Math.min(cfg.blockZ, z.z + z.speed * dt);
+
+      if (z.z >= cfg.blockZ - 0.05) {
+        if (z.attackTimer == null) {
+          z.attackTimer = Math.random() * cfg.attackInterval;
+        }
+        z.attackTimer -= dt;
+
+        if (z.attackTimer <= 0) {
+          z.attackTimer += cfg.attackInterval;
+          const dmg =
+            cfg.hitDamage * (z.type === 10 ? cfg.bossMultiplier : 1);
+          bar.hp = Math.max(0, bar.hp - dmg);
+          emit('barricadeHit', {
+            hp: bar.hp,
+            maxHp: bar.maxHp,
+            x: z.x,
+            z: z.z,
+          });
+
+          if (bar.hp <= 0) {
+            bar.active = false;
+            bar.cooldown = cfg.cooldown;
+            emit('barricadeBreak', {});
+          }
+        }
+      }
+
+      z.x = clamp(z.x, -CONFIG.world.halfWidth - 1, CONFIG.world.halfWidth + 1);
+      continue;
+    }
+
     const dx = state.player.x - z.x;
     const dz = state.player.z - z.z;
     const dist = Math.hypot(dx, dz);
