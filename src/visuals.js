@@ -1106,6 +1106,32 @@ export function initVisuals(container, events) {
     });
   });
 
+  events.addEventListener('airStrikeBomb', (e) => {
+    const d = e.detail;
+    spawnSkyStrike(d.x, d.z, d.color || 0xffd27a, d.delay || 0);
+  });
+
+  events.addEventListener('barrageWave', (e) => {
+    const d = e.detail;
+    spawnSkyStrike(d.x, d.z, d.color || 0xff8a4d, d.delay || 0);
+  });
+
+  // 所有延迟落地的炮弹/炸弹在这里统一出爆炸
+  events.addEventListener('delayedImpact', (e) => {
+    const d = e.detail;
+    const power =
+      d.kind === 'airStrike' ? 1.15 :
+      d.kind === 'barrage' ? 0.7 :
+      d.kind === 'tank' ? 0.9 : 1;
+
+    spawnImpact(d.x, d.z, {
+      radius: d.radius || 2.2,
+      color: d.color || 0xffb060,
+      power,
+      dust: true,
+    });
+  });
+
   // 无人机蜂群起飞：脚下一小圈推进器光
   events.addEventListener('swarmLaunch', (e) => {
     const d = e.detail;
@@ -1169,7 +1195,19 @@ export function initVisuals(container, events) {
     } else if (d.id === 'arrowRain') {
       spawnArrowRain(d.x, d.z, d.radius || 4, d.color || 0xd9b36c);
     } else if (d.type === 'barrage') {
-      spawnBarrageFx(d.x, d.z, d.radius || 4.5, d.color || 0xff8a4d);
+      // 落点由 barrageWave 逐波画；这里只铺一层大范围底色
+      spawnGroundArea(d.x, d.z, d.areaRadius || 5, d.color || 0xff8a4d, 3.2);
+    } else if (d.type === 'napalmWall') {
+      spawnNapalmWallFx(
+        d.x,
+        d.z,
+        d.width || 8,
+        d.depth || 1.8,
+        d.duration || 4,
+        d.color || 0xff6a2a
+      );
+    } else if (d.type === 'airStrike') {
+      // 三颗炸弹由 airStrikeBomb 事件逐颗画
     } else if (d.type === 'orbital') {
       // 光柱只铺被打掉的那一段（bandMin/bandMax 由 game.js 传入）
       spawnOrbitalBeam(d.z, d.color || 0x7fe3ff, d.bandMin, d.bandMax);
@@ -2108,6 +2146,7 @@ function updateMeteors(dt) {
  * ---------------------------------------------------------- */
 const fireZones = [];
 const campfireFx = [];   // 篝火的木柴、火苗、火星、暖光
+const napalmFx = [];     // 燃烧弹火墙
 const FIRE_LIFE = 4.5;
 const FIRE_RADIUS = 2.4;
 const FIRE_MAX = 4;      // 同屏最多几片火，超了顶掉最早的
@@ -2458,6 +2497,148 @@ function updateCampfireFx(dt) {
   }
 }
 
+/* 燃烧弹火墙：横向一条火带，和篝火的圆形火区分开 */
+function spawnNapalmWallFx(x, z, width, depth, duration, color) {
+  if (!scene) return;
+
+  const group = new THREE.Group();
+  group.position.set(x, 0, z);
+
+  const char = new THREE.Mesh(
+    new THREE.PlaneGeometry(width, depth),
+    new THREE.MeshBasicMaterial({
+      color: 0x180d08,
+      transparent: true,
+      opacity: 0.6,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    })
+  );
+  char.rotation.x = -Math.PI / 2;
+  char.position.y = 0.02;
+  group.add(char);
+
+  const glow = new THREE.Mesh(
+    new THREE.PlaneGeometry(width, depth),
+    new THREE.MeshBasicMaterial({
+      map: ensureFireTex(),
+      color,
+      transparent: true,
+      opacity: 0.72,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+    })
+  );
+  glow.rotation.x = -Math.PI / 2;
+  glow.position.y = 0.06;
+  group.add(glow);
+
+  const flameColors = [0xff4a0a, 0xffa22b, 0xfff0a0];
+  const flames = [];
+  for (let i = 0; i < 22; i++) {
+    const h = 0.5 + Math.random() * 0.8;
+    const colorPick = flameColors[i < 13 ? 0 : i < 19 ? 1 : 2];
+    const mesh = new THREE.Mesh(
+      new THREE.ConeGeometry(0.14 + Math.random() * 0.1, h, 6),
+      new THREE.MeshBasicMaterial({
+        color: colorPick,
+        transparent: true,
+        opacity: 0.8,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      })
+    );
+    const fx = -width / 2 + (i / 21) * width;
+    const fz = (Math.random() - 0.5) * depth * 0.75;
+    const baseY = 0.18 + h / 2;
+    mesh.position.set(fx, baseY, fz);
+    group.add(mesh);
+    flames.push({
+      mesh,
+      baseY,
+      phase: Math.random() * Math.PI * 2,
+      speed: 4.5 + Math.random() * 4,
+    });
+  }
+
+  const emberCount = 30;
+  const pos = new Float32Array(emberCount * 3);
+  const seeds = new Float32Array(emberCount);
+  for (let i = 0; i < emberCount; i++) {
+    pos[i * 3] = (Math.random() - 0.5) * width;
+    pos[i * 3 + 1] = 0.2 + Math.random() * 1.2;
+    pos[i * 3 + 2] = (Math.random() - 0.5) * depth;
+    seeds[i] = Math.random();
+  }
+  const emberGeo = new THREE.BufferGeometry();
+  emberGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const embers = new THREE.Points(
+    emberGeo,
+    new THREE.PointsMaterial({
+      color: 0xffc75a,
+      size: 0.08,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  group.add(embers);
+
+  const light = new THREE.PointLight(0xff8a3d, 2.4, 10, 2);
+  light.position.y = 1.2;
+  group.add(light);
+
+  scene.add(group);
+  napalmFx.push({
+    group,
+    flames,
+    embers,
+    emberSeeds: seeds,
+    glow,
+    light,
+    life: 0,
+    maxLife: Math.max(0.5, duration),
+  });
+}
+
+function updateNapalmFx(dt) {
+  for (let i = napalmFx.length - 1; i >= 0; i--) {
+    const fx = napalmFx[i];
+    fx.life += dt;
+
+    if (fx.life >= fx.maxLife) {
+      scene.remove(fx.group);
+      disposeMesh(fx.group);
+      napalmFx.splice(i, 1);
+      continue;
+    }
+
+    const fade = Math.min(1, (fx.maxLife - fx.life) / 0.8);
+
+    for (const fl of fx.flames) {
+      const t = fx.life * fl.speed + fl.phase;
+      const sx = 1 + Math.sin(t * 0.7) * 0.1;
+      const sy = 0.85 + Math.sin(t * 1.2) * 0.2;
+      fl.mesh.scale.set(sx, sy, sx);
+      fl.mesh.position.y = fl.baseY + Math.sin(t * 0.9) * 0.05;
+      fl.mesh.material.opacity = (0.5 + Math.sin(t * 1.3) * 0.2) * fade;
+    }
+
+    const arr = fx.embers.geometry.attributes.position.array;
+    for (let j = 0; j < arr.length; j += 3) {
+      arr[j + 1] += dt * (0.3 + fx.emberSeeds[j / 3] * 0.4);
+      if (arr[j + 1] > 1.4) arr[j + 1] = 0.18;
+    }
+    fx.embers.geometry.attributes.position.needsUpdate = true;
+    fx.embers.material.opacity = 0.9 * fade;
+
+    fx.glow.material.opacity = (0.6 + Math.sin(fx.life * 9) * 0.12) * fade;
+    fx.light.intensity = (1.9 + Math.sin(fx.life * 15) * 0.4) * fade;
+  }
+}
+
 /* 甲查当前火区：remaining 是还能烧几秒 */
 export function getFireZones() {
   return fireZones.map((f) => ({
@@ -2544,6 +2725,12 @@ function clearHazards() {
     disposeMesh(f.group);
   }
   campfireFx.length = 0;
+
+  for (const f of napalmFx) {
+    scene.remove(f.group);
+    disposeMesh(f.group);
+  }
+  napalmFx.length = 0;
 
   for (const c of craters) {
     scene.remove(c.mesh);
@@ -2819,6 +3006,7 @@ export function syncScene(state, dt) {
   updateMeteors(dt);
   updateFireZones(dt);
   updateCampfireFx(dt);
+  updateNapalmFx(dt);
   updateCraters(dt);
   updateFloats(dt);
   updateBlood(dt);

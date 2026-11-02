@@ -168,7 +168,30 @@ const CONFIG = {
     radius: 3.9,       // 爆炸范围 3.0 → 3.9，清一片而不是只扫一条
     flightTime: 0.32,  // 炮弹飞行时间 0.5 → 0.32，落点更快
     retreatDelay: 0.9, // 打完多久开始撤
+    holdTime: 4,       // 打完最后一发后多停留 4 秒再撤退
     retreatSpeed: 4.5,
+  },
+  airStrike: {
+    bombs: 3,
+    damage: 70,
+    radius: 2.2,
+    delayStep: 0.22,   // 三颗炸弹错开落下
+  },
+  barrage: {
+    waves: 6,
+    damage: 25,
+    radius: 2.2,
+    areaRadius: 5,
+    firstDelay: 0.15,
+    waveInterval: 0.5,
+  },
+  napalmWall: {
+    width: 8,
+    depth: 1.8,
+    duration: 4,
+    dps: 12,
+    slowMul: 0.6,
+    impactDamage: 20,
   },
   apc: {
     speed: 7.5,        // 比骑士慢很多
@@ -519,6 +542,7 @@ const state = {
   rollingLogs: [],   // { id, x, z, length, radius, speed, damage, spin, hit }
   knightCharges: [], // { id, x, z, speed, damage, hit }
   campfireZones: [], // { id, x, z, radius, remaining, dps }
+  napalmWalls: [],   // { id, x, z, width, depth, remaining, dps }
   siegeShots: [],    // { x, z, radius, damage, timeLeft } 炮弹落地后才结算
   tankSupports: [],  // 场上的坦克：{ x, z, shotsLeft, timer, retreating, retreatDelay }
   apcCharges: [],    // { id, x, z, speed, damage, hit, mgTimer }
@@ -789,6 +813,7 @@ function resetState(opts = {}) {
   state.rollingLogs.length = 0;
   state.knightCharges.length = 0;
   state.campfireZones.length = 0;
+  state.napalmWalls.length = 0;
   state.siegeShots.length = 0;
   state.tankSupports.length = 0;
   state.apcCharges.length = 0;
@@ -849,6 +874,7 @@ function revive() {
   state.rollingLogs.length = 0;
   state.knightCharges.length = 0;
   state.campfireZones.length = 0;
+  state.napalmWalls.length = 0;
   state.siegeShots.length = 0;
   state.tankSupports.length = 0;
   state.apcCharges.length = 0;
@@ -1303,9 +1329,9 @@ const SKILL_DEFS = [
   { id: 'knightCharge', name: '骑士冲锋', era: 0, type: 'knightCharge', color: 0xc9d4e0 },
   { id: 'campfire', name: '篝火', era: 0, type: 'campfire', radius: 3.5, color: 0xff9a4d },
   // 1 二战
-  { id: 'airStrike', name: '空袭', era: 1, type: 'aoe', damage: 90, radius: 4.0, color: 0xffd27a },
-  { id: 'barrage', name: '炮火覆盖', era: 1, type: 'barrage', damage: 90, radius: 4.5, color: 0xff8a4d },
-  { id: 'napalm', name: '燃烧弹', era: 1, type: 'aoe', damage: 45, radius: 3.5, color: 0xff6a2a },
+  { id: 'airStrike', name: '空袭', era: 1, type: 'airStrike', damage: 70, radius: 2.2, bombs: 3, color: 0xffd27a },
+  { id: 'barrage', name: '炮火覆盖', era: 1, type: 'barrage', damage: 25, radius: 2.2, areaRadius: 5, waves: 6, waveInterval: 0.5, color: 0xff8a4d },
+  { id: 'napalm', name: '燃烧弹', era: 1, type: 'napalmWall', color: 0xff6a2a },
   { id: 'paratroopers', name: '伞兵增援', era: 1, type: 'heal', soldiers: 10, color: 0x8fb6e0 },
   { id: 'tank', name: '坦克支援', era: 1, type: 'tank', color: 0xb0b8a0 },
   // 2 现代
@@ -1383,9 +1409,9 @@ const SKILL_DESCS = {
   holyWater: '立刻 +20 兵',
   knightCharge: '右下随机冲 3 个骑士，向上贯穿，每个骑士对每只僵尸 50 伤害',
   campfire: '最密处半径 3.5 火区，持续 5 秒，每秒 12 伤害',
-  airStrike: '最密处半径 4 内 90 伤害',
-  barrage: '圆形炮火覆盖：半径 4.5 内 90 伤害，8 发炮弹连续落下',
-  napalm: '最密处半径 3.5 内 45 伤害',
+  airStrike: '3 架轰炸机分别炸最密的 3 个点，每颗 70 伤害、半径 2.2',
+  barrage: '半径 5 的大范围连续轰炸：3 秒 6 波，每波 25 伤害',
+  napalm: '最密处拉一道宽 8、纵深 1.8 的火墙，持续 4 秒，每秒 12 伤害并减速',
   paratroopers: '立刻 +10 兵',
   tank: '左下出现坦克，打 4 发范围炮（每发 60、半径 3.9）后撤退；场上已有坦克时，新的一辆出现在它右边',
   precision: '最密处半径 2.2 内 110 伤害',
@@ -1430,6 +1456,56 @@ function densestPoint() {
   }
 
   return { x: best.x, z: best.z };
+}
+
+// 空袭用：找最密的几个点，彼此分开，避免 3 颗炸弹全落在同一团
+function topDensestPoints(count = 3, minDist = 2.8) {
+  if (!state.zombies.length) return [];
+
+  const candidates = state.zombies.map((z) => {
+    let density = 0;
+    for (const o of state.zombies) {
+      const dx = o.x - z.x;
+      const dz = o.z - z.z;
+      if (dx * dx + dz * dz <= 9) density += 1;
+    }
+    return { x: z.x, z: z.z, density };
+  });
+
+  candidates.sort((a, b) => b.density - a.density);
+
+  const picked = [];
+  for (const c of candidates) {
+    if (picked.length >= count) break;
+    if (picked.every((p) => Math.hypot(p.x - c.x, p.z - c.z) >= minDist)) {
+      picked.push(c);
+    }
+  }
+
+  // 场上只有一团时，后两颗落在它周围，避免三颗叠成一颗
+  if (picked.length) {
+    const base = picked[0];
+    while (picked.length < count) {
+      const a = Math.random() * Math.PI * 2;
+      const r = minDist + Math.random() * 1.4;
+      picked.push({
+        x: Math.max(-7.4, Math.min(7.4, base.x + Math.cos(a) * r)),
+        z: Math.max(-20, Math.min(5.5, base.z + Math.sin(a) * r)),
+        density: 0,
+      });
+    }
+  }
+
+  return picked.slice(0, count);
+}
+
+function damageZombiesInRect(x, z, halfW, halfD, damage) {
+  for (let i = state.zombies.length - 1; i >= 0; i--) {
+    const zb = state.zombies[i];
+    if (Math.abs(zb.x - x) > halfW) continue;
+    if (Math.abs(zb.z - z) > halfD) continue;
+    damageZombieAt(i, damage);
+  }
 }
 
 function damageZombieAt(index, damage) {
@@ -1634,9 +1710,73 @@ function castSkill(id) {
     case 'line':
       damageZombiesInLine(target.z, def.radius, def.damage);
       break;
-    case 'barrage':
-      damageZombiesInRadius(target.x, target.z, def.radius, def.damage);
+    case 'airStrike': {
+      const cfg = CONFIG.airStrike;
+      const points = topDensestPoints(cfg.bombs);
+      for (let i = 0; i < points.length; i++) {
+        const p = points[i];
+        const delay = 0.25 + i * cfg.delayStep;
+        state.siegeShots.push({
+          x: p.x,
+          z: p.z,
+          radius: cfg.radius,
+          damage: cfg.damage,
+          timeLeft: delay,
+          kind: 'airStrike',
+          color: def.color,
+        });
+        emit('airStrikeBomb', { x: p.x, z: p.z, delay, color: def.color });
+      }
       break;
+    }
+    case 'barrage': {
+      const cfg = CONFIG.barrage;
+      for (let i = 0; i < cfg.waves; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const r = Math.sqrt(Math.random()) * cfg.areaRadius;
+        const x = Math.max(-7.4, Math.min(7.4, target.x + Math.cos(a) * r));
+        const z = Math.max(
+          CONFIG.world.screenTopZ + 1,
+          Math.min(CONFIG.world.killZ - 1, target.z + Math.sin(a) * r)
+        );
+        const delay = cfg.firstDelay + i * cfg.waveInterval;
+        state.siegeShots.push({
+          x,
+          z,
+          radius: cfg.radius,
+          damage: cfg.damage,
+          timeLeft: delay,
+          kind: 'barrage',
+          color: def.color,
+        });
+        emit('barrageWave', { x, z, delay, color: def.color });
+      }
+      castExtra = { areaRadius: cfg.areaRadius, waves: cfg.waves };
+      break;
+    }
+    case 'napalmWall': {
+      const cfg = CONFIG.napalmWall;
+      const halfW = cfg.width / 2;
+      const x = Math.max(-8 + halfW, Math.min(8 - halfW, target.x));
+      const z = Math.max(
+        CONFIG.world.screenTopZ + cfg.depth / 2,
+        Math.min(CONFIG.world.killZ - cfg.depth / 2, target.z)
+      );
+      state.napalmWalls.push({
+        id: state.nextId++,
+        x,
+        z,
+        width: cfg.width,
+        depth: cfg.depth,
+        remaining: cfg.duration,
+        dps: cfg.dps,
+      });
+      damageZombiesInRect(x, z, halfW, cfg.depth / 2, cfg.impactDamage);
+      target.x = x;
+      target.z = z;
+      castExtra = { width: cfg.width, depth: cfg.depth, duration: cfg.duration };
+      break;
+    }
     case 'tank':
       spawnTankSupport();
       break;
@@ -2199,6 +2339,7 @@ function update(dt) {
   updateSlots(dt);
   updateBarriers(dt);
   updateVirusBombs(dt);
+  updateNapalmWalls(dt);
   updateFriendlyZombies(dt);
   updatePits(dt);
   updateZombies(dt);
@@ -2881,6 +3022,8 @@ function updateSlots(dt) {
           radius: stats.radius,
           damage: stats.damage,
           timeLeft: cfg.flightTime,
+          kind: 'siege',
+          color: 0xffa64d,
         });
         emit('slotStrike', {
           kind: 'siege',
@@ -3002,7 +3145,7 @@ function updateZombies(dt) {
   }
 
   // 移动：进入下半场且离士兵够近时，开始横向追人
-  const slowMul = currentSlowMul();
+  const baseSlow = currentSlowMul();
 
   for (const z of state.zombies) {
     if (frozen) continue;
@@ -3012,6 +3155,14 @@ function updateZombies(dt) {
       (f) => Math.abs(f.x - z.x) < 0.9 && Math.abs(f.z - z.z) < 0.9
     );
     if (blocker) continue;
+
+    // 燃烧弹火墙：站在墙里的僵尸额外减速
+    const inNapalm = state.napalmWalls.some(
+      (w) =>
+        Math.abs(z.x - w.x) <= w.width / 2 &&
+        Math.abs(z.z - w.z) <= w.depth / 2
+    );
+    const slowMul = baseSlow * (inNapalm ? CONFIG.napalmWall.slowMul : 1);
 
     const bar = state.barricade;
     const cfg = CONFIG.barricade;
@@ -3444,6 +3595,8 @@ function updateTankSupports(dt) {
           radius: cfg.radius,
           damage: cfg.damage,
           timeLeft: cfg.flightTime,
+          kind: 'tank',
+          color: 0xffa64d,
         });
         emit('slotStrike', {
           kind: 'tank',
@@ -3457,7 +3610,10 @@ function updateTankSupports(dt) {
         });
       }
 
-      if (t.shotsLeft <= 0) t.retreatDelay = cfg.retreatDelay;
+      if (t.shotsLeft <= 0) {
+        // 打完多停 4 秒再走，延长坦克在场时间
+        t.retreatDelay = cfg.retreatDelay + (cfg.holdTime || 0);
+      }
     }
 
     if (t.shotsLeft <= 0) {
@@ -3654,6 +3810,13 @@ function updateSiegeShots(dt) {
 
     if (shot.timeLeft <= 0) {
       damageZombiesInRadius(shot.x, shot.z, shot.radius, shot.damage);
+      emit('delayedImpact', {
+        x: shot.x,
+        z: shot.z,
+        radius: shot.radius,
+        color: shot.color || 0xffb060,
+        kind: shot.kind || 'siege',
+      });
       state.siegeShots.splice(i, 1);
     }
   }
@@ -3707,6 +3870,28 @@ function updateCampfireZones(dt) {
     }
 
     if (fire.remaining <= 0) state.campfireZones.splice(i, 1);
+  }
+}
+
+// 燃烧弹火墙：矩形区域内持续掉血，僵尸在墙里移动变慢
+function updateNapalmWalls(dt) {
+  for (let i = state.napalmWalls.length - 1; i >= 0; i--) {
+    const wall = state.napalmWalls[i];
+    wall.remaining -= dt;
+
+    if (wall.remaining > 0) {
+      const halfW = wall.width / 2;
+      const halfD = wall.depth / 2;
+
+      for (let j = state.zombies.length - 1; j >= 0; j--) {
+        const zb = state.zombies[j];
+        if (Math.abs(zb.x - wall.x) > halfW) continue;
+        if (Math.abs(zb.z - wall.z) > halfD) continue;
+        damageZombieAt(j, wall.dps * dt);
+      }
+    }
+
+    if (wall.remaining <= 0) state.napalmWalls.splice(i, 1);
   }
 }
 
