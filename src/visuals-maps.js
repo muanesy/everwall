@@ -97,6 +97,9 @@ function put(parent, child, x, y, z) {
  * 摆位：只在「战场外、画面内」的带子里取点
  * ---------------------------------------------------------- */
 const ARENA_HALF_X = 8.6;   // 战场横向半径（玩家和僵尸活动范围）
+// 侧景内侧边缘必须越过的线：屏障横向到 -7.6、僵尸通道到 7.6，
+// 战场名义半宽 8.0，取 8.6 留 0.6 余量防止边缘像素和投影误差压线。
+const ARENA_EDGE_TIGHT = 8.6;
 
 function viewHalfX(ctx, z) {
   if (ctx && typeof ctx.viewHalfX === 'function') {
@@ -1687,52 +1690,61 @@ function liftColor(hex, mul) {
   return c.getHex();
 }
 
-/**
- * 给一张地图铺近景两侧大件。
+/* ==========================================================================
+ * 两侧侧景的摆位
  *
- * 摆位用**屏幕比例**反算世界坐标，不用世界坐标硬凑：
- * 目标是"物件中心落在画面 78%~92% 宽度处"，这样它本身就有一小半在画面外，
- * 形成真实的框景；而中心一定可见，不会整块跑到画外。
+ * **判据是"物件内侧边缘"不越线，不是"中心"不越线。**
+ * 之前只把中心推到 ARENA_HALF_X+0.4，但一栋 3.6 宽的房子中心在 9.0 时，
+ * 内侧边缘只有 7.2 —— 已经压进战场，正好盖住左侧那些绿/红屏障（用户报的问题）。
+ * 现在先造好物件、量出它自己的包围盒，再反算中心位置，
+ * 保证内侧边缘落在 ARENA_EDGE_TIGHT 之外。
  *
- * 第一版是反过来做的——把世界 x 上限写成 `可见半宽 × 1.05`，
- * 结果 z=8 那种贴近相机的位置上，一个 3 单位宽的墙被投影放大到 300px，
- * 中心落在画面 96% 处，只剩一条边露在画面里。实测差分像素只占 0.69%。
- */
+ * 三道纵深各自不同：
+ *   z  0~  6：贴得很近，这个深度可见半宽只有 9.5，8.6~9.5 是条窄缝，
+ *             只能露出物件的一小条边 —— 就是真实的"从两侧夹道看出去"。
+ *   z -13~-1：中等距离，露出多一些。
+ *   z -26~-13：较远，能露完整轮廓。
+ * 越近露得越少，符合透视直觉，也不会挡到中间。
+ * ========================================================================== */
 export function buildFlank(g, ctx, rng, mapId) {
   const conf = FLANK_CONF[mapId] || FLANK_CONF.city;
   const recipe = FLANK_KINDS[conf.kind] || fxRock;
   const mainA = liftColor(conf.a, 2.05);
   const mainB = liftColor(conf.b || conf.a, 1.85);
 
-  // 两段纵深：贴近相机的（−2~+7）和稍远一点的（−16~−4）。
-  // pMin/pMax 是"物件中心该落在画面宽度的哪个比例"，两段都保持在画面内。
   const bands = [
-    { z0: -2.0, z1: 7.0,  count: 3, pMin: 0.80, pMax: 0.94, hMul: 1.0 },
-    { z0: -16.0, z1: -4.0, count: 3, pMin: 0.76, pMax: 0.92, hMul: 1.25 },
+    { z0: 0.0, z1: 6.0, count: 3, hMul: 0.95 },
+    { z0: -13.0, z1: -1.0, count: 3, hMul: 1.15 },
+    { z0: -26.0, z1: -13.0, count: 3, hMul: 1.35 },
   ];
 
   for (const band of bands) {
     for (const side of [-1, 1]) {
       for (let i = 0; i < band.count; i++) {
         const t = (i + 0.5) / band.count;
-        const z = band.z0 + (band.z1 - band.z0) * t + (rng() - 0.5) * 1.2;
+        const z = band.z0 + (band.z1 - band.z0) * t + (rng() - 0.5) * 1.4;
         const half = ctx.viewHalfX(z);
 
-        // 屏幕比例 p → 世界 x。sx = (x/(half))*0.5+0.5 = p  ⇒  x = (2p−1)·half
-        const p = band.pMin + rng() * (band.pMax - band.pMin);
-        let x = side * (2 * p - 1) * half;
+        // 内侧边缘要做到多外：8.6 起，再随机让 0.8，边缘参差一点不像栅栏
+        const inner = ARENA_EDGE_TIGHT + rng() * 0.8;
+        // 这个深度连内侧边缘都装不下，说明太近了，跳过
+        if (inner > half * 0.97) continue;
 
-        // 不能压进战场：否则会挡住玩家走位和僵尸通道
-        const minAbs = ARENA_HALF_X + 0.4;
-        if (Math.abs(x) < minAbs) x = side * minAbs;
-        // 但这个深度的可见半宽如果连 minAbs 都不够，说明这条带没空间，跳过
-        if (Math.abs(x) > half * 0.99) continue;
-
+        // 先造件、量包围盒，再定 x —— 顺序反过来就没法保证内侧不越线
         const piece = new THREE.Group();
         recipe(piece, rng, mainA, mainB);
-        piece.position.set(x, 0, z);
-        piece.rotation.y = Math.atan2(-x, 0) + (rng() - 0.5) * 0.5;
+        piece.rotation.y = Math.atan2(-side, 0) + (rng() - 0.5) * 0.5;
         piece.scale.setScalar(band.hMul * (0.9 + rng() * 0.35));
+
+        const box = new THREE.Box3().setFromObject(piece);
+        if (box.isEmpty()) continue;
+        const bx0 = box.min.x;
+        const bx1 = box.max.x;
+
+        // 让内侧边缘刚好落在 inner 上：右侧取 min.x，左侧取 max.x
+        const x = side > 0 ? inner - bx0 : -inner - bx1;
+
+        piece.position.set(x, 0, z);
         g.add(piece);
       }
     }
