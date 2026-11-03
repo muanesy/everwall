@@ -38,6 +38,12 @@ import { initBarrels, updateBarrels, resetBarrels, hitTestBarrel, spawnBarrelAt 
 import { buildSlotStructure, buildLevelDots, disposeSlotStructure } from './visuals-slots.js';
 // 17 张新增地图：复用现有贴图，靠背景物/雾/光区分（见 visuals-maps.js 顶部说明）
 import { NEW_MAPS, isNewMap, buildFlank } from './visuals-maps.js';
+// 环境事件四件套（2026-11-03）：天气粒子、预警脉冲圈、熔岩地缝、电磁电弧。
+// 都是独立文件、各自吃事件、各自管生命周期，这里只负责创建和每帧推进。
+import { createWeatherFx } from './visuals-weather.js';
+import { createEnvWarningFx } from './visuals-envwarn.js';
+import { createLavaFx } from './visuals-lavafx.js';
+import { createEmpFx } from './visuals-empfx.js';
 
 /* ----------------------------------------------------------
  * 地图配置表
@@ -805,6 +811,16 @@ function despawnModel(vis) {
 let camBaseX = 0;
 let shake = 0;
 
+// 环境事件四件套实例。天气/熔岩/电磁会通过 addShake 要求抖屏，
+// 走同一个 shake 通道，和地震、Boss 落地共享衰减逻辑。
+let weatherFx = null;
+let envWarnFx = null;
+let lavaFx = null;
+let empFx = null;
+function addShake(v) {
+  shake = Math.max(shake, v);
+}
+
 // 事件总线：陨石/火区这类"视觉演完要通知甲结算"的东西要靠它派发
 let eventsRef = null;
 
@@ -897,6 +913,14 @@ export function initVisuals(container, events) {
   // 昼夜轮转：把当前地图的灯光/雾/背景当基线记下来，之后只做倍数插值，
   // 六张地图亮度差异大，写死绝对值会让月球糊成黑屏、沙漠看不出变化
   dayNight = createDayNight({ scene, hemi: hemiLight, key: keyLight, ambient: fillLight });
+
+  // 环境事件四件套：各自挂自己的事件监听，自己按真实时长收尾。
+  // 以前预警只闪一圈、天气只改雾、熔岩只有一块橙圆盘、电磁只有瞬间一圈蓝环，
+  // 事件还在这几秒里跑、画面却已经结束了。
+  weatherFx = createWeatherFx({ scene, events, addShake });
+  envWarnFx = createEnvWarningFx({ scene, events });
+  lavaFx = createLavaFx({ scene, events, addShake });
+  empFx = createEmpFx({ scene, events, addShake });
 
   // 地面：按地图加载贴图。路径用 import.meta.url 解析，避免受页面位置影响。
   const groundTex = loadGroundTextures(renderer, MAP.tex);
@@ -1355,14 +1379,18 @@ export function initVisuals(container, events) {
     const d = e.detail;
     let hasToxic = false;
     for (const z of d.zones || []) {
-      spawnGroundArea(
-        z.x,
-        z.z,
-        z.radius,
-        z.kind === 'lava' ? 0xff6a2a : 0x8fe36a,
-        d.duration || 5,
-        0.2
-      );
+      // 熔岩不再铺这块平色圆盘了，交给 lavaFx 画热辉 + 地裂缝 + 火星。
+      // 大半径下一块纯色圆盘看着像 UI 色块，不是烧起来的地面。
+      if (z.kind !== 'lava') {
+        spawnGroundArea(
+          z.x,
+          z.z,
+          z.radius,
+          z.kind === 'lava' ? 0xff6a2a : 0x8fe36a,
+          d.duration || 5,
+          0.2
+        );
+      }
       if (z.kind === 'toxic') {
         hasToxic = true;
         spawnToxicFogArea(z.x, z.z, z.radius, d.duration || 5);
@@ -1912,6 +1940,11 @@ function doSwitchMapLook(mapId) {
   envFogFade.base = null;
   envFogFade.color = null;
   if (fxToxic) fxToxic.classList.remove('show');
+  // 换图时把四件套清干净，否则上一张图的雨/裂缝/电弧会飘到新场景里
+  if (weatherFx) weatherFx.reset();
+  if (envWarnFx) envWarnFx.reset();
+  if (lavaFx) lavaFx.reset();
+  if (empFx) empFx.reset();
 
   // 背景色与雾
   scene.background = new THREE.Color(m.bg);
@@ -3798,6 +3831,14 @@ export function syncScene(state, dt) {
   updateAdaptiveQuality(dt);
   if (dayNight) dayNight.update(dt);
   updateEnvFogFade(dt);
+  // 环境事件四件套：都靠 dt 自己计时收尾，不进 state
+  if (state.status === 'playing') {
+    const et = performance.now() * 0.001;
+    if (weatherFx) weatherFx.update(dt, et);
+    if (envWarnFx) envWarnFx.update(dt, et);
+    if (lavaFx) lavaFx.update(dt, et);
+    if (empFx) empFx.update(dt, et);
+  }
   soldierRecoil = soldierRecoil > 0 ? Math.max(0, soldierRecoil - dt * 0.55) : 0;
   if (muzzleLight) muzzleLight.intensity = Math.max(0, muzzleLight.intensity - dt * 240);
   updateCamera(state, dt);
