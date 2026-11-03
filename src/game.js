@@ -570,12 +570,12 @@ const DIFFICULTY_PRESETS = {
     bossHp: 1,
   },
   easy: {
-    zombieHp: 0.8,
-    zombieSpeed: 0.9,
-    spawnInterval: 1.15,
-    maxAlive: 0.85,
-    damageTaken: 0.8,
-    bossHp: 0.85,
+    zombieHp: 0.7,
+    zombieSpeed: 0.85,
+    spawnInterval: 1.3,
+    maxAlive: 0.8,
+    damageTaken: 0.7,
+    bossHp: 0.7,
   },
 };
 
