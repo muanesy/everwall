@@ -5327,9 +5327,10 @@ function spawnEraBoss(eraIndex) {
   if (state.zombies.some((z) => z.type === type.id)) return null;
 
   const [minX, maxX] = CONFIG.world.rightZone;
-  // Boss 用自己的成长，普通僵尸的血量成长调整不会顺手削弱 Boss
+  // Boss 用自己的成长，普通僵尸的血量成长调整不会顺手削弱 Boss。
+  // 再乘一次老兵成长：士兵越打越强，Boss 血量同步慢慢涨，不会被后期火力秒掉。
   const baseHp = CONFIG.zombie.baseHp + (state.wave - 1) * CONFIG.boss.hpPerWave;
-  const hp = baseHp * type.hp;
+  const hp = baseHp * type.hp * soldierWavePower();
 
   const boss = {
     id: state.nextId++,
