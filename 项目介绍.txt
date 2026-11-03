@@ -73,6 +73,8 @@ Three.js + 原生 JavaScript，纯前端、无构建步骤，静态文件放到�
 
 竖屏正交相机、固定俯视角，手机端适配动态视口高度、安全区和触屏拖动。
 
+僵尸音效使用 OpenGameArt 的 CC0 采样（ianzazz 的 Zombie noises and moans、saturn91 的 Zomby sfx pack），采样加载失败时自动退回程序化合成音。
+
 内置测试模式：可切时代、调槽位等级、直接释放 30 个技能、触发六类环境事件、刷或清空僵尸，方便现场演示和排查。
 
 

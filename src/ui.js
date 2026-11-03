@@ -605,7 +605,7 @@ function buildDom() {
       <button class="btn" data-start>开始游戏</button>
       <button class="btn btn--ghost" type="button" data-help>游戏说明</button>
       <p class="hint">键盘 ← → 或 A / D<br>手机上按住屏幕左右拖动</p>
-      <p class="credit">模型：Poly by Google · Catapult · CC-BY 3.0</p>
+      <p class="credit">模型：Poly by Google · Catapult · CC-BY 3.0<br>音效：OpenGameArt 丧尸采样 · CC0</p>
     </div>
   `;
   document.body.appendChild(startScreen);

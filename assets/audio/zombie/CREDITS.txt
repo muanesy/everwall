@@ -1,0 +1,11 @@
+Zombie sound samples
+License: CC0 1.0 Public Domain (no attribution required; credited here voluntarily)
+
+1. "Zombie noises and moans" by ianzazz
+   https://opengameart.org/content/zombie-noises-and-moans
+   Files used: zombienoise1.mp3, zombienoise2.mp3, zombienoise3.mp3, fastzombie1.mp3
+   (MP3 preview versions of the original OGG files)
+
+2. "Zomby sfx pack" by saturn91
+   https://opengameart.org/content/zomby-sfx-pack
+   Files used: 01_zombey.mp3, 02_zombey.mp3, 03_zombey.mp3, 06_zombey.mp3, 07_zombey.mp3

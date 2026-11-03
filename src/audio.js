@@ -42,6 +42,17 @@ const MAP_VOICE = {
 };
 const VOICE = MAP_VOICE[MAP_ID] || MAP_VOICE.city;
 
+// CC0 丧尸采样（OpenGameArt：Zombie noises and moans / Zomby sfx pack）
+// 采样加载失败时自动退回下面的实时合成音，不会静音
+const ZOMBIE_SAMPLE_BASE = new URL('../assets/audio/zombie/', import.meta.url).href;
+const ZOMBIE_SAMPLE_FILES = {
+  growl: ['zombienoise1.mp3', 'zombienoise2.mp3', 'zombienoise3.mp3'],
+  death: ['01_zombey.mp3', '02_zombey.mp3', '03_zombey.mp3', '06_zombey.mp3', '07_zombey.mp3'],
+  attack: ['fastzombie1.mp3'],
+};
+const zombieSamples = { growl: [], death: [], attack: [] };
+let zombieSamplesLoading = null;
+
 // 环境音当前状态
 let ambient = null;
 let ambientId = null;
@@ -69,6 +80,7 @@ export function initAudio() {
 
   noiseBuf = makeNoiseBuffer(2, 'white');
   brownBuf = makeNoiseBuffer(3, 'brown');
+  loadZombieSamples();
 
   // 页面加载时 visuals 已经报过地图名了（那会儿还没有 ctx），这里补开环境音
   if (ambientId) {
@@ -77,6 +89,48 @@ export function initAudio() {
     setAmbient(mapId);
   }
 }
+function loadZombieSamples() {
+  if (!ctx || zombieSamplesLoading) return;
+
+  const jobs = [];
+  for (const [kind, files] of Object.entries(ZOMBIE_SAMPLE_FILES)) {
+    for (const file of files) {
+      jobs.push(
+        fetch(ZOMBIE_SAMPLE_BASE + file, { cache: 'force-cache' })
+          .then((res) => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.arrayBuffer();
+          })
+          .then((buf) => ctx.decodeAudioData(buf))
+          .then((buffer) => {
+            zombieSamples[kind].push(buffer);
+          })
+          .catch(() => {
+            // 单个文件失败不影响其他丧尸声，播放时会退回合成音
+          })
+      );
+    }
+  }
+  zombieSamplesLoading = Promise.all(jobs);
+}
+
+// 随机播一条丧尸采样；返回 false 表示还没加载好，调用方走合成兜底
+function playZombieSample(kind, gain = 0.8, rateJitter = 0.1) {
+  const list = zombieSamples[kind];
+  if (!list || !list.length) return false;
+
+  const t = ctx.currentTime;
+  const src = ctx.createBufferSource();
+  src.buffer = list[Math.floor(Math.random() * list.length)];
+  src.playbackRate.value = 1 + (Math.random() * 2 - 1) * rateJitter;
+
+  const g = ctx.createGain();
+  g.gain.value = gain;
+  src.connect(g).connect(master);
+  src.start(t);
+  return true;
+}
+
 function makeNoiseBuffer(seconds, kind) {
   const len = Math.floor(ctx.sampleRate * seconds);
   const buf = ctx.createBuffer(1, len, ctx.sampleRate);
@@ -230,6 +284,12 @@ export function playZombieDie() {
   if (!ready('zombieDie', THROTTLE.zombieDie)) return;
   const t = ctx.currentTime;
 
+  // 优先用真实采样；采样没加载好时继续走下面的合成音
+  if (playZombieSample('death', 0.85, 0.12)) {
+    tone(t + 0.12, { type: 'sine', from: 72, to: 36, dur: 0.22, gain: 0.16 });
+    return;
+  }
+
   // 喉咙里的湿声，不要低频扫频——那个听起来像放屁
   noise(t, 0.16 * VOICE.dur, {
     type: 'bandpass',
@@ -281,6 +341,8 @@ export function playZombieDie() {
 export function playZombieAttack(type = 0) {
   if (!ready('zombieAttack' + type, THROTTLE.zombieAttack)) return;
   const t = ctx.currentTime;
+
+  if (playZombieSample('attack', 0.95, 0.12)) return;
 
   const snarl = (base, { dur = 0.5, peak = 0.34, freq = 320, q = 3 } = {}) => {
     // 套上地图音色：滤波中心、Q、时长、响度都按地图缩放
@@ -560,6 +622,8 @@ export function updateAudio(dt, zombieCount, playing) {
 
 function playGrowl() {
   const t = ctx.currentTime;
+
+  if (playZombieSample('growl', 0.65, 0.12)) return;
 
   // 三种元音轮换，避免每一声都是同一个“哼哼”
   const vowels = [
