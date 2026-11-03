@@ -108,6 +108,81 @@ function clampLevel(level) {
   return Math.max(1, Math.min(5, n));
 }
 
+/* ----------------------------------------------------------
+ * 槽位尺寸规格（对应 docs/美术需求-槽位与技能.md 的「尺寸与锚点」）
+ *
+ *   占地半径 ≤ 0.85   超了会盖住地基上的发光环（环在 0.72~0.88）
+ *   高度 0.7~1.1      相机俯角 45°、槽位在 z=15 比玩家更靠近相机，
+ *                     再高会把后面的僵尸和士兵挡住；5 级放宽到 1.45
+ *   y=0 就是地面      浮空或陷进地里都读作模型坏了
+ *
+ * 这些数字不是建议值。实测 30 个等级外形时有 20 项越线：
+ * 指挥塔到 2.44、底部陷到 -0.41，攻城 5 级到 2.21 且半径 1.24。
+ * 每个 builder 各写各的局部坐标，没人负责整体尺寸，
+ * 所以在出口统一收口一次，比回头改 30 处局部数值可靠。
+ * ---------------------------------------------------------- */
+const SLOT_SPEC = {
+  maxRadius: 0.85,
+  maxHeight: 1.1,
+  maxHeightLv5: 1.45,
+  minHeight: 0.7,
+};
+
+/* 把造好的槽位模型压回规格内。
+ *
+ * 顺序讲究：先等比放大补矮的，再压超高的、收超宽的，最后拉回地面。
+ * 矮的必须等比放大而不是只拉高——近防 1 级那口圆油锅垂直拉伸 1.46 倍会变成椭圆。
+ *
+ * 修正只能作用在内层容器：外层 g 的 position 每帧被 syncSlots 改成地基坐标，
+ * 动它会在下一帧被覆盖掉。 */
+function fitSlotToSpec(g, lv) {
+  g.updateMatrixWorld(true);
+  let box = new THREE.Box3().setFromObject(g);
+  if (box.isEmpty()) return;
+
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  const maxH = lv >= 5 ? SLOT_SPEC.maxHeightLv5 : SLOT_SPEC.maxHeight;
+
+  // 太矮的等比放大到下限
+  if (size.y > 1e-4 && size.y < SLOT_SPEC.minHeight) {
+    g.scale.multiplyScalar(SLOT_SPEC.minHeight / size.y);
+    g.updateMatrixWorld(true);
+    box = new THREE.Box3().setFromObject(g);
+    box.getSize(size);
+  }
+
+  // 超高的压、超宽的收
+  const sy = size.y > maxH ? maxH / size.y : 1;
+
+  /* 占地半径要按**角点**算，不能按直边算。
+   *
+   * 地基上的发光环在半径 0.72~0.88，模型只要没伸到 0.88 以外就不会盖住它。
+   * 而"最远点"是包围盒的水平对角——0.63 见方的方块，四角到中心 0.89，
+   * 已经不在地基圈里了。第一版只拿 max(|x|,|z|) 去比 0.85，
+   * 方形模型会全部漏网，实测 7 项照旧越线。 */
+  const maxAbsX = Math.max(Math.abs(box.min.x), Math.abs(box.max.x));
+  const maxAbsZ = Math.max(Math.abs(box.min.z), Math.abs(box.max.z));
+  const cornerR = Math.hypot(maxAbsX, maxAbsZ);
+  const sxz = cornerR > SLOT_SPEC.maxRadius ? SLOT_SPEC.maxRadius / cornerR : 1;
+
+  const needFix =
+    Math.abs(sy - 1) > 1e-3 || Math.abs(sxz - 1) > 1e-3 || Math.abs(box.min.y) > 0.01;
+  if (!needFix) return;
+
+  const inner = new THREE.Group();
+  while (g.children.length) inner.add(g.children[0]);
+  inner.scale.set(sxz, sy, sxz);
+  g.add(inner);
+
+  // 压缩和缩放都以原点为中心，底部会离开地面，量一次拉回去
+  g.updateMatrixWorld(true);
+  const box2 = new THREE.Box3().setFromObject(g);
+  if (!box2.isEmpty()) {
+    inner.position.y -= box2.min.y / (g.scale.y || 1);
+  }
+}
+
 /* 材质工厂：每个槽位实例独立持有材质，方便以后单独改色/单独淡出 */
 function makeMats(eraId) {
   const look = ERA_LOOK[clampEra(eraId)];
@@ -431,8 +506,41 @@ function buildCloseDefense(g, m, era, lv = 1) {
       add(g, new THREE.TorusGeometry(0.2, 0.028, 6, 16), m.accent,
         x, baseH + h, 0, Math.PI / 2, 0, 0);
     }
+    if (lv >= 2) {
+      /* 加固环：2 级起套在底座外圈。
+       *
+       * L1 和 L2 都是单锅，原来只差锅高 0.03，实测剪影差异 11%，
+       * 属于"几乎看不出来"。文档 2 级写的是「加固底座，单管加长/锅体加厚」，
+       * 加固环是最直接能读出来的一件。 */
+      add(g, new THREE.TorusGeometry(0.39, 0.045, 6, 20), m.accent,
+        0, baseH, 0, Math.PI / 2, 0, 0);
+      for (const sx of [-1, 1]) {
+        add(g, new THREE.BoxGeometry(0.07, baseH + 0.1, 0.3), m.accent,
+          sx * 0.34, (baseH + 0.1) * 0.5, 0);
+      }
+    }
     if (lv >= 4) {
-      add(g, new THREE.TorusGeometry(0.3, 0.04, 6, 18), m.accent, 0, baseH + 0.14, 0, Math.PI / 2, 0, 0);
+      /* 装甲罩 + 双弹药鼓，这是 4 级最主要的剪影特征。
+       *
+       * 原来这里只有一个细 torus 环（管径 0.04），在 45° 俯视里几乎看不见，
+       * 实测 L3→L4 剪影差异只有 7%，读起来像"3 级没变"。
+       * 文档 4 级写的是「装甲罩、双弹药鼓、冷却罐」，所以换成四块装甲板围一圈，
+       * 外加两个横向弹药鼓 —— 宽度和厚重感都拉得开。 */
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+        add(g, new THREE.BoxGeometry(0.34, 0.38, 0.07), m.accent,
+          Math.cos(a) * 0.36, baseH + 0.19, Math.sin(a) * 0.36, 0, -a, 0);
+        // 顶沿压一道亮边，装甲罩的边界才在暗底上看得出来
+        add(g, new THREE.BoxGeometry(0.34, 0.03, 0.075), m.glow,
+          Math.cos(a) * 0.36, baseH + 0.38, Math.sin(a) * 0.36, 0, -a, 0);
+      }
+      // 双弹药鼓 + 冷却罐：文档 4 级点名的三样里占了后两样
+      for (const sx of [-1, 1]) {
+        add(g, new THREE.CylinderGeometry(0.09, 0.09, 0.3, 10), m.dark,
+          sx * 0.32, baseH + 0.12, 0.3, 0, 0, Math.PI / 2);
+        add(g, new THREE.CylinderGeometry(0.05, 0.05, 0.22, 8), m.glowSoft,
+          sx * 0.32, baseH + 0.02, -0.3, 0, 0, Math.PI / 2);
+      }
     }
     if (lv >= 5) spinRing(g, m, 0.42, baseH + 0.05);
     return;
@@ -443,9 +551,11 @@ function buildCloseDefense(g, m, era, lv = 1) {
     add(g, new THREE.BoxGeometry(0.5 + lv * 0.04, 0.32 + lv * 0.02, 0.46), m.main,
       0, baseH + 0.16 + lv * 0.01, 0.04);
     const nozzles = lv >= 5 ? 3 : lv >= 3 ? 2 : 1;
-    const xs = spreadX(nozzles, 0.15);
+    const xs = spreadX(nozzles, 0.17);
     for (const x of xs) {
-      add(g, new THREE.CylinderGeometry(0.06, 0.09, 0.28 + lv * 0.04, 10), m.accent,
+      // 管径 0.06/0.09 时，1 口变 2 口在 45° 俯视里几乎看不出来（实测 7%），
+      // 加粗到 0.09/0.13，数量变化才成为可读的轮廓特征
+      add(g, new THREE.CylinderGeometry(0.09, 0.13, 0.3 + lv * 0.04, 10), m.accent,
         x, baseH + 0.16, -0.28, Math.PI / 2 - 0.2, 0, 0);
     }
     if (lv >= 4) {
@@ -486,10 +596,22 @@ function buildCloseDefense(g, m, era, lv = 1) {
     // 纳米刃发生器：1 → 2 → 3 片刃，4 级加冷却罐，5 级加环
     const blades = lv >= 5 ? 5 : lv >= 4 ? 3 : lv >= 3 ? 2 : 1;
     add(g, new THREE.BoxGeometry(0.16, 0.3 + lv * 0.04, 0.16), m.main, 0, baseH + 0.16, 0.02);
-    const xs = spreadX(blades, 0.1);
+    /* 2 级加刃座夹板和底座箍。
+     * L1 和 L2 都是单片刃，刃长只差 0.04，实测剪影差异 7%。
+     * 文档 2 级写的是「加固底座」，夹板能把刃座的体量拉出来。 */
+    if (lv >= 2) {
+      for (const sx of [-1, 1]) {
+        add(g, new THREE.BoxGeometry(0.05, 0.28 + lv * 0.03, 0.32), m.accent,
+          sx * 0.14, baseH + 0.15, 0.02);
+      }
+      add(g, new THREE.TorusGeometry(0.2, 0.03, 6, 16), m.accent,
+        0, baseH + 0.01, 0, Math.PI / 2, 0, 0);
+    }
+    const xs = spreadX(blades, 0.12);
     for (const x of xs) {
-      add(g, new THREE.BoxGeometry(0.03, 0.05, 0.5 + lv * 0.04), m.glow,
-        x, baseH + 0.3, -0.3, -0.18, 0, 0);
+      // 刃宽 0.03 太细，1→2 片在俯视里读不出（实测 7%）；加宽到 0.055
+      add(g, new THREE.BoxGeometry(0.055, 0.06, 0.54 + lv * 0.04), m.glow,
+        x, baseH + 0.3, -0.32, -0.18, 0, 0);
     }
     if (lv >= 4) {
       add(g, new THREE.CylinderGeometry(0.07, 0.08, 0.22, 9), m.dark,
@@ -595,6 +717,23 @@ function buildSupport(g, m, era, lv = 1) {
     // 现代医疗直升机：旋翼 3 级才转，4 级双侧吊舱，5 级大旋翼 + 环
     add(g, new THREE.BoxGeometry(0.4 + lv * 0.02, 0.3, 0.8 + lv * 0.03), m.main, 0, 0.36, 0);
     add(g, new THREE.BoxGeometry(0.1, 0.09, 0.38 + lv * 0.03), m.accent, 0, 0.4, 0.5 + lv * 0.02);
+    /* 2 级加侧挂医疗舱和担架，3 级加旋翼支架。
+     * 原来 L1→L2 只差机身长 0.02、宽 0.02（实测 6%），
+     * 文档 2 级写的是「大帐篷，出现担架和仓储箱」，直升机家族就对应侧舱。
+     * 3 级那段原来只有支架，L2 空着，所以先补 2 级。 */
+    if (lv >= 2) {
+      for (const sx of [-1, 1]) {
+        add(g, new THREE.CylinderGeometry(0.1, 0.1, 0.34, 10), m.accent,
+          sx * 0.27, 0.36, 0.06, 0, 0, Math.PI / 2);
+      }
+      add(g, new THREE.BoxGeometry(0.34, 0.04, 0.2), m.main, 0, 0.2, -0.24);
+    }
+    if (lv >= 3) {
+      for (const sx of [-1, 1]) {
+        add(g, new THREE.BoxGeometry(0.05, 0.18, 0.05), m.accent, sx * 0.2, 0.55, 0);
+      }
+      add(g, new THREE.BoxGeometry(0.16, 0.06, 0.16), m.glow, 0, 0.22, 0);
+    }
     add(g, new THREE.CylinderGeometry(0.03, 0.03, 0.1, 8), m.dark, 0, 0.56, 0);
     const rotor = new THREE.Group();
     rotor.position.y = 0.62;
@@ -769,6 +908,19 @@ function buildCommand(g, m, era, lv = 1) {
     add(g, new THREE.CylinderGeometry(0.32 + lv * 0.02, 0.38 + lv * 0.02, 0.1, 14), m.main, 0, 0.05, 0);
     add(g, new THREE.BoxGeometry(0.5 + lv * 0.04, 0.14, 0.34), m.main, 0, 0.17, 0);
     add(g, new THREE.BoxGeometry(0.44 + lv * 0.04, 0.02, 0.28), m.glow, 0, 0.25, 0);
+    /* 2 级加双天线和指示灯。
+     * 这一档原来和 1 级只差 0.02 边长、星点从 5 个到 7 个（半径 0.02 的小球），
+     * 实测剪影差异只有 3%，是全套里最差的。文档 2 级写的就是「电台、短天线和指示灯」。 */
+    if (lv >= 2) {
+      for (const sx of [-1, 1]) {
+        add(g, new THREE.CylinderGeometry(0.013, 0.017, 0.26 + lv * 0.05, 5), m.accent,
+          sx * 0.19, 0.3 + lv * 0.025, -0.1);
+      }
+      for (let i = 0; i < 3; i++) {
+        add(g, new THREE.SphereGeometry(0.023, 6, 5), m.glow,
+          (i - 1) * 0.13, 0.27, 0.15);
+      }
+    }
     const stars = 3 + lv * 2;
     for (let i = 0; i < stars; i++) {
       const a = (i / stars) * Math.PI * 2;
@@ -814,6 +966,23 @@ function buildSummon(g, m, era, lv = 1) {
       add(g, new THREE.TorusGeometry(0.2 + lv * 0.02, 0.06, 6, 16), m.main, x, 0.3, 0);
       add(g, new THREE.SphereGeometry(0.14 + lv * 0.015, 10, 8), m.glowSoft, x, 0.3, 0);
     }
+    /* 3 级起加虫卵簇和三根管线。
+     *
+     * 二级和三级本来就是同一组双环（只是半径差 0.02），
+     * 实测 L2→L3 剪影差异只有 8%，远看等于没升级。
+     * 文档 3 级写的是「大培养槽、虫卵簇和管线」，所以把这两样补上，
+     * 底部多一圈卵、背后多三根管子，轮廓立刻不同。 */
+    if (lv >= 3) {
+      for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * Math.PI * 2;
+        add(g, new THREE.SphereGeometry(0.055 + (i % 2) * 0.018, 8, 6), m.glowSoft,
+          Math.cos(a) * 0.17, 0.09 + (i % 3) * 0.035, Math.sin(a) * 0.17);
+      }
+      for (let i = 0; i < 3; i++) {
+        add(g, new THREE.CylinderGeometry(0.028, 0.028, 0.4, 7), m.accent,
+          (i - 1) * 0.15, 0.19, 0.26, 0.55, 0, 0);
+      }
+    }
     if (lv >= 5) spinRing(g, m, 0.44, 0.04, 0.025);
     return;
   }
@@ -821,6 +990,19 @@ function buildSummon(g, m, era, lv = 1) {
   if (era === 1) {
     // 二战加固基座 + 双舱：舱数随等级增加
     add(g, new THREE.CylinderGeometry(0.34, 0.4, 0.16 + lv * 0.02, 14), m.main, 0, 0.08, 0);
+    /* 2 级加加固基座：四角立柱 + 外圈箍。
+     * 原来 L1 和 L2 都是单舱、只差 0.05 高度，实测剪影差异 5%，
+     * 基本等于没升级。文档 2 级写的是「双舱/加固基座」，舱数在这里不加，
+     * 那就把加固基座做足。 */
+    if (lv >= 2) {
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+        add(g, new THREE.BoxGeometry(0.07, 0.32, 0.07), m.accent,
+          Math.cos(a) * 0.31, 0.24, Math.sin(a) * 0.31);
+      }
+      add(g, new THREE.TorusGeometry(0.35, 0.035, 6, 20), m.accent,
+        0, 0.38, 0, Math.PI / 2, 0, 0);
+    }
     const pods = lv >= 5 ? 3 : lv >= 3 ? 2 : 1;
     const xs = spreadX(pods, 0.28);
     for (const x of xs) {
@@ -938,6 +1120,9 @@ export function buildSlotStructure(id, era, level) {
   // 体积只做轻微补偿：升级主要靠上面的结构变化，不再用 1.32 倍整体缩放
   // 去糊弄剪影（那会让 5 级看起来只是同一个模型放大）。
   g.scale.setScalar(1 + (lv - 1) * 0.05);
+
+  // 出口统一收口：把尺寸压回文档规格（占地 ≤0.85、高 ≤1.1/1.45、底贴地）
+  fitSlotToSpec(g, lv);
 
   // 收集可旋转部件，交给外部每帧推进（spinY 绕 y，其余沿用原来的 z）
   const spinParts = [];
