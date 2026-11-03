@@ -51,6 +51,8 @@ let currentState = null;
 let testPanelCollapsed =
   typeof window !== "undefined" &&
   window.matchMedia("(max-width: 600px)").matches;
+// 测试面板里天气事件默认用暴雨，点天气类型可以换
+let testWeatherKind = 'rain';
 
 /* 地图列表：按时代分组排，同时代的连在一起。
  * 26 张（原 9 + 新 17）塞进 3 列网格会撑爆开始页，
@@ -619,6 +621,13 @@ function buildDom() {
     </div>
   `).join('');
 
+  const envButtons = (testData.envEvents || [])
+    .map((e) => `<button class="test-chip" type="button" data-test-env-id="${e.id}">${e.name}</button>`)
+    .join('');
+  const weatherButtons = (testData.weatherKinds || [])
+    .map((w) => `<button class="test-chip${w.id === testWeatherKind ? ' is-active' : ''}" type="button" data-test-weather="${w.id}">${w.name}</button>`)
+    .join('');
+
   const skillGroups = testData.eras.map((name, era) => {
     const list = testData.skills.filter((s) => s.era === era);
     if (!list.length) return '';
@@ -648,10 +657,18 @@ function buildDom() {
       <p class="test-panel__label">一次性技能</p>
       <div data-test-skills>${skillGroups}</div>
     </div>
+    <div class="test-panel__section">
+      <p class="test-panel__label">环境事件（点一下直接触发）</p>
+      <div class="test-era-grid" data-test-env-grid>${envButtons}</div>
+    </div>
+    <div class="test-panel__section">
+      <p class="test-panel__label">天气类型（触发天气前选）</p>
+      <div class="test-era-grid" data-test-weather-grid>${weatherButtons}</div>
+    </div>
     <div class="test-panel__section test-panel__actions">
       <button type="button" data-test-spawn>刷 20 只僵尸</button>
       <button type="button" data-test-clear>清空僵尸</button>
-      <button type="button" data-test-env>触发环境事件</button>
+      <button type="button" data-test-env>当前地图事件</button>
     </div>
   `;
   document.body.appendChild(testPanel);
@@ -741,6 +758,8 @@ function buildDom() {
     testEraName: testPanel.querySelector('[data-test-era-name]'),
     testEraNames: testData.eras,
     testEraBtns: [...testPanel.querySelectorAll('[data-test-era-btn]')],
+    testEnvBtns: [...testPanel.querySelectorAll('[data-test-env-id]')],
+    testWeatherBtns: [...testPanel.querySelectorAll('[data-test-weather]')],
     testSlotRefs: Object.fromEntries(
       testData.slots.map((s) => [s.id, {
         level: testPanel.querySelector(`[data-test-level="${s.id}"]`),
@@ -870,6 +889,24 @@ function bindEvents() {
       if (actions && actions.triggerEnvEvent) actions.triggerEnvEvent();
     });
   }
+
+  // 指定环境事件：六类都能直接测，天气再按上面选的类型触发
+  els.testEnvBtns.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (actions && actions.triggerEnvEvent) {
+        actions.triggerEnvEvent(btn.dataset.testEnvId, testWeatherKind);
+      }
+    });
+  });
+
+  els.testWeatherBtns.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      testWeatherKind = btn.dataset.testWeather;
+      els.testWeatherBtns.forEach((b) => {
+        b.classList.toggle('is-active', b === btn);
+      });
+    });
+  });
 
   els.overScreen.querySelector('[data-revive]').addEventListener('click', () => {
     initAudio();

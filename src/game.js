@@ -954,8 +954,8 @@ function envEventName(ev) {
   return ENV_EVENTS[ev.id]?.name || '';
 }
 
-function prepareMapEvent() {
-  // 换地图/重开时先清掉上一张图的事件和负面状态
+// 清掉当前环境事件的运行时状态（换图、重开、测试模式强切事件时共用）
+function clearEnvRuntime() {
   if (state.envEvent?.phase === 'active' && state.envEvent.id === 'weather') {
     emit('envWeatherEnd', {});
   }
@@ -965,6 +965,11 @@ function prepareMapEvent() {
   state.envSlowMul = 1;
   state.envWeatherUntil = 0;
   state.envDebuff = { until: 0, moveMul: 1, fireRateMul: 1, spreadMul: 1 };
+}
+
+function prepareMapEvent() {
+  // 换地图/重开时先清掉上一张图的事件和负面状态
+  clearEnvRuntime();
 
   const id = MAP_ENV[state.mapId];
   if (!id || !ENV_EVENTS[id]) return;
@@ -982,17 +987,38 @@ function prepareMapEvent() {
   };
 }
 
-// 测试面板用：立刻触发当前地图的环境事件（测试模式不再等随机波次）
-function triggerEnvEventNow() {
+// 测试面板用：立刻触发环境事件。
+// 不传参数 = 当前地图自己的事件；传 id = 测试模式强制换成指定事件（六类都能测），
+// 天气事件再传 weatherKind 选暴雨/浓雾/风暴/沙尘/强风/暴雪。
+function triggerEnvEventNow(id = null, weatherKind = null) {
   if (state.status !== 'playing') return false;
-  const ev = state.envEvent;
-  if (!ev || ev.phase === 'warning' || ev.phase === 'active' ||
-      ev.mapId !== state.mapId) {
-    prepareMapEvent();
-  }
-  const next = state.envEvent;
-  if (!next || next.phase === 'warning' || next.phase === 'active') return false;
 
+  if (id) {
+    if (!state.testMode || !ENV_EVENTS[id]) return false;
+    // 先收掉正在跑的事件，再换成指定的那一个，方便连续试
+    clearEnvRuntime();
+    state.envEvent = {
+      id,
+      mapId: state.mapId,
+      wave: state.wave,
+      phase: 'idle',
+      timer: 0,
+      spots: [],
+      weatherKind: id === 'weather' ? (weatherKind || 'rain') : null,
+    };
+  } else {
+    const ev = state.envEvent;
+    if (!ev || ev.phase === 'warning' || ev.phase === 'active' ||
+        ev.mapId !== state.mapId) {
+      prepareMapEvent();
+    }
+    const current = state.envEvent;
+    if (!current || current.phase === 'warning' || current.phase === 'active') {
+      return false;
+    }
+  }
+
+  const next = state.envEvent;
   next.forced = true;
   next.phase = 'warning';
   next.timer = ENV_EVENTS[next.id].warn;
@@ -1760,6 +1786,15 @@ function getTestData() {
       id: s.id,
       name: s.name,
       era: s.era,
+    })),
+    // 测试面板的环境事件快捷按钮
+    envEvents: Object.entries(ENV_EVENTS).map(([id, cfg]) => ({
+      id,
+      name: cfg.name,
+    })),
+    weatherKinds: Object.entries(WEATHER_NAMES).map(([id, name]) => ({
+      id,
+      name,
     })),
   };
 }
