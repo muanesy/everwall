@@ -1077,13 +1077,6 @@ canvas {
   color: #ffc46b;
 }
 
-/* 本次面板里已经点掉、不能再选的卡：留在原位置灰掉，避免网格重排 */
-.upgrade-choice.is-used,
-.upgrade-choice.is-used:hover {
-  opacity: 0.4;
-  cursor: default;
-}
-
 .upgrade-choice strong {
   font-size: 13px;
 }

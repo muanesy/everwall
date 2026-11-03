@@ -348,39 +348,24 @@ function updateUpgradePanel(state) {
 
   if (els.upgradeVersion !== state.upgradePanel.version) {
     els.upgradeVersion = state.upgradePanel.version;
-    const pool = actions && actions.getUpgradePool ? actions.getUpgradePool() : [];
-    const counts = state.upgradePanel.pickCounts || {};
-
-    // 用面板打开时锁住的卡序重绘：点过的卡 apply() 之后 can() 就变 false、
-    // 立刻从池子里消失。如果直接拿新池子重绘，整列会往前挪一格 ——
-    // 刚亮起的蓝框看着"跑到隔壁那张卡上"，第二下也点到了别的卡。
-    // 所以点掉的卡留在原位置灰掉，整次面板的排版不再变动。
-    const byId = new Map(pool.map((c) => [c.id, c]));
-    const pickedById = new Map((state.upgradePanel.picked || []).map((p) => [p.id, p]));
-    const order = state.upgradePanel.poolOrder || [];
-    const cards = [];
-    for (const id of order) {
-      const live = byId.get(id);
-      if (live) {
-        cards.push(live);
-        byId.delete(id);
-        continue;
-      }
-      // 没点过就消失的卡（依赖别的卡才成立）直接收掉，不留空格
-      const used = pickedById.get(id);
-      if (used) cards.push({ id, name: used.name, desc: '本轮已选，不能再选', used: true });
-    }
-    // 卡序表之后才进池的（理论上没有，兜个底）补在末尾
-    for (const c of byId.values()) cards.push(c);
+    // 卡面由玩法层算好：格子顺序在面板打开时锁死，每格取「这一组当前还能升的那张」。
+    // 点了「攻城槽」之后同一格原地变成「攻城升级」，再点一次就再 +1 级，
+    // 既不会整列重排，也不会出现灰掉/消失的卡
+    const cards = actions && actions.getUpgradePanelCards
+      ? actions.getUpgradePanelCards()
+      : (actions && actions.getUpgradePool
+        ? actions.getUpgradePool().map((c) => ({ ...c, count: 0 }))
+        : []);
 
     els.upgradeGrid.innerHTML = cards.map((c) => {
       // 本次面板里点过几次：1 次蓝框，2 次及以上橙黄框，方便看清重复升级
-      const n = counts[c.id] || 0;
+      const n = c.count || 0;
       const pickedClass = n >= 2 ? ' is-picked-2' : n === 1 ? ' is-picked-1' : '';
+      const emoji = UPGRADE_EMOJI[c.id] || UPGRADE_EMOJI[c.id.replace(/(Upgrade|Unlock)$/, '')] || '⭐';
       return `
-      <button class="upgrade-choice${pickedClass}${c.used ? ' is-used' : ''}" type="button" data-upgrade-id="${c.id}"${c.used ? ' disabled' : ''}>
+      <button class="upgrade-choice${pickedClass}" type="button" data-upgrade-id="${c.id}">
         ${n > 0 ? `<span class="upgrade-choice__picks">×${n}</span>` : ''}
-        <strong>${c.name} ${UPGRADE_EMOJI[c.id] || '⭐'}</strong>
+        <strong>${c.name} ${emoji}</strong>
         <span>${c.desc}</span>
       </button>
     `;

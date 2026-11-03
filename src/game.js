@@ -610,8 +610,8 @@ const state = {
     version: 0,
     pickCounts: {},   // 本次面板里每张卡点了几次：1 次蓝框，2 次及以上橙黄框
     picked: [],       // 本次面板的点选顺序：{ id, name, count }，给面板顶部做「本轮已选」
-    poolOrder: [],    // 面板打开那一刻的卡序。卡被点掉后 can() 变 false 会退出卡池，
-                      // 不锁顺序的话整列会往前挪一格，玩家接着点原位置就点到别的卡了
+    poolOrder: [],    // 面板打开那一刻锁住的格子顺序（存的是「卡组」id，如 slotSiege）。
+                      // 解锁卡点掉后同组的升级卡原地接替，位置不挪动
   },
   upgradeCarry: 0,
   // 地图环境事件：{ id, wave, phase, timer, spots, weatherKind }
@@ -2952,6 +2952,39 @@ function buildUpgradePool() {
     .filter((c) => c.can());
 }
 
+// 解锁卡和它的升级卡算「同一张卡」：面板里占同一个位置，连锁描述也连在一起。
+// 点了「攻城槽」解锁之后，那个格子原地变成「攻城升级」，再点一次就 +1 级 ——
+// 不这么做的话卡池会换一张卡、整列往前挪，看着像"点了没反应"或"蓝框跑到隔壁"。
+const CARD_GROUP_SUFFIX = /(Upgrade|Unlock)$/;
+function cardGroupOf(id) {
+  return id.replace(CARD_GROUP_SUFFIX, '');
+}
+
+// 面板要渲染的卡：位置在打开面板时锁死，每格按「这一组当前还能升的那张」实时取。
+// 组里已经升满（没有可用的卡了）时，保留最后那张占位并标 maxed，不灰、不移除
+function getUpgradePanelCards() {
+  const pool = buildUpgradePool();
+  const counts = state.upgradePanel.pickCounts || {};
+  const pickedByGroup = new Map((state.upgradePanel.picked || []).map((p) => [p.id, p]));
+  const order = state.upgradePanel.poolOrder || [];
+
+  return order.map((g) => {
+    const live = pool.find((c) => cardGroupOf(c.id) === g);
+    if (live) {
+      return { id: live.id, name: live.name, desc: live.desc, count: counts[g] || 0, maxed: false };
+    }
+    const done = pickedByGroup.get(g);
+    if (!done) return null;
+    return {
+      id: done.lastId,
+      name: done.name,
+      desc: '已经升到上限',
+      count: counts[g] || 0,
+      maxed: true,
+    };
+  }).filter(Boolean);
+}
+
 function openUpgradePanel() {
   if (state.status !== 'playing' || state.testMode) return;
   if (state.upgradePanel.active) return;
@@ -2970,9 +3003,12 @@ function openUpgradePanel() {
   state.upgradePanel.timeLeft = 30;
   state.upgradePanel.pickCounts = {};
   state.upgradePanel.picked = [];
-  // 锁住这次面板的卡序：点过的卡 apply() 后 can() 就变 false、立刻退出卡池，
-  // 不锁的话每点一次整个网格都会重排，第二下很容易点到隔壁那张
-  state.upgradePanel.poolOrder = buildUpgradePool().map((c) => c.id);
+  // 锁住这次面板的格子顺序（按「卡组」而不是具体卡 id）：
+  // 解锁卡点掉后会换成同组的升级卡，位置必须原地不动
+  const seenGroups = new Set();
+  state.upgradePanel.poolOrder = buildUpgradePool()
+    .map((c) => cardGroupOf(c.id))
+    .filter((g) => (seenGroups.has(g) ? false : (seenGroups.add(g), true)));
   state.upgradePanel.version += 1;
   emit('upgradePanelOpen', { picks });
 }
@@ -2999,19 +3035,37 @@ function closeUpgradePanel(carryRemaining = false) {
 function chooseUpgrade(id) {
   if (!state.upgradePanel.active || state.upgradePanel.picks <= 0) return false;
 
-  const card = buildUpgradePool().find((c) => c.id === id);
-  if (!card) return false;
+  const group = cardGroupOf(id);
+  let card = buildUpgradePool().find((c) => c.id === id);
+  if (!card) {
+    // 连点时按钮上的 id 可能已经被同组的下一张卡接替（攻城槽 → 攻城升级），
+    // 这一下仍然算给同一组，不能白点
+    card = buildUpgradePool().find((c) => cardGroupOf(c.id) === group);
+  }
+  if (!card) {
+    // 这一组已经升满：给一句提示，但不消耗次数。
+    // 那张卡仍留在原位（不灰、不移除），玩家点它才知道是到顶了
+    emit('skillNotice', { text: '这张已经升到上限了', kind: 'skill' });
+    return false;
+  }
 
   card.apply();
+  // 次数按「卡组」记：解锁卡和它的升级卡是同一个人，点两次就该是 ×2，
+  // 不能因为中途换了 id 把前一次的次数丢掉
   const counts = state.upgradePanel.pickCounts;
-  counts[id] = (counts[id] || 0) + 1;
+  counts[group] = (counts[group] || 0) + 1;
 
-  // 顶部「本轮已选」按点选顺序记名字，解锁类卡片点完会从列表消失，
+  // 顶部「本轮已选」按点选顺序记名字，解锁类卡片点完名字会变成「XX升级」，
   // 光靠卡面边框玩家会忘了自己点过什么
   const picked = state.upgradePanel.picked;
-  const logged = picked.find((p) => p.id === id);
-  if (logged) logged.count += 1;
-  else picked.push({ id, name: card.name, count: 1 });
+  const logged = picked.find((p) => p.id === group);
+  if (logged) {
+    logged.count += 1;
+    logged.name = card.name;
+    logged.lastId = card.id;
+  } else {
+    picked.push({ id: group, name: card.name, count: 1, lastId: card.id });
+  }
 
   state.upgradePanel.picks -= 1;
   state.upgradePanel.version += 1;
@@ -5624,6 +5678,7 @@ initUI(state, {
   useSkill,
   getSkillBag,
   getUpgradePool: buildUpgradePool,
+  getUpgradePanelCards,
   chooseUpgrade,
   triggerEnvEvent: triggerEnvEventNow,
 });
