@@ -17,6 +17,17 @@ import { skillIconTag, slotIconTag } from './ui-skillicons.js';
 let els = null;
 let actions = null;
 let currentState = null;
+
+// 游戏说明弹窗是否打开：game.js 的 Esc 处理要先问这里，
+// 否则关说明的同时会把暂停菜单一起关掉
+export function isHelpOpen() {
+  return !!(els && els.helpOverlay &&
+    !els.helpOverlay.classList.contains('hidden'));
+}
+
+export function closeHelpPanel() {
+  if (els && els.helpOverlay) els.helpOverlay.classList.add('hidden');
+}
 // 手机默认收起测试面板，留一个「测试」小按钮，避免整块面板挡住战场
 let testPanelCollapsed =
   typeof window !== "undefined" &&
@@ -147,6 +158,7 @@ export function updateUI(state) {
   updateTierBadge(state.soldiers);
   updateCommandChip(state);
   updateBloodChip(state);
+  updateEnvWarning(state);
   updateLoadingBox();
   updateWaveCountdown(state);
   updateUpgradePanel(state);
@@ -235,6 +247,30 @@ function updateBloodChip(state) {
   }
   if (els.bloodHealed.textContent !== String(healed)) {
     els.bloodHealed.textContent = String(healed);
+  }
+}
+
+/* 环境事件 3 秒预警条：暴雨这类天气在地图上本来就有环境雨，
+ * 没有独立提示时玩家会以为事件已经生效；这条只在 warning 阶段显示。 */
+function updateEnvWarning(state) {
+  if (!els.envWarning) return;
+  const ev = state.envEvent;
+  const show =
+    state.status === 'playing' &&
+    ev &&
+    ev.phase === 'warning' &&
+    ev.timer > 0;
+  els.envWarning.hidden = !show;
+  if (!show) return;
+
+  const label = ev.label || '环境事件';
+  if (els.envWarningLabel.textContent !== label) {
+    els.envWarningLabel.textContent = label;
+  }
+  const sec = Math.max(1, Math.ceil(ev.timer));
+  const text = `${sec}s 后生效`;
+  if (els.envWarningTime.textContent !== text) {
+    els.envWarningTime.textContent = text;
   }
 }
 
@@ -516,6 +552,10 @@ function buildDom() {
     <button class="pause-btn" type="button" data-pause aria-label="暂停">
       <span></span><span></span><span></span>
     </button>
+    <div class="env-warning" data-env-warning hidden>
+      <span class="env-warning__label" data-env-warning-label></span>
+      <span class="env-warning__time" data-env-warning-time></span>
+    </div>
   `;
   document.body.appendChild(hud);
 
@@ -563,6 +603,7 @@ function buildDom() {
       </div>
       <p class="best-line" data-start-best></p>
       <button class="btn" data-start>开始游戏</button>
+      <button class="btn btn--ghost" type="button" data-help>游戏说明</button>
       <p class="hint">键盘 ← → 或 A / D<br>手机上按住屏幕左右拖动</p>
       <p class="credit">模型：Poly by Google · Catapult · CC-BY 3.0</p>
     </div>
@@ -707,10 +748,81 @@ function buildDom() {
       <p class="eyebrow">已暂停</p>
       <h2>暂停</h2>
       <button class="btn" type="button" data-resume>继续游戏</button>
+      <button class="btn btn--ghost" type="button" data-help-pause>游戏说明</button>
       <button class="btn btn--ghost" type="button" data-menu>返回菜单</button>
     </div>
   `;
   document.body.appendChild(pauseOverlay);
+
+  // 游戏说明：开始页和暂停菜单都能打开；内容超出时在弹窗内部滚动
+  const helpOverlay = document.createElement('div');
+  helpOverlay.className = 'overlay help-overlay hidden';
+  helpOverlay.innerHTML = `
+    <div class="card help-card">
+      <div class="help-head">
+        <h2>游戏说明</h2>
+        <button class="help-close" type="button" data-help-close>关闭</button>
+      </div>
+      <div class="help-body">
+        <h3>目标</h3>
+        <p>士兵在屏幕下方自动开火，左右移动躲开尸潮。士兵数量同时是生命值，归零就结束。打碎左边的绿色屏障可以加兵，撑得越久分数越高。</p>
+
+        <h3>操作</h3>
+        <ul>
+          <li>电脑：← → 或 A / D 左右移动，数字键 1~4 使用技能，Esc 暂停。</li>
+          <li>手机：按住屏幕左右拖动，点左侧技能图标释放。</li>
+          <li>自动开火，不需要按射击键。</li>
+        </ul>
+
+        <h3>屏幕左边：屏障</h3>
+        <ul>
+          <li>绿色普通屏障：一发打碎，加兵；加兵数随波次从 +1 升到 +5。</li>
+          <li>红色负数屏障：打一发数值 +1，打到 0 以上会变绿；打满或碰到士兵时结算。</li>
+          <li>灰色陷阱：初始是负数，打到 0 就消失，不会变正数，也不给兵；碰到士兵照常扣兵。</li>
+          <li>蓝色火力增援：攒够命中后枪位 +1，最多 8 个；没攒够就消失。</li>
+          <li>紫色穿透器：攒够命中后子弹有概率不消耗，连续穿透最多 3 只。</li>
+        </ul>
+
+        <h3>屏幕右边：僵尸</h3>
+        <p>普通、大块头、快鬼、精英、女僵尸，以及自爆、护甲、远程和召唤者。血量和速度各不相同，贴到士兵会按类型扣兵。分数按类型给，越硬分越高。</p>
+
+        <h3>士兵成长</h3>
+        <ul>
+          <li>5 兵保安、20 兵正规军、50 兵特种兵、100 兵超级士兵；120 只是显示上限。</li>
+          <li>从第 7 波开始，子弹伤害和射速每波各 +1%，各自最高 +60%。</li>
+          <li>每 2 波自动获得一个当前时代的技能，不需要手动抽卡。</li>
+        </ul>
+
+        <h3>时代、地图和波次</h3>
+        <p>六个时代：中世纪、二战、现代、后现代、星际、终幕。每个时代随机抽 3 张地图，每张地图 3 波，每波 12 秒。每换一张地图刷一只 Boss，三张地图打完进入下一个时代；终幕三张打完重新抽地图，时代保持终幕，无限继续。开始页可以选任意时代和该时代的地图开局。</p>
+
+        <h3>升级面板和槽位</h3>
+        <p>每张地图结束会暂停游戏，打开升级面板。列出所有可升级的槽位和基础强化，选 3 次；选满立即继续，没选完的次数累计到下一次。同一张卡点一次升一级，点过的卡会显示蓝框，点两次以上显示橙黄框。</p>
+        <ul>
+          <li>攻城：自动轰最密的一群僵尸，范围伤害。</li>
+          <li>近防：在防线前沿持续扫射，处理贴近的漏网僵尸。</li>
+          <li>支援：定时回兵。</li>
+          <li>指挥：标记血量最高的敌人，子弹打中标记目标加伤。</li>
+          <li>召唤：制造盾尸、疾尸、爆尸、酸吐尸、巨尸五种绿色友军。</li>
+          <li>工事：建一堵会反击的墙，碎了之后冷却重建。</li>
+        </ul>
+
+        <h3>一次性技能</h3>
+        <p>每个时代 5 个，共 30 个。技能存在左侧技能栏，最多 4 种，每种 1~3 次；栏满时替换最早获得的，剩余次数折算成兵。技能栏空着时不会自动释放，需要自己找时机。</p>
+
+        <h3>Boss、环境事件和血月</h3>
+        <ul>
+          <li>Boss：每换一张地图刷一只，场上最多一只；血量约是同波普通僵尸的 35 倍，还会随士兵成长变厚。贴到防线后每拳扣 20 兵。</li>
+          <li>环境事件：每张地图固定挂一类，随机落在第 1、2、3 波。先给 3 秒预警条，再持续 2~6 秒；地震、陨石、恶劣天气、毒雾、熔岩、电磁风暴各有不同效果，大部分会伤僵尸，同时给玩家可躲的短负面。</li>
+          <li>血月：每 10 波出现一次，60、70、80 波以后继续触发。期间僵尸移速 +10%，每击杀 3 只回 1 兵，不设上限；但僵尸撞到士兵被删除的不算击杀，漏怪不回血。</li>
+        </ul>
+
+        <h3>测试模式</h3>
+        <p>开始页打开测试模式，或地址加 <code>?test=1</code>，进游戏后左侧出现测试面板：可切时代、调槽位等级、直接释放全部技能、触发六类环境事件、刷或清空僵尸。测试模式士兵不会掉血，适合演示和排查。</p>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(helpOverlay);
 
   // 开始页也显示这张图的历史最佳，给玩家一个目标
   // 注意：buildDom 执行时 els 还没赋值，这里只能用局部变量
@@ -736,6 +848,9 @@ function buildDom() {
     bloodChip: hud.querySelector('[data-blood-chip]'),
     bloodKills: hud.querySelector('[data-blood-kills]'),
     bloodHealed: hud.querySelector('[data-blood-healed]'),
+    envWarning: hud.querySelector('[data-env-warning]'),
+    envWarningLabel: hud.querySelector('[data-env-warning-label]'),
+    envWarningTime: hud.querySelector('[data-env-warning-time]'),
     cmdIcon: hud.querySelector('[data-cmd-icon]'),
     cmdBonus: hud.querySelector('[data-cmd-bonus]'),
     startScreen,
@@ -750,6 +865,10 @@ function buildDom() {
     pauseOverlay,
     resumeBtn: pauseOverlay.querySelector('[data-resume]'),
     menuBtn: pauseOverlay.querySelector('[data-menu]'),
+    helpBtn: startScreen.querySelector('[data-help]'),
+    helpPauseBtn: pauseOverlay.querySelector('[data-help-pause]'),
+    helpOverlay,
+    helpClose: helpOverlay.querySelector('[data-help-close]'),
     loadingBox: startScreen.querySelector('[data-loading]'),
     loadingFill: startScreen.querySelector('[data-loading-fill]'),
     loadingText: startScreen.querySelector('[data-loading-text]'),
@@ -958,6 +1077,27 @@ function bindEvents() {
   els.menuBtn.addEventListener('click', () => {
     playClick();
     if (actions && actions.returnToMenu) actions.returnToMenu();
+  });
+
+  // 游戏说明：开始页和暂停菜单共用同一个弹窗
+  const openHelp = () => {
+    els.helpOverlay.classList.remove('hidden');
+    els.helpOverlay.querySelector('.help-body').scrollTop = 0;
+  };
+  const closeHelp = () => {
+    els.helpOverlay.classList.add('hidden');
+  };
+  [els.helpBtn, els.helpPauseBtn].forEach((btn) => {
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+      initAudio();
+      playClick();
+      openHelp();
+    });
+  });
+  els.helpClose.addEventListener('click', () => {
+    playClick();
+    closeHelp();
   });
 
   // 升级面板：按钮会随版本重绘，用事件委托接点击。

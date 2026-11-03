@@ -243,6 +243,47 @@ canvas {
   color: #ffb0a4;
 }
 
+/* 环境事件 3 秒预警条：给暴雨/地震/电磁这种没有地面落点圈的事件一个明确倒计时 */
+.env-warning {
+  position: absolute;
+  top: calc(66px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 12px;
+  border: 1px solid rgba(255, 130, 90, 0.55);
+  border-radius: 9px;
+  background: rgba(60, 12, 8, 0.78);
+  color: #ffd0b8;
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 12;
+  animation: env-warning-pulse 0.7s ease-in-out infinite alternate;
+}
+
+.env-warning[hidden] {
+  display: none;
+}
+
+.env-warning__label {
+  font-weight: 700;
+  color: #ff9a7a;
+}
+
+.env-warning__time {
+  font-variant-numeric: tabular-nums;
+  color: #ffe6cf;
+}
+
+@keyframes env-warning-pulse {
+  from { box-shadow: 0 0 0 rgba(255, 100, 70, 0); }
+  to { box-shadow: 0 0 18px rgba(255, 100, 70, 0.35); }
+}
+
 /* ---------- 遮罩层 ---------- */
 
 .overlay {
@@ -276,6 +317,92 @@ canvas {
   .overlay {
     align-items: safe center;
   }
+}
+
+/* ---------- 游戏说明弹窗 ---------- */
+
+.help-overlay {
+  z-index: 30;
+  background: rgba(4, 6, 10, 0.88);
+}
+
+.help-card {
+  max-width: 560px;
+  max-height: calc(var(--stage-h) - 40px);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  text-align: left;
+}
+
+.help-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.help-head h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.help-close {
+  padding: 6px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.help-close:hover {
+  border-color: rgba(78, 161, 255, 0.6);
+}
+
+.help-body {
+  min-height: 0;
+  padding: 4px 18px 20px;
+  overflow-y: auto;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+.help-body h3 {
+  margin: 18px 0 6px;
+  font-size: 13.5px;
+  letter-spacing: 0.04em;
+  color: #ffd27a;
+}
+
+.help-body p,
+.help-body li {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+.help-body ul {
+  margin: 6px 0;
+  padding-left: 18px;
+}
+
+.help-body li + li {
+  margin-top: 3px;
+}
+
+.help-body code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--fg);
 }
 
 .card {

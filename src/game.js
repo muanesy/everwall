@@ -28,7 +28,7 @@ import {
 import { pickZombieTypeForEra, eraWeaponProfile } from './game-era-rules.js';
 import { SUMMONER, createSummonerState, updateSummoner } from './game-summoner.js';
 import { createChain, chainDetour, isBlockedByChain } from './game-chainbarricade.js';
-import { initUI, updateUI } from './ui.js';
+import { initUI, updateUI, isHelpOpen, closeHelpPanel } from './ui.js';
 
 // 起始地图：开始页传入的 ?map=，默认废墟街道
 // 无参数时默认和开始页保持一致：中世纪·城堡攻城
@@ -910,6 +910,12 @@ events.addEventListener('bossAttackDone', (e) => {
  * 输入：键盘 + 触摸拖动
  * ---------------------------------------------------------- */
 window.addEventListener('keydown', (e) => {
+  // 游戏说明打开时，Esc 只关说明，不碰暂停状态
+  if (e.key === 'Escape' && isHelpOpen()) {
+    closeHelpPanel();
+    e.preventDefault();
+    return;
+  }
   // Esc 开关暂停；暂停期间不响应移动和选卡
   if (e.key === 'Escape' && state.status === 'playing') {
     if (!e.repeat) setPaused(!state.paused);
@@ -1031,7 +1037,7 @@ function prepareMapEvent() {
   const id = MAP_ENV[state.mapId];
   if (!id || !ENV_EVENTS[id]) return;
 
-  state.envEvent = {
+  const next = {
     id,
     mapId: state.mapId,
     wave: 1 + Math.floor(Math.random() * CONFIG.era.everyWaves),
@@ -1042,6 +1048,8 @@ function prepareMapEvent() {
       ? (WEATHER_KIND[state.mapId] || 'rain')
       : null,
   };
+  next.label = envEventName(next);
+  state.envEvent = next;
 }
 
 // 测试面板用：立刻触发环境事件。
@@ -1063,6 +1071,7 @@ function triggerEnvEventNow(id = null, weatherKind = null) {
       spots: [],
       weatherKind: id === 'weather' ? (weatherKind || 'rain') : null,
     };
+    state.envEvent.label = envEventName(state.envEvent);
   } else {
     const ev = state.envEvent;
     if (!ev || ev.phase === 'warning' || ev.phase === 'active' ||
@@ -1175,6 +1184,10 @@ function startEnvActive(ev) {
     state.envWeatherUntil = now + ENV_EVENTS.weather.active;
     setEnvDebuff(1, 0.9, 1, ENV_EVENTS.weather.active);
     emit('envWeatherStart', { kind: ev.weatherKind });
+    emit('skillNotice', {
+      text: `${envEventName(ev)}来袭：僵尸减速，玩家射速下降`,
+      kind: 'era',
+    });
     return;
   }
 
