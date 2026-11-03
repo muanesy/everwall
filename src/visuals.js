@@ -13,6 +13,7 @@ import * as THREE from 'three';
 // three 本体仍由 index.html 的 importmap 提供，加载器内部 import 'three' 会复用它。
 import { GLTFLoader } from '../assets/vendor/loaders/GLTFLoader.js';
 import { clone as skeletonClone } from '../assets/vendor/utils/SkeletonUtils.js';
+import { mergeGeometries } from '../assets/vendor/utils/BufferGeometryUtils.js';
 import {
   setAmbient,
   updateAudio,
@@ -5732,9 +5733,118 @@ function keepArenaClear(group) {
   }
 }
 
+/* 把静态背景物按材质合批，减少 draw call。
+ * 会动的物件（树摇、窗户闪、灯呼吸）以及透明/贴图材质全部跳过，
+ * 所以画面应该和合批前一致；先用 ?mergeprops=1 验证，确认后再设默认。 */
+function mergeStaticProps(group) {
+  group.updateMatrixWorld(true);
+  const animated = new Set(
+    propAnim.map((a) => a.obj).filter(Boolean)
+  );
+  const isAnimated = (obj) => {
+    let p = obj;
+    while (p && p !== group) {
+      if (animated.has(p)) return true;
+      p = p.parent;
+    }
+    return false;
+  };
+
+  const materialKey = (m) => [
+    m.type,
+    m.color ? m.color.getHex() : -1,
+    m.emissive ? m.emissive.getHex() : -1,
+    m.emissiveIntensity,
+    m.roughness,
+    m.metalness,
+    m.flatShading ? 1 : 0,
+    m.side,
+    m.opacity,
+    m.vertexColors ? 1 : 0,
+    m.fog === false ? 0 : 1,
+    m.depthWrite === false ? 0 : 1,
+    m.depthTest === false ? 0 : 1,
+    m.blending,
+    m.polygonOffset ? 1 : 0,
+    m.toneMapped === false ? 0 : 1,
+  ].join('|');
+
+  const buckets = new Map();
+  group.traverse((obj) => {
+    if (!obj.isMesh || obj.isInstancedMesh || obj.isSkinnedMesh) return;
+    if (Array.isArray(obj.material) || !obj.material) return;
+    const m = obj.material;
+    if (m.transparent || m.map || m.alphaMap || m.emissiveMap ||
+        m.roughnessMap || m.normalMap) return;
+    if (obj.renderOrder) return;
+    if (isAnimated(obj)) return;
+    if (!obj.visible) return;
+    let p = obj;
+    while (p && p !== group) {
+      if (!p.visible) return;
+      p = p.parent;
+    }
+    const geo = obj.geometry;
+    if (!geo || !geo.attributes.position) return;
+    if (geo.morphAttributes && Object.keys(geo.morphAttributes).length) return;
+
+    const attrs = Object.keys(geo.attributes).sort().join(',');
+    const key = `${materialKey(m)}|${attrs}|${geo.index ? 'indexed' : 'plain'}`;
+    let arr = buckets.get(key);
+    if (!arr) {
+      arr = [];
+      buckets.set(key, arr);
+    }
+    arr.push(obj);
+  });
+
+  const inv = new THREE.Matrix4().copy(group.matrixWorld).invert();
+  const local = new THREE.Matrix4();
+
+  for (const arr of buckets.values()) {
+    if (arr.length < 2) continue;
+
+    const geos = [];
+    let failed = false;
+    for (const obj of arr) {
+      try {
+        const geo = obj.geometry.index
+          ? obj.geometry.toNonIndexed()
+          : obj.geometry.clone();
+        local.multiplyMatrices(inv, obj.matrixWorld);
+        geo.applyMatrix4(local);
+        if (!geo.attributes.normal) geo.computeVertexNormals();
+        geos.push(geo);
+      } catch (e) {
+        failed = true;
+        break;
+      }
+    }
+
+    if (failed) {
+      for (const g of geos) g.dispose();
+      continue;
+    }
+
+    const merged = mergeGeometries(geos, false);
+    for (const g of geos) g.dispose();
+    if (!merged) continue;
+
+    const mesh = new THREE.Mesh(merged, arr[0].material);
+    mesh.matrixAutoUpdate = false;
+    mesh.matrix.identity();
+    for (const obj of arr) {
+      if (obj.parent) obj.parent.remove(obj);
+    }
+    group.add(mesh);
+  }
+}
+
 function buildProps(mapId = MAP_ID) {
   const group = new THREE.Group();
   const rng = mulberry32(20261101);
+  // 旧地图的动画引用必须清掉，否则切图后还在改已经移除的物件
+  propAnim.length = 0;
 
   // 新地图（17 张）走自己的构建函数：零件工厂 + 配置组合，
   // 不用在这里堆 17 个 props 函数
@@ -5825,6 +5935,12 @@ function buildProps(mapId = MAP_ID) {
    * 这里在道具全部造完之后逐个量包围盒，越线的往外推。
    * 一处收口，26 张图一起受益，也不用去改那 9 个早先写的地图函数。 */
   keepArenaClear(group);
+
+  // 静态背景物按「材质参数 + 属性布局」合批；会动的物件跳过。
+  // 默认开启；排查问题时可用 ?mergeprops=0 关掉对比。
+  if (new URLSearchParams(window.location.search).get('mergeprops') !== '0') {
+    mergeStaticProps(group);
+  }
 
   /* 加进场景 + 返回引用，两件事必须都在这里，一处都不能少：
    *   - 少了 scene.add：道具全在内存里，画面上什么都没有（之前就是这个状态）
