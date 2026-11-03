@@ -960,6 +960,15 @@ canvas {
   color: var(--muted);
 }
 
+/* 本轮已选：解锁卡点完会消失，用这行文字兜底记忆 */
+.upgrade-picked {
+  margin: -2px 0 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #9fc7ff;
+  min-height: 15px;
+}
+
 .upgrade-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -978,6 +987,7 @@ canvas {
 }
 
 .upgrade-choice {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -1006,17 +1016,35 @@ canvas {
 /* 本次面板里已经点过的卡：1 次蓝框，2 次及以上橙黄框 */
 .upgrade-choice.is-picked-1 {
   border-color: #4ea1ff;
-  box-shadow: 0 0 0 1px rgba(78, 161, 255, 0.55), 0 0 14px rgba(78, 161, 255, 0.22);
+  background: rgba(78, 161, 255, 0.12);
+  box-shadow: 0 0 0 1px rgba(78, 161, 255, 0.6), 0 0 16px rgba(78, 161, 255, 0.26);
 }
 
 .upgrade-choice.is-picked-2 {
   border-color: #ffb03a;
-  box-shadow: 0 0 0 1px rgba(255, 176, 58, 0.6), 0 0 16px rgba(255, 176, 58, 0.26);
+  background: rgba(255, 176, 58, 0.13);
+  box-shadow: 0 0 0 1px rgba(255, 176, 58, 0.65), 0 0 18px rgba(255, 176, 58, 0.3);
 }
 
-.upgrade-choice.is-picked-1:hover,
+.upgrade-choice.is-picked-1:hover {
+  background: rgba(78, 161, 255, 0.18);
+}
+
 .upgrade-choice.is-picked-2:hover {
-  background: rgba(30, 44, 60, 0.98);
+  background: rgba(255, 176, 58, 0.19);
+}
+
+.upgrade-choice__picks {
+  position: absolute;
+  top: 5px;
+  right: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #8fc2ff;
+}
+
+.is-picked-2 .upgrade-choice__picks {
+  color: #ffc46b;
 }
 
 .upgrade-choice strong {

@@ -2021,7 +2021,7 @@ let quakeDust = 0;   // 扬尘圈的计时器（地震期间每 0.3 秒撒一圈
 export function triggerQuake(duration = 2.5) {
   quakeDuration = Math.max(0.4, duration);
   quakeTime = quakeDuration;
-  shake = Math.max(shake, 0.35);
+  shake = Math.max(shake, 0.5);
 }
 
 export function setQuakeAuto(on) {
@@ -2451,8 +2451,8 @@ function updateMapGroundFx(dt, t) {
 function updateQuake(dt) {
   if (quakeTime <= 0) return;
   quakeTime = Math.max(0, quakeTime - dt);
-  // 持续的小幅晃动 + 偶尔落灰
-  shake = Math.max(shake, 0.12 + (quakeTime / Math.max(0.01, quakeDuration)) * 0.14);
+  // 持续晃动 + 偶尔落灰。幅度比普通受击大，地震要一眼看出来
+  shake = Math.max(shake, 0.34 + (quakeTime / Math.max(0.01, quakeDuration)) * 0.26);
   if (Math.random() < dt * 14) {
     spawnBurst((Math.random() - 0.5) * 22, 0.2, -12 + Math.random() * 20, 0x8a7a5e, 3, {
       speed: 1.2, up: 1.6, spread: 0.8, life: 0.8,
@@ -5426,8 +5426,10 @@ function updateCamera(state, dt) {
 
   if (shake > 0) {
     shake = Math.max(0, shake - dt * 2.2);
-    sx = (Math.random() - 0.5) * shake;
-    sy = (Math.random() - 0.5) * shake;
+    // 地震期间把位移放大，普通受击维持原样，避免所有反馈一起变夸张
+    const gain = quakeTime > 0 ? 2.2 : 1;
+    sx = (Math.random() - 0.5) * shake * gain;
+    sy = (Math.random() - 0.5) * shake * gain;
   }
 
   // Boss 在场时镜头缓缓推近一点，制造压迫感；退场后慢慢拉回。

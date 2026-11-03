@@ -609,6 +609,7 @@ const state = {
     timeLeft: 0,
     version: 0,
     pickCounts: {},   // 本次面板里每张卡点了几次：1 次蓝框，2 次及以上橙黄框
+    picked: [],       // 本次面板的点选顺序：{ id, name, count }，给面板顶部做「本轮已选」
   },
   upgradeCarry: 0,
   // 地图环境事件：{ id, wave, phase, timer, spots, weatherKind }
@@ -1097,6 +1098,10 @@ function startEnvActive(ev) {
       damageZombieAt(i, maxHp * (z.boss ? 0.025 : 0.05));
     }
     emit('envQuake', {});
+    emit('skillNotice', {
+      text: '地震：走位变慢、散布变大，持续 3 秒',
+      kind: 'era',
+    });
     return;
   }
 
@@ -2938,6 +2943,7 @@ function openUpgradePanel() {
   state.upgradePanel.picks = picks;
   state.upgradePanel.timeLeft = 30;
   state.upgradePanel.pickCounts = {};
+  state.upgradePanel.picked = [];
   state.upgradePanel.version += 1;
   emit('upgradePanelOpen', { picks });
 }
@@ -2970,6 +2976,14 @@ function chooseUpgrade(id) {
   card.apply();
   const counts = state.upgradePanel.pickCounts;
   counts[id] = (counts[id] || 0) + 1;
+
+  // 顶部「本轮已选」按点选顺序记名字，解锁类卡片点完会从列表消失，
+  // 光靠卡面边框玩家会忘了自己点过什么
+  const picked = state.upgradePanel.picked;
+  const logged = picked.find((p) => p.id === id);
+  if (logged) logged.count += 1;
+  else picked.push({ id, name: card.name, count: 1 });
+
   state.upgradePanel.picks -= 1;
   state.upgradePanel.version += 1;
 

@@ -327,11 +327,24 @@ function updateUpgradePanel(state) {
     state.status === 'playing' &&
     state.upgradePanel &&
     state.upgradePanel.active;
+  const justOpened = active && !els.upgradeWasOpen;
+  els.upgradeWasOpen = active;
   els.upgradeLayer.classList.toggle('hidden', !active);
   if (!active) return;
 
   els.upgradeTimer.textContent = `${Math.max(0, Math.ceil(state.upgradePanel.timeLeft))}s`;
   els.upgradePicks.textContent = `剩余 ${state.upgradePanel.picks} 次`;
+
+  // 顶部再写一行「本轮已选」：解锁卡点完会从列表消失，光看边框容易忘
+  const picked = state.upgradePanel.picked || [];
+  els.upgradePicked.textContent = picked.length
+    ? `本轮已选：${picked.map((p) => `${p.name}×${p.count}`).join(' · ')}`
+    : '';
+
+  if (justOpened && els.upgradePanel) {
+    // 面板可能沿用上一次的滚动位置，开局先把第一排露出来
+    els.upgradePanel.scrollTop = 0;
+  }
 
   if (els.upgradeVersion !== state.upgradePanel.version) {
     els.upgradeVersion = state.upgradePanel.version;
@@ -343,6 +356,7 @@ function updateUpgradePanel(state) {
       const pickedClass = n >= 2 ? ' is-picked-2' : n === 1 ? ' is-picked-1' : '';
       return `
       <button class="upgrade-choice${pickedClass}" type="button" data-upgrade-id="${c.id}">
+        ${n > 0 ? `<span class="upgrade-choice__picks">×${n}</span>` : ''}
         <strong>${c.name} ${UPGRADE_EMOJI[c.id] || '⭐'}</strong>
         <span>${c.desc}</span>
       </button>
@@ -590,6 +604,7 @@ function buildDom() {
         <span class="card-layer__timer" data-upgrade-timer>30s</span>
       </div>
       <p class="upgrade-picks" data-upgrade-picks>剩余 3 次</p>
+      <p class="upgrade-picked" data-upgrade-picked></p>
       <div class="upgrade-grid" data-upgrade-grid></div>
     </div>
   `;
@@ -743,10 +758,13 @@ function buildDom() {
     loadingText: startScreen.querySelector('[data-loading-text]'),
     startBest,
     upgradeLayer,
+    upgradePanel: upgradeLayer.querySelector('.upgrade-panel'),
     upgradeTimer: upgradeLayer.querySelector('[data-upgrade-timer]'),
     upgradePicks: upgradeLayer.querySelector('[data-upgrade-picks]'),
+    upgradePicked: upgradeLayer.querySelector('[data-upgrade-picked]'),
     upgradeGrid: upgradeLayer.querySelector('[data-upgrade-grid]'),
     upgradeVersion: -1,
+    upgradeWasOpen: false,
     skillRail,
     skillVersion: -1,
     testToggle: startScreen.querySelector('[data-test-toggle]'),
