@@ -558,6 +558,27 @@ const CONFIG = {
   },
 };
 
+// 难度：普通模式所有倍率都是 1；简单模式只削弱敌人和敌人造成的伤害，
+// 不动玩家火力、技能和关卡结构，避免把玩法改掉
+const DIFFICULTY_PRESETS = {
+  normal: {
+    zombieHp: 1,
+    zombieSpeed: 1,
+    spawnInterval: 1,
+    maxAlive: 1,
+    damageTaken: 1,
+    bossHp: 1,
+  },
+  easy: {
+    zombieHp: 0.8,
+    zombieSpeed: 0.9,
+    spawnInterval: 1.15,
+    maxAlive: 0.85,
+    damageTaken: 0.8,
+    bossHp: 0.85,
+  },
+};
+
 const SLOT_IDS = ['siege', 'closeDefense', 'support', 'command', 'summon'];
 const SLOT_NAMES = {
   siege: '攻城',
@@ -646,6 +667,9 @@ const state = {
   bloodMoon: false,      // 血月是否生效（视觉层派 bloodMoon 事件）
   bloodMoonKills: 0,     // 本次血月里真正打死的僵尸数（撞线删掉的不算）
   bloodMoonHealed: 0,    // 本次血月已回多少兵
+  difficulty: 'normal',  // normal / easy
+  startDifficulty: 'normal',
+  diff: { ...DIFFICULTY_PRESETS.normal },
   timeScale: 1,
   // 槽位默认全部锁定，抽到对应卡才生效；level 0 = 未解锁，1-5 = 等级
   slots: { siege: false, support: false, closeDefense: false, command: false, summon: false },
@@ -1343,6 +1367,12 @@ function resetState(opts = {}) {
   state.status = 'playing';
   state.paused = false;
   state.testMode = !!opts.testMode;
+
+  // 难度只影响敌人强度、数量和敌人造成的伤害，不改玩家火力
+  const difficulty = opts.difficulty === 'easy' ? 'easy' : 'normal';
+  state.difficulty = difficulty;
+  state.startDifficulty = difficulty;
+  state.diff = { ...DIFFICULTY_PRESETS[difficulty] };
 
   // 从指定时代开局：时代对应的波次一起跳过去，僵尸血量、Boss、卡池
   // 全部沿用现有的按波次规则，不需要再单独做一套僵尸数值。
@@ -4201,13 +4231,17 @@ function updateZombies(dt) {
     minInterval,
     (CONFIG.zombie.spawnInterval - (state.wave - 1) * CONFIG.zombie.intervalPerWave) *
       nightDensity
+  ) * state.diff.spawnInterval;
+  const maxAliveNow = Math.max(
+    1,
+    Math.round(maxAlive * state.diff.maxAlive)
   );
 
   if (state.time < state.zombieSpawnPauseUntil) {
     // 轨道轰炸清屏后的短暂真空期
     state.zombieTimer = Math.max(state.zombieTimer, 0.2);
   } else if (state.zombieTimer <= 0) {
-    if (state.zombies.length < maxAlive) {
+    if (state.zombies.length < maxAliveNow) {
       // 第一波只刷一只，之后才是 1 到 2 只
       const count = state.wave === 1 ? 1 : 1 + Math.floor(Math.random() * 2);
       for (let i = 0; i < count; i++) spawnZombie();
@@ -5319,7 +5353,7 @@ function spawnZombie() {
     CONFIG.zombie.baseSpeed + (state.wave - 1) * CONFIG.zombie.speedPerWave
   );
   const nightMul = isNight(state.wave) ? CONFIG.zombie.nightSpeedMul : 1;
-  const hp = baseHp * type.hp;
+  const hp = baseHp * type.hp * state.diff.zombieHp;
 
   state.zombies.push({
     id: newId,
@@ -5329,7 +5363,7 @@ function spawnZombie() {
     maxHp: hp,
     speed: Math.min(
       CONFIG.zombie.speedCap,
-      baseSpeed * type.speed * nightMul
+      baseSpeed * type.speed * nightMul * state.diff.zombieSpeed
     ),
     touchLoss: type.touchLoss,
     type: type.id,
@@ -5366,7 +5400,7 @@ function spawnEraBoss(eraIndex) {
   // Boss 用自己的成长，普通僵尸的血量成长调整不会顺手削弱 Boss。
   // 再乘一次老兵成长：士兵越打越强，Boss 血量同步慢慢涨，不会被后期火力秒掉。
   const baseHp = CONFIG.zombie.baseHp + (state.wave - 1) * CONFIG.boss.hpPerWave;
-  const hp = baseHp * type.hp * soldierWavePower();
+  const hp = baseHp * type.hp * soldierWavePower() * state.diff.bossHp;
 
   const boss = {
     id: state.nextId++,
@@ -5420,7 +5454,7 @@ function spawnSummoner() {
 
   const [minX, maxX] = CONFIG.world.rightZone;
   const baseHp = CONFIG.zombie.baseHp + (state.wave - 1) * CONFIG.zombie.hpPerWave;
-  const hp = baseHp * type.hp;
+  const hp = baseHp * type.hp * state.diff.zombieHp;
   const id = state.nextId++;
 
   const summons = createSummonerState();
@@ -5430,7 +5464,10 @@ function spawnSummoner() {
     z: CONFIG.world.spawnZ - 1,
     hp,
     maxHp: hp,
-    speed: Math.min(CONFIG.zombie.speedCap, CONFIG.zombie.baseSpeed * type.speed),
+    speed: Math.min(
+      CONFIG.zombie.speedCap,
+      CONFIG.zombie.baseSpeed * type.speed * state.diff.zombieSpeed
+    ),
     touchLoss: type.touchLoss,
     type: type.id,
     aggro: false,
@@ -5471,7 +5508,7 @@ function updateSummoners(dt) {
     for (const r of reqs) {
       const baseHp = CONFIG.zombie.baseHp + (state.wave - 1) * CONFIG.zombie.hpPerWave;
       const childType = zombieTypeById(r.type);
-      const hp = baseHp * (childType ? childType.hp : 1) * r.hpMul;
+      const hp = baseHp * (childType ? childType.hp : 1) * r.hpMul * state.diff.zombieHp;
       state.zombies.push({
         id: state.nextId++,
         x: r.x,
@@ -5480,7 +5517,7 @@ function updateSummoners(dt) {
         maxHp: hp,
         speed: Math.min(
           CONFIG.zombie.speedCap,
-          CONFIG.zombie.baseSpeed * (childType ? childType.speed : 1)
+          CONFIG.zombie.baseSpeed * (childType ? childType.speed : 1) * state.diff.zombieSpeed
         ),
         touchLoss: childType ? childType.touchLoss : 1,
         type: r.type,
@@ -5734,11 +5771,14 @@ function damageArmy(amount, cause) {
   // 测试模式：僵尸和负数屏障都不扣兵，方便反复观察技能
   if (state.testMode) return;
 
+  // 简单模式：敌人造成的伤害打折；普通模式倍率是 1
+  let dmg = Math.max(1, Math.round(amount * state.diff.damageTaken));
+
   // 护甲按概率挡掉每一滴伤害，避免 1 点伤害被取整吃掉
-  let dmg = amount;
   const reduction = state.upgrades.damageReduction || 0;
   if (reduction > 0) {
-    for (let i = 0; i < amount; i++) {
+    const hits = dmg;
+    for (let i = 0; i < hits; i++) {
       if (Math.random() < reduction) dmg -= 1;
     }
   }
@@ -5789,6 +5829,7 @@ initUI(state, {
     testMode: state.testMode,
     startingEra: state.startEra,
     map: state.startMap,
+    difficulty: state.startDifficulty,
   }),
   setPaused,
   returnToMenu,

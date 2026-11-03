@@ -89,6 +89,20 @@ const currentMap = (() => {
 })();
 const MAP_NAMES = MAP_NAMES_ALL;
 
+/* 难度：URL 参数优先，其次记住上次选择；默认正常 */
+const DIFFICULTY_KEY = 'everwall-difficulty-v1';
+let selectedDifficulty = (() => {
+  const fromUrl = START_PARAMS.get('difficulty');
+  if (fromUrl === 'easy' || fromUrl === 'normal') return fromUrl;
+  try {
+    const saved = localStorage.getItem(DIFFICULTY_KEY);
+    if (saved === 'easy' || saved === 'normal') return saved;
+  } catch (e) {
+    // 隐私模式可能没有 localStorage，忽略
+  }
+  return 'normal';
+})();
+
 /* 一波多少秒：兜底值。实际读 state.waveDuration（game.js 统一给），
  * 这样改波次长度不会出现 UI 倒计时和真实刷怪对不上 */
 const WAVE_SECONDS = 12;
@@ -158,6 +172,7 @@ export function updateUI(state) {
   updateTierBadge(state.soldiers);
   updateCommandChip(state);
   updateBloodChip(state);
+  updateDifficultyChip(state);
   updateEnvWarning(state);
   updateLoadingBox();
   updateWaveCountdown(state);
@@ -232,6 +247,12 @@ function updateCommandChip(state) {
   els.cmdIcon.innerHTML = CMD_ICONS[era];
   els.cmdBonus.textContent = `+${pct}%`;
   els.cmdChip.title = `集火伤害加成 +${pct}%`;
+}
+
+/* 简单模式：波次旁边挂一个小标记，免得玩家忘了自己开的是简单 */
+function updateDifficultyChip(state) {
+  if (!els.diffChip) return;
+  els.diffChip.hidden = state.difficulty !== 'easy';
 }
 
 /* 血月回兵：击杀数和已回兵数只在血月期间显示 */
@@ -538,6 +559,7 @@ function buildDom() {
     <div class="wave">
       第 <span data-wave>1</span> 波
       <em class="wave__next" data-wave-next>12s</em>
+      <em class="diff-chip" data-diff-chip hidden>简单</em>
     </div>
     <div class="score-box">
       <div class="score" data-score>0</div>
@@ -570,6 +592,13 @@ function buildDom() {
         打中左边压下来的 +1 屏障加兵，<br>
         挡住右边的僵尸潮。
       </p>
+      <div class="map-picker era-picker">
+        <p class="map-picker__label">难度 <span class="map-picker__count">简单：僵尸更脆、更慢、伤害更低</span></p>
+        <div class="era-picker__grid">
+          <button class="map-chip${selectedDifficulty === 'normal' ? ' is-active' : ''}" type="button" data-difficulty="normal">正常</button>
+          <button class="map-chip${selectedDifficulty === 'easy' ? ' is-active' : ''}" type="button" data-difficulty="easy">简单</button>
+        </div>
+      </div>
       <div class="map-picker era-picker">
         <p class="map-picker__label">起始时代 <span class="map-picker__count">从该时代对应波次开始</span></p>
         <div class="era-picker__grid">
@@ -767,6 +796,9 @@ function buildDom() {
         <h3>目标</h3>
         <p>士兵在屏幕下方自动开火，左右移动躲开尸潮。士兵数量同时是生命值，归零就结束。打碎左边的绿色屏障可以加兵，撑得越久分数越高。</p>
 
+        <h3>难度</h3>
+        <p>开始页可选正常或简单。简单模式只削弱敌人：僵尸血量 ×0.8、移速 ×0.9、刷新间隔 ×1.15、同屏数量 ×0.85、敌人造成的伤害 ×0.8、Boss 血量 ×0.85。玩家火力、技能和关卡结构不变；简单模式会在波次旁边显示一个绿色「简单」标记。</p>
+
         <h3>操作</h3>
         <ul>
           <li>电脑：← → 或 A / D 左右移动，数字键 1~4 使用技能，Esc 暂停。</li>
@@ -886,6 +918,8 @@ function buildDom() {
     testToggle: startScreen.querySelector('[data-test-toggle]'),
     testToggleLabel: startScreen.querySelector('[data-test-toggle-label]'),
     testStartBtn: startScreen.querySelector('[data-start]'),
+    difficultyBtns: [...startScreen.querySelectorAll('[data-difficulty]')],
+    diffChip: hud.querySelector('[data-diff-chip]'),
     testPanel,
     testPanelTab,
     testCollapse: testPanel.querySelector('[data-test-collapse]'),
@@ -929,6 +963,27 @@ function bindEvents() {
       testMode: testModeEnabled,
       startingEra: startEra,
       map: currentMap,
+      difficulty: selectedDifficulty,
+    });
+  });
+
+  els.difficultyBtns.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      selectedDifficulty = btn.dataset.difficulty === 'easy' ? 'easy' : 'normal';
+      try {
+        localStorage.setItem(DIFFICULTY_KEY, selectedDifficulty);
+      } catch (e) {
+        // 隐私模式下忽略
+      }
+      // 让之后点时代/地图触发的刷新也保留这次选择
+      const params = new URLSearchParams(window.location.search);
+      if (selectedDifficulty === 'easy') params.set('difficulty', 'easy');
+      else params.delete('difficulty');
+      const qs = params.toString();
+      window.history.replaceState(null, '', qs ? `?${qs}` : window.location.pathname);
+      els.difficultyBtns.forEach((b) => {
+        b.classList.toggle('is-active', b === btn);
+      });
     });
   });
 

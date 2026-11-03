@@ -234,6 +234,19 @@ canvas {
   white-space: nowrap;
 }
 
+.diff-chip {
+  margin-left: 4px;
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 700;
+  color: #8fe3b0;
+  text-shadow: 0 0 8px rgba(80, 220, 140, 0.45);
+}
+
+.diff-chip[hidden] {
+  display: none;
+}
+
 .blood-chip[hidden] {
   display: none;
 }
