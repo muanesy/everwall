@@ -5294,29 +5294,50 @@ function updateKnightCharges(dt) {
 function separateZombies() {
   const list = state.zombies;
   const sep = CONFIG.zombie.separation;
+  if (list.length < 2) return;
 
+  // 按 z 分桶，只比较同一桶和相邻桶；效果和两两比较一致，
+  // 但 130 只时从约 8000 次配对降到只检查附近几十对
+  const buckets = new Map();
   for (let i = 0; i < list.length; i++) {
-    for (let j = i + 1; j < list.length; j++) {
+    const key = Math.floor(list[i].z / sep);
+    let arr = buckets.get(key);
+    if (!arr) {
+      arr = [];
+      buckets.set(key, arr);
+    }
+    arr.push(i);
+  }
+
+  for (const [key, arr] of buckets) {
+    for (const i of arr) {
       const a = list[i];
-      const b = list[j];
+      for (let k = key - 1; k <= key + 1; k++) {
+        const other = buckets.get(k);
+        if (!other) continue;
+        for (const j of other) {
+          if (j <= i) continue;
+          const b = list[j];
 
-      // 被黑洞吸住的僵尸不要互相推开，否则聚不成一团
-      if (
-        (a.suckUntil && state.time < a.suckUntil) ||
-        (b.suckUntil && state.time < b.suckUntil)
-      ) continue;
+          // 被黑洞吸住的僵尸不要互相推开，否则聚不成一团
+          if (
+            (a.suckUntil && state.time < a.suckUntil) ||
+            (b.suckUntil && state.time < b.suckUntil)
+          ) continue;
 
-      if (Math.abs(a.z - b.z) > sep) continue;
+          if (Math.abs(a.z - b.z) > sep) continue;
 
-      const dx = b.x - a.x;
-      const adx = Math.abs(dx);
-      if (adx >= sep) continue;
+          const dx = b.x - a.x;
+          const adx = Math.abs(dx);
+          if (adx >= sep) continue;
 
-      const dir = dx === 0 ? (Math.random() < 0.5 ? -1 : 1) : Math.sign(dx);
-      const push = (sep - adx) * 0.5;
+          const dir = dx === 0 ? (Math.random() < 0.5 ? -1 : 1) : Math.sign(dx);
+          const push = (sep - adx) * 0.5;
 
-      a.x -= dir * push;
-      b.x += dir * push;
+          a.x -= dir * push;
+          b.x += dir * push;
+        }
+      }
     }
   }
 

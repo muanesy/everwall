@@ -18,6 +18,18 @@ let els = null;
 let actions = null;
 let currentState = null;
 
+// HUD 每帧都会跑，只在值真的变了才写 DOM，避免无意义的样式/文本重排
+let lastArmyPct = -1;
+let lastArmyLow = null;
+let lastShellKey = '';
+let lastOverKey = '';
+
+function setText(el, value) {
+  if (!el) return;
+  const text = String(value);
+  if (el.textContent !== text) el.textContent = text;
+}
+
 // 游戏说明弹窗是否打开：game.js 的 Esc 处理要先问这里，
 // 否则关说明的同时会把暂停菜单一起关掉
 export function isHelpOpen() {
@@ -160,14 +172,21 @@ export function updateUI(state) {
   if (!els) return;
   currentState = state;
 
-  els.soldiersText.textContent = state.soldiers;
-  els.waveText.textContent = state.wave;
-  els.scoreText.textContent = state.score;
+  setText(els.soldiersText, state.soldiers);
+  setText(els.waveText, state.wave);
+  setText(els.scoreText, state.score);
 
   // 血条按 120 个兵算满格，和士兵显示上限一致
   const pct = Math.min(100, (state.soldiers / 120) * 100);
-  els.armyFill.style.width = `${pct}%`;
-  els.armyFill.classList.toggle('is-low', state.soldiers <= 10);
+  if (Math.abs(pct - lastArmyPct) > 0.05) {
+    lastArmyPct = pct;
+    els.armyFill.style.width = `${pct}%`;
+  }
+  const armyLow = state.soldiers <= 10;
+  if (armyLow !== lastArmyLow) {
+    lastArmyLow = armyLow;
+    els.armyFill.classList.toggle('is-low', armyLow);
+  }
 
   updateTierBadge(state.soldiers);
   updateCommandChip(state);
@@ -180,23 +199,31 @@ export function updateUI(state) {
   updateTestPanel(state);
   updateSkillRail(state);
 
-  els.hud.classList.toggle('hidden', state.status !== 'playing');
-  els.startScreen.classList.toggle('hidden', state.status !== 'menu');
-  els.overScreen.classList.toggle('hidden', state.status !== 'over');
-  els.pauseOverlay.classList.toggle(
-    'hidden',
-    !(state.status === 'playing' && state.paused)
-  );
+  const shellKey = `${state.status}|${state.paused ? 1 : 0}`;
+  if (shellKey !== lastShellKey) {
+    lastShellKey = shellKey;
+    els.hud.classList.toggle('hidden', state.status !== 'playing');
+    els.startScreen.classList.toggle('hidden', state.status !== 'menu');
+    els.overScreen.classList.toggle('hidden', state.status !== 'over');
+    els.pauseOverlay.classList.toggle(
+      'hidden',
+      !(state.status === 'playing' && state.paused)
+    );
+  }
 
   if (state.status === 'over') {
-    els.finalScore.textContent = state.score;
-    els.finalWave.textContent = state.wave;
-    els.finalMap.textContent = MAP_NAMES[currentMap] || '废墟街道';
+    const overKey = `${state.score}|${state.wave}|${currentMap}`;
+    if (overKey === lastOverKey) return;
+    lastOverKey = overKey;
 
-    // 刷新历史最佳（本局成绩只涨不跌）
+    setText(els.finalScore, state.score);
+    setText(els.finalWave, state.wave);
+    setText(els.finalMap, MAP_NAMES[currentMap] || '废墟街道');
+
+    // 历史最佳只在本局数据变化时写一次 localStorage，不要每帧写
     const best = writeBest(currentMap, state.score, state.wave);
-    els.bestScore.textContent = best.score;
-    els.bestWave.textContent = best.wave;
+    setText(els.bestScore, best.score);
+    setText(els.bestWave, best.wave);
   }
 }
 
@@ -210,7 +237,7 @@ function updateWaveCountdown(state) {
   }
   const waveSeconds = state.waveDuration || WAVE_SECONDS;
   const left = Math.max(0, Math.ceil(waveSeconds - getWaveElapsed()));
-  els.waveNext.textContent = left + 's';
+  setText(els.waveNext, `${left}s`);
 }
 
 /* 指挥槽集火加成：六个时代各一枚小图标，旁边跟一个实时百分比。
