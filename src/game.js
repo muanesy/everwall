@@ -90,6 +90,9 @@ const CONFIG = {
     bulletSpeed: 28,
     bulletDamage: 10,
     maxVolley: 5,          // 总火力上限，越大总射速越高
+    // 从第 7 波开始，士兵伤害和射速每波各 +1%，各自最多 +60%；
+    // 解决 120 兵封顶后士兵输出不再成长、僵尸血量却一直涨的问题
+    waveGrowth: { startWave: 7, perWave: 0.01, maxBonus: 0.6 },
     // 兵种阶级：门槛和 visuals-tiers.js 的 5/20/50/100 保持一致
     tiers: [
       { min: 0, name: '保安', damage: 1.0, fireInterval: 0.18 },
@@ -3358,8 +3361,16 @@ function shooterOffsets(count, width) {
   return order.slice(0, count);
 }
 
+// 士兵的「老兵成长」：第 7 波起每波伤害、射速各涨 1%，各自封顶 +60%
+function soldierWavePower() {
+  const g = CONFIG.player.waveGrowth;
+  const waves = Math.max(0, state.wave - g.startWave + 1);
+  return 1 + Math.min(g.maxBonus, waves * g.perWave);
+}
+
 function updateFiring(dt) {
   const shooters = state.weapon.lines;
+  const wavePower = soldierWavePower();
 
   // 总射速由士兵数决定，拆到几个枪位上，总子弹数不变
   const baseCount = Math.min(
@@ -3392,7 +3403,7 @@ function updateFiring(dt) {
     state.envDebuff.until > state.time ? state.envDebuff.fireRateMul : 1;
   const effInterval =
     (baseInterval * weapon.fireIntervalMul * pickIntervalMul) /
-    (state.upgrades.fireRate * buffMul * boostRate * envRate);
+    (state.upgrades.fireRate * buffMul * boostRate * envRate * wavePower);
   const totalRate = baseCount / effInterval; // 每秒多少发
   const interval = shooters / totalRate;
 
@@ -3449,7 +3460,8 @@ function updateFiring(dt) {
             state.upgrades.damage *
             weapon.damageMul *
             pickDamageMul *
-            boostDamage,
+            boostDamage *
+            wavePower,
           pierces: 0,
         });
       }
