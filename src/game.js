@@ -279,7 +279,9 @@ const CONFIG = {
     impactDamage: 24,
   },
   apc: {
-    spawnX: 0,         // 从底部中间开出来，不再随机左右偏移
+    // 从右侧随机位置开出来，不要每次都挤在屏幕中间
+    spawnXMin: 1.0,
+    spawnXMax: 6.5,
     speed: 7.5,        // 比骑士慢很多
     damage: 108,       // 撞击伤害，每只僵尸一次（+20%）
     hitRadius: 1.1,
@@ -4923,9 +4925,9 @@ function spawnApcCharge() {
   const cfg = CONFIG.apc;
   state.apcCharges.push({
     id: state.nextId++,
-    // 固定从底部中间出发。以前 x 在 -3~3 随机，镜头跟着玩家往右偏时，
-    // 最左那几档会贴着屏幕左边出现，看起来像从侧边冒出来
-    x: cfg.spawnX,
+    // 右侧随机位置出发：1.0~6.5 是屏幕右半边的安全区间，
+    // 不会贴着左边出生，也不会固定挤在中间
+    x: cfg.spawnXMin + Math.random() * (cfg.spawnXMax - cfg.spawnXMin),
     z: cfg.spawnZ,
     speed: cfg.speed,
     damage: cfg.damage,
