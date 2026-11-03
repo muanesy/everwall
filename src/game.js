@@ -392,10 +392,10 @@ const CONFIG = {
     negativeLengthMax: 3,        // 灰色屏障最长占几个格子
     weaponChance: 0.02,          // 火力增援屏障的出现概率
     piercerChance: 0.02,         // 穿透器的出现概率
-    weaponHitsBase: 30,          // 火力增援需要的基础命中数
-    weaponHitsPerWave: 6,        // 每波增加
-    piercerHitsBase: 20,         // 穿透器需要的基础命中数
-    piercerHitsPerWave: 4,       // 每波增加
+    weaponHitsBase: 26,          // 火力增援需要的基础命中数（后期门槛略降）
+    weaponHitsPerWave: 5,        // 每波增加
+    piercerHitsBase: 18,         // 穿透器需要的基础命中数（后期门槛略降）
+    piercerHitsPerWave: 3.5,     // 每波增加
   },
   zombie: {
     baseHp: 20,
@@ -413,6 +413,10 @@ const CONFIG = {
     minSpawnInterval: 0.128,
     intervalPerWave: 0.016,
     maxAlive: 120,
+    // 后期（第 31 波起）怪多一点：同时在场 120→132，最低刷新间隔 0.128→0.12
+    lateFromWave: 31,
+    lateMaxAlive: 132,
+    lateMinSpawnInterval: 0.12,
     aggroStartZ: 0,        // 进入中后段就开始缓慢吸附
     aggroRadius: 9,        // 吸附范围比原来更早
     turnSpeed: 2.6,        // 吸附速度放慢
@@ -4166,9 +4170,16 @@ function updateZombies(dt) {
 
   // 刷怪间隔：波次越高越密；夜里再密一档（点子池「夜晚加密度」）
   // 夜晚倍率乘在波次压缩之后，再被 minSpawnInterval 兜底，不会密到瞬移
+  const lateGame = state.wave >= CONFIG.zombie.lateFromWave;
+  const minInterval = lateGame
+    ? CONFIG.zombie.lateMinSpawnInterval
+    : CONFIG.zombie.minSpawnInterval;
+  const maxAlive = lateGame
+    ? CONFIG.zombie.lateMaxAlive
+    : CONFIG.zombie.maxAlive;
   const nightDensity = isNight(state.wave) ? CONFIG.zombie.nightSpawnMul : 1;
   const spawnInterval = Math.max(
-    CONFIG.zombie.minSpawnInterval,
+    minInterval,
     (CONFIG.zombie.spawnInterval - (state.wave - 1) * CONFIG.zombie.intervalPerWave) *
       nightDensity
   );
@@ -4177,7 +4188,7 @@ function updateZombies(dt) {
     // 轨道轰炸清屏后的短暂真空期
     state.zombieTimer = Math.max(state.zombieTimer, 0.2);
   } else if (state.zombieTimer <= 0) {
-    if (state.zombies.length < CONFIG.zombie.maxAlive) {
+    if (state.zombies.length < maxAlive) {
       // 第一波只刷一只，之后才是 1 到 2 只
       const count = state.wave === 1 ? 1 : 1 + Math.floor(Math.random() * 2);
       for (let i = 0; i < count; i++) spawnZombie();
