@@ -176,6 +176,7 @@ export function updateUI(state) {
 
   updateTierBadge(state.soldiers);
   updateCommandChip(state);
+  updateBloodChip(state);
   updateLoadingBox();
   updateWaveCountdown(state);
   updateUpgradePanel(state);
@@ -249,6 +250,22 @@ function updateCommandChip(state) {
   els.cmdIcon.innerHTML = CMD_ICONS[era];
   els.cmdBonus.textContent = `+${pct}%`;
   els.cmdChip.title = `集火伤害加成 +${pct}%`;
+}
+
+/* 血月回兵：击杀数和已回兵数只在血月期间显示 */
+function updateBloodChip(state) {
+  if (!els.bloodChip) return;
+  const show = state.status === 'playing' && state.bloodMoon;
+  els.bloodChip.hidden = !show;
+  if (!show) return;
+  const kills = state.bloodMoonKills | 0;
+  const healed = state.bloodMoonHealed | 0;
+  if (els.bloodKills.textContent !== String(kills)) {
+    els.bloodKills.textContent = String(kills);
+  }
+  if (els.bloodHealed.textContent !== String(healed)) {
+    els.bloodHealed.textContent = String(healed);
+  }
 }
 
 /* 兵种档位徽标：当前兵种 + 距下一阶还差几个兵。
@@ -522,6 +539,9 @@ function buildDom() {
         <span class="cmd-chip__icon" data-cmd-icon></span>
         <span data-cmd-bonus>+0%</span>
       </div>
+      <div class="blood-chip" data-blood-chip hidden>
+        血月 · 击杀 <span data-blood-kills>0</span> · 回兵 +<span data-blood-healed>0</span>
+      </div>
     </div>
     <button class="pause-btn" type="button" data-pause aria-label="暂停">
       <span></span><span></span><span></span>
@@ -747,6 +767,9 @@ function buildDom() {
     waveNext: hud.querySelector('[data-wave-next]'),
     scoreText: hud.querySelector('[data-score]'),
     cmdChip: hud.querySelector('[data-cmd-chip]'),
+    bloodChip: hud.querySelector('[data-blood-chip]'),
+    bloodKills: hud.querySelector('[data-blood-kills]'),
+    bloodHealed: hud.querySelector('[data-blood-healed]'),
     cmdIcon: hud.querySelector('[data-cmd-icon]'),
     cmdBonus: hud.querySelector('[data-cmd-bonus]'),
     startScreen,

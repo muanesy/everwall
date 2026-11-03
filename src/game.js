@@ -622,6 +622,9 @@ const state = {
   envSlowMul: 1,      // 恶劣天气期间僵尸移速乘子
   envWeatherUntil: 0,
   waveDuration: CONFIG.wave.duration, // 界面层算下一波倒计时用，不要在 ui.js 另写一份
+  bloodMoon: false,      // 血月是否生效（视觉层派 bloodMoon 事件）
+  bloodMoonKills: 0,     // 本次血月里真正打死的僵尸数（撞线删掉的不算）
+  bloodMoonHealed: 0,    // 本次血月已回多少兵
   timeScale: 1,
   // 槽位默认全部锁定，抽到对应卡才生效；level 0 = 未解锁，1-5 = 等级
   slots: { siege: false, support: false, closeDefense: false, command: false, summon: false },
@@ -853,6 +856,26 @@ events.addEventListener('zombieDie', (e) => {
     z: d.z,
     soldiers: CONFIG.boss.rewardSoldiers,
   });
+});
+
+// 血月：视觉层每 10 波自动开关，玩法层只做「杀 3 只回 1 兵」。
+// 只统计 zombieDie：僵尸撞到士兵被删除时不会派这条，所以漏怪不产生回兵。
+events.addEventListener('bloodMoon', (e) => {
+  const on = !!e.detail?.on;
+  state.bloodMoon = on;
+  if (on) {
+    state.bloodMoonKills = 0;
+    state.bloodMoonHealed = 0;
+  }
+});
+
+events.addEventListener('zombieDie', () => {
+  if (!state.bloodMoon || state.status !== 'playing') return;
+  state.bloodMoonKills += 1;
+  if (state.bloodMoonKills % 3 === 0) {
+    applySoldiers(1);
+    state.bloodMoonHealed += 1;
+  }
 });
 
 // Boss 出拳动画演完了：画面层播完那个动作才派这条，玩法层据此允许下一拳。
@@ -1349,6 +1372,9 @@ function resetState(opts = {}) {
   state.envZoneTick = 0;
   state.envSlowMul = 1;
   state.envWeatherUntil = 0;
+  state.bloodMoon = false;
+  state.bloodMoonKills = 0;
+  state.bloodMoonHealed = 0;
   state.timeScale = 1;
 
   state.slots.siege = false;
@@ -1492,6 +1518,9 @@ function returnToMenu() {
   state.envZones.length = 0;
   state.envDebuff = { until: 0, moveMul: 1, fireRateMul: 1, spreadMul: 1 };
   state.envSlowMul = 1;
+  state.bloodMoon = false;
+  state.bloodMoonKills = 0;
+  state.bloodMoonHealed = 0;
   state.timeScale = 1;
   state.skillUseCd = 0;
   input.left = false;
@@ -4141,13 +4170,15 @@ function updateZombies(dt) {
       (inNapalm ? CONFIG.napalmWall.slowMul : 1) *
       plagueSlow *
       state.envSlowMul;
+    // 血月：所有僵尸移速 +10%
+    const bloodMul = state.bloodMoon ? 1.1 : 1;
 
     const bar = state.barricade;
     const cfg = CONFIG.barricade;
 
     // 路障挡在前排：范围内的僵尸停下来啃墙
     if (bar.active && z.z < cfg.z && z.x >= bar.xMin && z.x <= bar.xMax) {
-      z.z = Math.min(cfg.blockZ, z.z + z.speed * dt * slowMul);
+      z.z = Math.min(cfg.blockZ, z.z + z.speed * dt * slowMul * bloodMul);
 
       if (z.z >= cfg.blockZ - 0.05) {
         if (z.attackTimer == null) {
@@ -4245,7 +4276,7 @@ function updateZombies(dt) {
       const dxLine = state.player.x - z.x;
       if (Math.abs(dxLine) > 0.05) {
         const step = Math.min(
-          CONFIG.zombie.lineSlideSpeed * dt * slowMul,
+          CONFIG.zombie.lineSlideSpeed * dt * slowMul * bloodMul,
           Math.abs(dxLine) - 0.05
         );
         z.x += Math.sign(dxLine) * step;
@@ -4262,7 +4293,7 @@ function updateZombies(dt) {
       // 普通僵尸走 phaseMul（远冲近慢）；Boss 还要兼顾离屏入场加速
       const speedMul = z.boss ? Math.max(phaseMul, introMul) : phaseMul;
 
-      z.z += z.speed * dt * slowMul * waterMul * speedMul;
+      z.z += z.speed * dt * slowMul * waterMul * speedMul * bloodMul;
     }
 
     z.x = clamp(z.x, -CONFIG.world.halfWidth - 1, CONFIG.world.halfWidth + 1);

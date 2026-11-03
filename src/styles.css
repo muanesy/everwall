@@ -223,6 +223,26 @@ canvas {
   height: 100%;
 }
 
+/* 血月回兵计数：只在血月期间出现，红色和血月视觉统一 */
+.blood-chip {
+  margin-top: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: #ff7a6a;
+  text-shadow: 0 0 10px rgba(255, 60, 40, 0.5);
+  white-space: nowrap;
+}
+
+.blood-chip[hidden] {
+  display: none;
+}
+
+.blood-chip span {
+  font-variant-numeric: tabular-nums;
+  color: #ffb0a4;
+}
+
 /* ---------- 遮罩层 ---------- */
 
 .overlay {
