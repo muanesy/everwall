@@ -22,7 +22,7 @@ let brownBuf = null; // 棕噪，低频更重，风和环境音用它
 const lastPlayed = {};
 const THROTTLE = {
   shoot: 0.055,
-  zombieDie: 0.045,
+  zombieDie: 0.08,
   barrierHit: 0.05,
   barrierApply: 0.06,
   armyHurt: 0.25,
@@ -164,6 +164,7 @@ function zombieVoice(t, {
   bend = [1.18, 0.82],
   breath = 0.35,
   breathFreq = 900,
+  attack = 0.02,
 } = {}) {
   const osc = ctx.createOscillator();
   osc.type = 'sawtooth';
@@ -176,7 +177,7 @@ function zombieVoice(t, {
   );
 
   const out = ctx.createGain();
-  env(out, t, gain, 0.02, dur * 0.82);
+  env(out, t, gain, attack, dur * 0.82);
   out.connect(master);
 
   formants.forEach((freq, i) => {
@@ -229,25 +230,26 @@ export function playZombieDie() {
   if (!ready('zombieDie', THROTTLE.zombieDie)) return;
   const t = ctx.currentTime;
 
-  // 死亡声也带地图音色：雪地闷、沙漠干、月球脆、熔岩带余烬噼啪
-  noise(t, 0.2 * VOICE.dur, {
-    type: 'lowpass',
-    freq: 900 * VOICE.freq,
-    sweepTo: 160,
-    gain: 0.45 * VOICE.gain,
+  // 喉咙里的湿声，不要低频扫频——那个听起来像放屁
+  noise(t, 0.16 * VOICE.dur, {
+    type: 'bandpass',
+    freq: 720 * VOICE.freq,
+    q: 1.1,
+    gain: 0.12 * VOICE.gain,
   });
-  // 手机小喇叭对低频很弱，补一层中高频的“噗嗤”，死亡声才听得见
-  noise(t + 0.01, 0.09, {
+  // 一点点迸溅的中高频，保留“死掉”的实感
+  noise(t + 0.02, 0.12, {
     type: 'highpass',
-    freq: 1100,
-    gain: 0.36 * VOICE.gain,
+    freq: 1500,
+    gain: 0.12 * VOICE.gain,
   });
-  tone(t, {
-    type: 'triangle',
-    from: 240 * (VOICE.freq > 1 ? 1.1 : 0.95),
-    to: 90,
-    dur: 0.18 * VOICE.dur,
-    gain: 0.36 * VOICE.gain,
+  // 身体倒下的低频落地感，晚一点、短一点
+  tone(t + 0.14, {
+    type: 'sine',
+    from: 80,
+    to: 38,
+    dur: 0.25 * VOICE.dur,
+    gain: 0.2 * VOICE.gain,
   });
 
   if (VOICE.rumble) {
@@ -259,16 +261,17 @@ export function playZombieDie() {
     tone(t + 0.02, { type: 'square', from: 1200, to: 700, dur: 0.1, gain: 0.075 });
   }
 
-  // 死亡嚎叫：两层共振峰的下坠音，比单纯闷响更像“倒下一个东西”
-  zombieVoice(t + 0.01, {
-    base: (240 + Math.random() * 70) * VOICE.freq,
-    dur: 0.38 * VOICE.dur,
-    gain: 0.34 * VOICE.gain,
-    formants: [760 * VOICE.freq, 1500 * VOICE.freq],
-    formantGains: [1, 0.5],
-    bend: [1.15, 0.5],
-    breath: 0.5,
-    breathFreq: 1400 * VOICE.freq,
+  // 死亡嚎叫：0.7 秒左右的下坠音，先撑一下再塌下去，别像“噗”一声就没了
+  zombieVoice(t, {
+    base: (230 + Math.random() * 70) * VOICE.freq,
+    dur: (0.62 + Math.random() * 0.16) * VOICE.dur,
+    gain: 0.4 * VOICE.gain,
+    formants: [680 * VOICE.freq, 1600 * VOICE.freq],
+    formantGains: [1, 0.52],
+    bend: [1.1, 0.45],
+    breath: 0.55,
+    breathFreq: 1200 * VOICE.freq,
+    attack: 0.06,
   });
 }
 
@@ -336,17 +339,17 @@ export function playZombieAttack(type = 0) {
 
   if (type === 1) {
     // 大块头：很低很沉，但把共振峰抬到 320，手机喇叭也能听见
-    snarl(78, { dur: 0.7, peak: 0.32, freq: 320, q: 2.5 });
+    snarl(78, { dur: 0.9, peak: 0.32, freq: 320, q: 2.5 });
     tone(t, { type: 'sine', from: 72, to: 38, dur: 0.5, gain: 0.22 });
   } else if (type === 2) {
     // 快鬼：尖利上扬再骤降，像尖叫
-    snarl(360, { dur: 0.32, peak: 0.2, freq: 1200, q: 5 });
+    snarl(360, { dur: 0.45, peak: 0.2, freq: 1200, q: 5 });
   } else if (type === 3) {
     // 精英：沙哑，滤波更窄更毛糙
-    snarl(165, { dur: 0.55, peak: 0.3, freq: 620, q: 6 });
+    snarl(165, { dur: 0.75, peak: 0.3, freq: 620, q: 6 });
   } else {
     // 普通 / 女僵尸：标准嘶吼，女僵尸音色稍尖一点
-    snarl(type === 4 ? 155 : 125, { dur: 0.5, peak: 0.28, freq: 620, q: 3.5 });
+    snarl(type === 4 ? 155 : 125, { dur: 0.7, peak: 0.28, freq: 620, q: 3.5 });
   }
 }
 
@@ -565,17 +568,36 @@ function playGrowl() {
     { base: 82,  formants: [420, 930],  gains: [1, 0.38], bend: [1.3, 0.72] },
   ];
   const v = vowels[Math.floor(Math.random() * vowels.length)];
+  const base = (v.base + Math.random() * 28) * VOICE.freq;
+  const dur = (1.1 + Math.random() * 0.4) * VOICE.dur;
 
+  // 先慢慢鼓起来再塌下去，不要一上来就“嗯”一声
   zombieVoice(t, {
-    base: (v.base + Math.random() * 28) * VOICE.freq,
-    dur: (0.75 + Math.random() * 0.2) * VOICE.dur,
+    base,
+    dur,
     gain: 0.3 * VOICE.gain,
     formants: v.formants.map((f) => f * VOICE.freq),
     formantGains: v.gains,
     bend: v.bend,
-    breath: 0.4,
+    breath: 0.5,
     breathFreq: (900 + Math.random() * 350) * VOICE.freq,
+    attack: 0.18,
   });
+
+  // 偶尔接一声更低的回音，像不止一只在附近
+  if (Math.random() < 0.35) {
+    zombieVoice(t + dur * 0.55, {
+      base: base * 0.72,
+      dur: dur * 0.62,
+      gain: 0.18 * VOICE.gain,
+      formants: v.formants.map((f) => f * 0.82 * VOICE.freq),
+      formantGains: v.gains,
+      bend: [1.05, 0.7],
+      breath: 0.35,
+      breathFreq: 700 * VOICE.freq,
+      attack: 0.16,
+    });
+  }
 }
 
 /* ----------------------------------------------------------
