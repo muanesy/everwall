@@ -181,10 +181,16 @@ export function playZombieDie() {
     sweepTo: 160,
     gain: 0.3 * VOICE.gain,
   });
+  // 手机小喇叭对低频很弱，补一层中高频的“噗嗤”，死亡声才听得见
+  noise(t + 0.01, 0.09, {
+    type: 'highpass',
+    freq: 1100,
+    gain: 0.14 * VOICE.gain,
+  });
   tone(t, {
     type: 'triangle',
-    from: 180 * (VOICE.freq > 1 ? 1.1 : 0.95),
-    to: 60,
+    from: 240 * (VOICE.freq > 1 ? 1.1 : 0.95),
+    to: 90,
     dur: 0.18 * VOICE.dur,
     gain: 0.24 * VOICE.gain,
   });
@@ -253,18 +259,18 @@ export function playZombieAttack(type = 0) {
   };
 
   if (type === 1) {
-    // 大块头：很低很沉，收得慢，像胸腔里滚出来的
-    snarl(46, { dur: 0.7, peak: 0.2, freq: 160, q: 2.5 });
-    tone(t, { type: 'sine', from: 60, to: 32, dur: 0.5, gain: 0.22 });
+    // 大块头：很低很沉，但把共振峰抬到 320，手机喇叭也能听见
+    snarl(78, { dur: 0.7, peak: 0.2, freq: 320, q: 2.5 });
+    tone(t, { type: 'sine', from: 72, to: 38, dur: 0.5, gain: 0.22 });
   } else if (type === 2) {
     // 快鬼：尖利上扬再骤降，像尖叫
-    snarl(340, { dur: 0.32, peak: 0.1, freq: 1100, q: 5 });
+    snarl(360, { dur: 0.32, peak: 0.12, freq: 1200, q: 5 });
   } else if (type === 3) {
     // 精英：沙哑，滤波更窄更毛糙
-    snarl(120, { dur: 0.55, peak: 0.15, freq: 420, q: 7 });
+    snarl(165, { dur: 0.55, peak: 0.17, freq: 620, q: 6 });
   } else {
     // 普通 / 女僵尸：标准嘶吼，女僵尸音色稍尖一点
-    snarl(type === 4 ? 105 : 88, { dur: 0.5, peak: 0.13, freq: 340, q: 3.5 });
+    snarl(type === 4 ? 155 : 125, { dur: 0.5, peak: 0.17, freq: 620, q: 3.5 });
   }
 }
 
@@ -475,7 +481,9 @@ export function updateAudio(dt, zombieCount, playing) {
 
 function playGrowl() {
   const t = ctx.currentTime;
-  const base = 68 + Math.random() * 34; // 每只音高不同，听着不像同一个
+  // 基频抬到 100~150 Hz，共振峰放到 600~800 Hz；
+  // 原来 68~102 Hz / 320 Hz 在手机小喇叭上几乎听不见
+  const base = 100 + Math.random() * 45;
 
   const osc = ctx.createOscillator();
   osc.type = 'sawtooth';
@@ -485,11 +493,11 @@ function playGrowl() {
 
   const f = ctx.createBiquadFilter();
   f.type = 'bandpass';
-  f.frequency.value = 320;
-  f.Q.value = 4;
+  f.frequency.value = 620 + Math.random() * 180;
+  f.Q.value = 3.2;
 
   const g = ctx.createGain();
-  env(g, t, 0.15, 0.14, 0.5);
+  env(g, t, 0.17, 0.14, 0.5);
 
   // 一点气声，让吼叫不干
   const breath = ctx.createBufferSource();
