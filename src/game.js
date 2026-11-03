@@ -397,6 +397,7 @@ const CONFIG = {
     nightSpawnMul: 0.75, // 夜晚刷新间隔乘这个，越小越密（0.75 = 快 33%）
     maxSpeed: 7.5,
     speedCap: 9,       // 快鬼加速后也不会超过这个速度
+    baseSpeedCap: 6.5, // 基础速度先封顶，再乘类型倍率；普通僵尸不会和快鬼撞同一个 9
     // 一波从 15 秒缩到 12 秒，刷怪间隔同步 ×0.8，
     // 保证每一波的僵尸数量不变，只是来得更密
     spawnInterval: 0.28,
@@ -5263,8 +5264,12 @@ function spawnZombie() {
 
   const baseHp =
     CONFIG.zombie.baseHp + (state.wave - 1) * CONFIG.zombie.hpPerWave;
-  const baseSpeed =
-    CONFIG.zombie.baseSpeed + (state.wave - 1) * CONFIG.zombie.speedPerWave;
+  // 先封基础速度，再乘类型倍率：普通 6.5、快鬼 9、大块头 4.55，
+  // 否则所有类型最后都会撞到总上限 9，快鬼失去速度优势
+  const baseSpeed = Math.min(
+    CONFIG.zombie.baseSpeedCap,
+    CONFIG.zombie.baseSpeed + (state.wave - 1) * CONFIG.zombie.speedPerWave
+  );
   const nightMul = isNight(state.wave) ? CONFIG.zombie.nightSpeedMul : 1;
   const hp = baseHp * type.hp;
 
