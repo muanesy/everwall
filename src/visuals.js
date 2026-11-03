@@ -4382,9 +4382,12 @@ function syncZombies(state, dt) {
 
     // 到线后沿防线滑行的最后一段：身体朝移动方向前倾，脚下扬一点灰
     // 配合变短的滑行距离，读起来是"扑过去"，不是"被吸走"
-    const sliding = z.z > 7.6;
-    const dir = Math.sign(state.player.x - z.x) || 0;
-    const targetTilt = sliding ? dir * 0.22 : 0;
+    // 注意"还在滑行"要用剩余距离判断，不能只看 z：Boss 站在线上出拳时 z 恒为 killZ，
+    // 如果只按 z 判断，即使它已经停稳，倾斜方向仍会跟着 dx 的符号每帧翻号，
+    // 六倍体型的模型就会左右滚，看起来像抽搐；顺带每 0.18s 扬一次灰
+    const dxToPlayer = state.player.x - z.x;
+    const sliding = z.z > 7.6 && Math.abs(dxToPlayer) > 0.06;
+    const targetTilt = sliding ? Math.sign(dxToPlayer) * 0.22 : 0;
 
     if (entry.hpBar) {
       // 血条跟着僵尸走，始终面向相机

@@ -119,7 +119,7 @@ const CONFIG = {
     // 每个槽位 1-5 级。等级只改规模：伤害倍率、半径、间隔、回兵数。
     // 时代倍率和欠级折扣在 CONFIG.era，结算时再乘。
     siege: {
-      x: 4.5, z: 15, baseDamage: 30,
+      x: 4.5, z: 15, baseDamage: 34,
       flightTime: 0.5, // 炮弹飞行 0.5 秒，落地才结算伤害
       levels: [
         { damageMul: 1.00, radius: 2.6, interval: 6.0 },
@@ -151,7 +151,7 @@ const CONFIG = {
       ],
     },
     closeDefense: {
-      x: 5.5, z: 4.5, baseDamage: 8,
+      x: 5.5, z: 4.5, baseDamage: 9,
       levels: [
         { damageMul: 1.00, radius: 3.0, interval: 0.50 },
         { damageMul: 1.20, radius: 3.2, interval: 0.47 },
@@ -228,7 +228,7 @@ const CONFIG = {
     count: 3,          // 一次冲几个骑士
     minGap: 1.6,       // 两个骑士之间的最小横向距离
     speed: 20,         // 向上冲的速度
-    damage: 50,        // 每个骑士对同一只僵尸只结算一次
+    damage: 60,        // 每个骑士对同一只僵尸只结算一次（+20%）
     hitRadius: 0.9,    // 横向命中半径（比原来 0.75 放大一点）
     hitDepth: 1.25,    // 纵向命中厚度（比原来 1.1 放大一点）
     spawnZ: 9.8,       // 屏幕下方出生
@@ -236,7 +236,7 @@ const CONFIG = {
   campfire: {
     radius: 7.0,       // 范围大幅增大，覆盖大半个战场
     duration: 5,       // 火区存在 5 秒
-    dps: 18,           // 圆心每秒伤害，总计 90
+    dps: 22,           // 圆心每秒伤害，约 110（+20%）
     falloff: 0.7,      // 越靠边伤害越低：边缘只保留 30%
   },
   tankSupport: {
@@ -245,7 +245,7 @@ const CONFIG = {
     spacing: 2.4,      // 第二辆在第一辆右边这么多格
     shots: 5,          // 每辆坦克一轮打 5 发
     shotInterval: 1.2, // 发射间隔放慢，别像机关枪
-    damage: 60,
+    damage: 72,
     radius: 3.0,       // 爆炸范围收回 3.0，3.9 太大
     flightTime: 0.32,  // 炮弹飞行时间 0.5 → 0.32，落点更快
     retreatDelay: 0.9, // 打完多久开始撤
@@ -255,13 +255,13 @@ const CONFIG = {
   },
   airStrike: {
     bombs: 3,
-    damage: 70,
+    damage: 84,
     radius: 2.2,
     delayStep: 0.22,   // 三颗炸弹错开落下
   },
   barrage: {
     waves: 6,
-    damage: 25,
+    damage: 30,
     radius: 2.2,
     areaRadius: 5,
     firstDelay: 0.15,
@@ -271,19 +271,19 @@ const CONFIG = {
     width: 8,
     depth: 1.8,
     duration: 4,
-    dps: 12,
+    dps: 14,
     slowMul: 0.6,
-    impactDamage: 20,
+    impactDamage: 24,
   },
   apc: {
     spawnX: 0,         // 从底部中间开出来，不再随机左右偏移
     speed: 7.5,        // 比骑士慢很多
-    damage: 90,        // 撞击伤害，每只僵尸一次
+    damage: 108,       // 撞击伤害，每只僵尸一次（+20%）
     hitRadius: 1.1,
     hitDepth: 1.2,
     spawnZ: 9.8,
     mgInterval: 0.35,  // 机枪间隔
-    mgDamage: 12,
+    mgDamage: 14,
     mgRange: 8,
   },
   // 无人机蜂群：一波内陆续放出 10 架自杀式无人机，各自随机锁定一只僵尸
@@ -291,7 +291,7 @@ const CONFIG = {
     count: 10,          // 一波总共 10 架
     duration: 12,       // 持续一波，和 CONFIG.wave.duration 保持一致
     speed: 13,          // 飞行速度
-    damage: 65,         // 命中爆炸伤害
+    damage: 78,         // 命中爆炸伤害（+20%）
     aoeRadius: 2.2,     // 命中点的小范围
     startZ: 10.6,       // 从士兵阵型后方起飞，看得见"从屏幕下方出发"
     despawnZ: -24,      // 没目标一直往上游，飞出这条线就撤
@@ -300,7 +300,7 @@ const CONFIG = {
   carrierDrones: {
     count: 4,
     life: 12,          // 持续一波，和 CONFIG.wave.duration 保持一致
-    damage: 20,        // 每发小范围伤害
+    damage: 24,        // 每发小范围伤害（+20%）
     interval: 0.45,
     range: 16,
     radius: 1.6,       // 无人机绕最密点转的半径
@@ -390,7 +390,7 @@ const CONFIG = {
   },
   zombie: {
     baseHp: 20,
-    hpPerWave: 8,
+    hpPerWave: 7,        // 普通僵尸每波 +7 血；Boss 单独用 CONFIG.boss.hpPerWave，不跟着降
     baseSpeed: 3.2,
     speedPerWave: 0.25,
     nightSpeedMul: 1.15, // 夜晚僵尸移速加成
@@ -457,12 +457,13 @@ const CONFIG = {
     recommendedLevel: [1, 2, 3, 4, 4, 5],
     // 从该时代开局时的初始兵力：越晚的时代，起点越高，用来对冲该时代的僵尸强度
     startSoldiers: [5, 20, 40, 65, 90, 120],
-    underLevelStep: 0.15, // 每差 1 级 -15%
-    underLevelMin: 0.55,  // 最多 -45%
+    underLevelStep: 0.12, // 每差 1 级 -12%
+    underLevelMin: 0.62,  // 最多 -38%
   },
   // 时代 Boss：每次切换时代刷一只，作为分段节点
   // 血量乘子和普通僵尸同一套公式（baseHp + 波次成长），再乘 types 里的 hp=60
   boss: {
+    hpPerWave: 8,        // Boss 专用血量成长，普通僵尸降到 7 时 Boss 保持原强度
     rewardSoldiers: 8,   // 击败奖励：加兵
     rewardScore: 30,     // 击败奖励：额外分数（types 里的 score 40 会另算）
     toast: true,
@@ -610,6 +611,8 @@ const state = {
     version: 0,
     pickCounts: {},   // 本次面板里每张卡点了几次：1 次蓝框，2 次及以上橙黄框
     picked: [],       // 本次面板的点选顺序：{ id, name, count }，给面板顶部做「本轮已选」
+    poolOrder: [],    // 面板打开那一刻锁住的格子顺序（存的是「卡组」id，如 slotSiege）。
+                      // 解锁卡点掉后同组的升级卡原地接替，位置不挪动
   },
   upgradeCarry: 0,
   // 地图环境事件：{ id, wave, phase, timer, spots, weatherKind }
@@ -620,6 +623,9 @@ const state = {
   envSlowMul: 1,      // 恶劣天气期间僵尸移速乘子
   envWeatherUntil: 0,
   waveDuration: CONFIG.wave.duration, // 界面层算下一波倒计时用，不要在 ui.js 另写一份
+  bloodMoon: false,      // 血月是否生效（视觉层派 bloodMoon 事件）
+  bloodMoonKills: 0,     // 本次血月里真正打死的僵尸数（撞线删掉的不算）
+  bloodMoonHealed: 0,    // 本次血月已回多少兵
   timeScale: 1,
   // 槽位默认全部锁定，抽到对应卡才生效；level 0 = 未解锁，1-5 = 等级
   slots: { siege: false, support: false, closeDefense: false, command: false, summon: false },
@@ -851,6 +857,26 @@ events.addEventListener('zombieDie', (e) => {
     z: d.z,
     soldiers: CONFIG.boss.rewardSoldiers,
   });
+});
+
+// 血月：视觉层每 10 波自动开关，玩法层只做「杀 3 只回 1 兵」。
+// 只统计 zombieDie：僵尸撞到士兵被删除时不会派这条，所以漏怪不产生回兵。
+events.addEventListener('bloodMoon', (e) => {
+  const on = !!e.detail?.on;
+  state.bloodMoon = on;
+  if (on) {
+    state.bloodMoonKills = 0;
+    state.bloodMoonHealed = 0;
+  }
+});
+
+events.addEventListener('zombieDie', () => {
+  if (!state.bloodMoon || state.status !== 'playing') return;
+  state.bloodMoonKills += 1;
+  if (state.bloodMoonKills % 3 === 0) {
+    applySoldiers(1);
+    state.bloodMoonHealed += 1;
+  }
 });
 
 // Boss 出拳动画演完了：画面层播完那个动作才派这条，玩法层据此允许下一拳。
@@ -1347,6 +1373,9 @@ function resetState(opts = {}) {
   state.envZoneTick = 0;
   state.envSlowMul = 1;
   state.envWeatherUntil = 0;
+  state.bloodMoon = false;
+  state.bloodMoonKills = 0;
+  state.bloodMoonHealed = 0;
   state.timeScale = 1;
 
   state.slots.siege = false;
@@ -1490,6 +1519,9 @@ function returnToMenu() {
   state.envZones.length = 0;
   state.envDebuff = { until: 0, moveMul: 1, fireRateMul: 1, spreadMul: 1 };
   state.envSlowMul = 1;
+  state.bloodMoon = false;
+  state.bloodMoonKills = 0;
+  state.bloodMoonHealed = 0;
   state.timeScale = 1;
   state.skillUseCd = 0;
   input.left = false;
@@ -1618,10 +1650,17 @@ function slotStatsAt(id, level, era = state.era) {
     };
   }
 
+  // 终幕：攻城/近防额外吃目标最大生命百分比，避免后期被高血量僵尸拖垮
+  const finale = era >= CONFIG.era.count - 1;
+  const maxHpPct = finale
+    ? (id === 'siege' ? 0.05 : id === 'closeDefense' ? 0.005 : 0)
+    : 0;
+
   return {
     damage: Math.round(cfg.baseDamage * CONFIG.era.attackPower[era] * row.damageMul * under),
     radius: row.radius,
     interval: row.interval,
+    maxHpPct,
   };
 }
 
@@ -1647,7 +1686,10 @@ function slotSummary(id, level, era = state.era) {
       .join(' ');
     return `${mix} · ${s.interval.toFixed(1)}s · 预算${s.budget}`;
   }
-  return `${s.damage} 伤 / 半径 ${s.radius} / ${s.interval.toFixed(1)}s`;
+  const pctText = s.maxHpPct
+    ? ` +${(s.maxHpPct * 100).toFixed(1)}% 最大生命`
+    : '';
+  return `${s.damage} 伤${pctText} / 半径 ${s.radius} / ${s.interval.toFixed(1)}s`;
 }
 
 function barricadeStatsAt(level, era = state.era) {
@@ -1876,6 +1918,8 @@ if (typeof window !== 'undefined') {
   window.__convertExpiredSkills = convertExpiredSkills;
   // 事件总线：排查"某条事件到底派没派"时只能靠它，控制台里 __events.addEventListener(...)
   window.__events = events;
+  // 升级面板正常只在换地图时弹出，要单独测面板交互（连点、卡序）得能手动开
+  window.__openUpgradePanel = openUpgradePanel;
 }
 
 /* ----------------------------------------------------------
@@ -2017,20 +2061,20 @@ const CARD_POOL = [
 const SKILL_DEFS = [
   // 0 中世纪
   // 半径 4 = 屏幕半宽，直径 8 刚好是屏幕宽度的一半
-  // 50 伤害：中世纪 1-4 波普通僵尸最高 44 血，保证能秒杀
-  { id: 'arrowRain', name: '箭雨', era: 0, type: 'aoe', damage: 50, radius: 4.0, color: 0xd9b36c },
+  // 60 伤害：比原来的 50 高 20%，中世纪前几波普通僵尸仍然一箭清
+  { id: 'arrowRain', name: '箭雨', era: 0, type: 'aoe', damage: 60, radius: 4.0, color: 0xd9b36c },
   { id: 'rollingLog', name: '滚木', era: 0, type: 'rollingLog', color: 0x9c6b3f },
   { id: 'holyWater', name: '圣水', era: 0, type: 'heal', soldiers: 20, color: 0x8fe3b0 },
   { id: 'knightCharge', name: '骑士冲锋', era: 0, type: 'knightCharge', color: 0xc9d4e0 },
-  { id: 'campfire', name: '篝火', era: 0, type: 'campfire', radius: 3.5, color: 0xff9a4d },
+  { id: 'campfire', name: '篝火', era: 0, type: 'campfire', radius: 7.0, color: 0xff9a4d },
   // 1 二战
-  { id: 'airStrike', name: '空袭', era: 1, type: 'airStrike', damage: 70, radius: 2.2, bombs: 3, color: 0xffd27a },
-  { id: 'barrage', name: '炮火覆盖', era: 1, type: 'barrage', damage: 25, radius: 2.2, areaRadius: 5, waves: 6, waveInterval: 0.5, color: 0xff8a4d },
+  { id: 'airStrike', name: '空袭', era: 1, type: 'airStrike', damage: 84, radius: 2.2, bombs: 3, color: 0xffd27a },
+  { id: 'barrage', name: '炮火覆盖', era: 1, type: 'barrage', damage: 30, radius: 2.2, areaRadius: 5, waves: 6, waveInterval: 0.5, color: 0xff8a4d },
   { id: 'napalm', name: '燃烧弹', era: 1, type: 'napalmWall', color: 0xff6a2a },
   { id: 'paratroopers', name: '伞兵增援', era: 1, type: 'heal', soldiers: 10, color: 0x8fb6e0 },
   { id: 'tank', name: '坦克支援', era: 1, type: 'tank', color: 0xb0b8a0 },
   // 2 现代
-  { id: 'precision', name: '精确打击', era: 2, type: 'aoe', damage: 110, radius: 2.2, color: 0x9fe3ff },
+  { id: 'precision', name: '精确打击', era: 2, type: 'aoe', damage: 132, radius: 2.2, color: 0x9fe3ff },
   { id: 'droneSwarm', name: '无人机蜂群', era: 2, type: 'droneSwarm', color: 0x7fd4ff },
   { id: 'emp', name: '电磁脉冲', era: 2, type: 'freeze', duration: 2, color: 0x6fa8ff },
   { id: 'apc', name: '装甲车冲锋', era: 2, type: 'apc', color: 0x8f9a7a },
@@ -2101,20 +2145,20 @@ const SKILL_CHARGES = {
 };
 
 const SKILL_DESCS = {
-  arrowRain: '圆形箭雨：半径 4 内 50 伤害（直径 8，约屏幕宽度一半）',
+  arrowRain: '圆形箭雨：半径 4 内 60 伤害（直径 8，约屏幕宽度一半）',
   rollingLog: '左侧随机出现，纵向 6 格，从左往右碾压；秒普通僵尸，不秒大块头',
   holyWater: '立刻 +20 兵',
-  knightCharge: '右下随机冲 3 个骑士，向上贯穿，每个骑士对每只僵尸 50 伤害',
-  campfire: '最密处半径 3.5 火区，持续 5 秒，每秒 12 伤害',
-  airStrike: '3 架轰炸机分别炸最密的 3 个点，每颗 70 伤害、半径 2.2',
-  barrage: '半径 5 的大范围连续轰炸：3 秒 6 波，每波 25 伤害',
-  napalm: '最密处拉一道宽 8、纵深 1.8 的火墙，持续 4 秒，每秒 12 伤害并减速',
+  knightCharge: '右下随机冲 3 个骑士，向上贯穿，每个骑士对每只僵尸 60 伤害',
+  campfire: '最密处半径 7 火区，持续 5 秒，圆心每秒 22 伤害',
+  airStrike: '3 架轰炸机分别炸最密的 3 个点，每颗 84 伤害、半径 2.2',
+  barrage: '半径 5 的大范围连续轰炸：3 秒 6 波，每波 30 伤害',
+  napalm: '最密处拉一道宽 8、纵深 1.8 的火墙，持续 4 秒，每秒 14 伤害并减速',
   paratroopers: '立刻 +10 兵',
-  tank: '底部槽位后方出现坦克，打 5 发范围炮（每发 60、半径 3.0、间隔 1.2 秒）后撤退；场上已有坦克时，新的一辆出现在它右边',
-  precision: '最密处半径 2.2 内 110 伤害',
-  droneSwarm: '一波内陆续放出 10 架无人机，从屏幕下方起飞、各自随机锁定僵尸，命中造成 65 点小范围伤害',
+  tank: '底部槽位后方出现坦克，打 5 发范围炮（每发 72、半径 3.0、间隔 1.2 秒）后撤退；场上已有坦克时，新的一辆出现在它右边',
+  precision: '最密处半径 2.2 内 132 伤害',
+  droneSwarm: '一波内陆续放出 10 架无人机，从屏幕下方起飞、各自随机锁定僵尸，命中造成 78 点小范围伤害',
   emp: '全场僵尸原地停顿 2 秒',
-  apc: '慢速向上冲锋，撞到每只僵尸 90 伤害，同时机枪点射最近僵尸',
+  apc: '慢速向上冲锋，撞到每只僵尸 108 伤害，同时机枪点射最近僵尸',
   supplyDrop: '空投重武器：12 秒内子弹伤害 ×2、射速 ×1.5',
   virusBomb: '最密处投放 2 枚病毒炸弹，范围内僵尸变成己方单位反冲（每枚最多 8 只）',
   bioLegion: '瞬间生成 20 名己方僵尸，向前对冲',
@@ -2124,7 +2168,7 @@ const SKILL_DESCS = {
   orbital: '横向轨道光柱，清掉离士兵最近的 2/3 僵尸（按数量，远的一批留着）；一局只能使用一次',
   blackHole: '半径 12 内僵尸被持续吸向中心 1.2 秒；结束时中心半径 3 内扣 12% 最大生命（Boss 减半）',
   wormhole: '全场僵尸一起送回出生点',
-  carrierDrones: '召唤 4 架大型舰载无人机，持续一波（12 秒），每 0.45 秒造成 20 点小范围伤害',
+  carrierDrones: '召唤 4 架大型舰载无人机，持续一波（12 秒），每 0.45 秒造成 24 点小范围伤害',
   timeDilation: '全场僵尸所有移动 ×0.4，持续 3 秒',
   finalJudgment: '全场处决：生命 ≤50% 的僵尸直接消失并计分；其余受 20% 最大生命伤害；Boss 改吃 30% 最大生命',
   cosmicCollapse: '半径 14 内僵尸吸向中心（走完 85% 距离）；按吸引前的距离结算：中心 6 内扣 35% 最大生命，6~14 扣 15%，Boss 减半',
@@ -2223,6 +2267,19 @@ function damageZombiesInRadius(x, z, radius, damage) {
     const dx = zb.x - x;
     const dz = zb.z - z;
     if (dx * dx + dz * dz <= r2) damageZombieAt(i, damage);
+  }
+}
+
+// 固定伤害 + 最大生命百分比：终幕槽位用，每只僵尸单独算百分比部分
+function damageZombiesInRadiusHybrid(x, z, radius, flat, maxHpPct = 0) {
+  const r2 = radius * radius;
+  for (let i = state.zombies.length - 1; i >= 0; i--) {
+    const zb = state.zombies[i];
+    const dx = zb.x - x;
+    const dz = zb.z - z;
+    if (dx * dx + dz * dz > r2) continue;
+    const maxHp = Math.max(1, zb.maxHp || zb.hp);
+    damageZombieAt(i, flat + maxHp * maxHpPct);
   }
 }
 
@@ -2948,6 +3005,39 @@ function buildUpgradePool() {
     .filter((c) => c.can());
 }
 
+// 解锁卡和它的升级卡算「同一张卡」：面板里占同一个位置，连锁描述也连在一起。
+// 点了「攻城槽」解锁之后，那个格子原地变成「攻城升级」，再点一次就 +1 级 ——
+// 不这么做的话卡池会换一张卡、整列往前挪，看着像"点了没反应"或"蓝框跑到隔壁"。
+const CARD_GROUP_SUFFIX = /(Upgrade|Unlock)$/;
+function cardGroupOf(id) {
+  return id.replace(CARD_GROUP_SUFFIX, '');
+}
+
+// 面板要渲染的卡：位置在打开面板时锁死，每格按「这一组当前还能升的那张」实时取。
+// 组里已经升满（没有可用的卡了）时，保留最后那张占位并标 maxed，不灰、不移除
+function getUpgradePanelCards() {
+  const pool = buildUpgradePool();
+  const counts = state.upgradePanel.pickCounts || {};
+  const pickedByGroup = new Map((state.upgradePanel.picked || []).map((p) => [p.id, p]));
+  const order = state.upgradePanel.poolOrder || [];
+
+  return order.map((g) => {
+    const live = pool.find((c) => cardGroupOf(c.id) === g);
+    if (live) {
+      return { id: live.id, name: live.name, desc: live.desc, count: counts[g] || 0, maxed: false };
+    }
+    const done = pickedByGroup.get(g);
+    if (!done) return null;
+    return {
+      id: done.lastId,
+      name: done.name,
+      desc: '已经升到上限',
+      count: counts[g] || 0,
+      maxed: true,
+    };
+  }).filter(Boolean);
+}
+
 function openUpgradePanel() {
   if (state.status !== 'playing' || state.testMode) return;
   if (state.upgradePanel.active) return;
@@ -2966,6 +3056,12 @@ function openUpgradePanel() {
   state.upgradePanel.timeLeft = 30;
   state.upgradePanel.pickCounts = {};
   state.upgradePanel.picked = [];
+  // 锁住这次面板的格子顺序（按「卡组」而不是具体卡 id）：
+  // 解锁卡点掉后会换成同组的升级卡，位置必须原地不动
+  const seenGroups = new Set();
+  state.upgradePanel.poolOrder = buildUpgradePool()
+    .map((c) => cardGroupOf(c.id))
+    .filter((g) => (seenGroups.has(g) ? false : (seenGroups.add(g), true)));
   state.upgradePanel.version += 1;
   emit('upgradePanelOpen', { picks });
 }
@@ -2992,19 +3088,37 @@ function closeUpgradePanel(carryRemaining = false) {
 function chooseUpgrade(id) {
   if (!state.upgradePanel.active || state.upgradePanel.picks <= 0) return false;
 
-  const card = buildUpgradePool().find((c) => c.id === id);
-  if (!card) return false;
+  const group = cardGroupOf(id);
+  let card = buildUpgradePool().find((c) => c.id === id);
+  if (!card) {
+    // 连点时按钮上的 id 可能已经被同组的下一张卡接替（攻城槽 → 攻城升级），
+    // 这一下仍然算给同一组，不能白点
+    card = buildUpgradePool().find((c) => cardGroupOf(c.id) === group);
+  }
+  if (!card) {
+    // 这一组已经升满：给一句提示，但不消耗次数。
+    // 那张卡仍留在原位（不灰、不移除），玩家点它才知道是到顶了
+    emit('skillNotice', { text: '这张已经升到上限了', kind: 'skill' });
+    return false;
+  }
 
   card.apply();
+  // 次数按「卡组」记：解锁卡和它的升级卡是同一个人，点两次就该是 ×2，
+  // 不能因为中途换了 id 把前一次的次数丢掉
   const counts = state.upgradePanel.pickCounts;
-  counts[id] = (counts[id] || 0) + 1;
+  counts[group] = (counts[group] || 0) + 1;
 
-  // 顶部「本轮已选」按点选顺序记名字，解锁类卡片点完会从列表消失，
+  // 顶部「本轮已选」按点选顺序记名字，解锁类卡片点完名字会变成「XX升级」，
   // 光靠卡面边框玩家会忘了自己点过什么
   const picked = state.upgradePanel.picked;
-  const logged = picked.find((p) => p.id === id);
-  if (logged) logged.count += 1;
-  else picked.push({ id, name: card.name, count: 1 });
+  const logged = picked.find((p) => p.id === group);
+  if (logged) {
+    logged.count += 1;
+    logged.name = card.name;
+    logged.lastId = card.id;
+  } else {
+    picked.push({ id: group, name: card.name, count: 1, lastId: card.id });
+  }
 
   state.upgradePanel.picks -= 1;
   state.upgradePanel.version += 1;
@@ -3590,8 +3704,8 @@ function updateBullets(dt) {
       continue;
     }
 
-    // 打中武器箱：直接换枪
-    if (!state.testMode && hitPickup(b.x, b.z, prevZ)) {
+    // 打中武器箱：直接换枪（测试模式保留空投补给箱的命中）
+    if (hitPickup(b.x, b.z, prevZ)) {
       state.bullets.splice(i, 1);
       continue;
     }
@@ -3925,6 +4039,7 @@ function updateSlots(dt) {
           z: target.z,
           radius: stats.radius,
           damage: stats.damage,
+          maxHpPct: stats.maxHpPct,
           timeLeft: cfg.flightTime,
           kind: 'siege',
           color: 0xffa64d,
@@ -3949,7 +4064,9 @@ function updateSlots(dt) {
     state.slotTimers.closeDefense -= dt;
     if (state.slotTimers.closeDefense <= 0) {
       state.slotTimers.closeDefense = stats.interval;
-      damageZombiesInRadius(cfg.x, cfg.z, stats.radius, stats.damage);
+      damageZombiesInRadiusHybrid(
+        cfg.x, cfg.z, stats.radius, stats.damage, stats.maxHpPct
+      );
 
       // 找最近的僵尸，画一条曳光过去
       let tx = cfg.x;
@@ -4080,13 +4197,15 @@ function updateZombies(dt) {
       (inNapalm ? CONFIG.napalmWall.slowMul : 1) *
       plagueSlow *
       state.envSlowMul;
+    // 血月：所有僵尸移速 +10%
+    const bloodMul = state.bloodMoon ? 1.1 : 1;
 
     const bar = state.barricade;
     const cfg = CONFIG.barricade;
 
     // 路障挡在前排：范围内的僵尸停下来啃墙
     if (bar.active && z.z < cfg.z && z.x >= bar.xMin && z.x <= bar.xMax) {
-      z.z = Math.min(cfg.blockZ, z.z + z.speed * dt * slowMul);
+      z.z = Math.min(cfg.blockZ, z.z + z.speed * dt * slowMul * bloodMul);
 
       if (z.z >= cfg.blockZ - 0.05) {
         if (z.attackTimer == null) {
@@ -4175,8 +4294,19 @@ function updateZombies(dt) {
       z.z = CONFIG.world.killZ;
       z.aggro = true;
 
-      if (Math.abs(dx) > 0.05) {
-        z.x += Math.sign(dx) * CONFIG.zombie.lineSlideSpeed * dt * slowMul;
+      // 滑行的一步不能跨过玩家：lineSlideSpeed(15) 在 60fps 下单帧就有 0.25、
+      // 掉帧到 20fps 能到 0.75，远大于 0.05 的死区。原来直接按整步走，
+      // 一定会从玩家左侧一步跳到右侧、下一帧再跳回来，永远收敛不了 ——
+      // Boss 现在停在线上不出删，这段循环会一直跑，画面就是整只左右抽搐。
+      // 这里按剩余距离收一步，最多走到"距玩家 0.05"就停住。
+      // 注意 dx 是循环开头算的，上面吸附力已经改过 z.x，所以重算一次
+      const dxLine = state.player.x - z.x;
+      if (Math.abs(dxLine) > 0.05) {
+        const step = Math.min(
+          CONFIG.zombie.lineSlideSpeed * dt * slowMul * bloodMul,
+          Math.abs(dxLine) - 0.05
+        );
+        z.x += Math.sign(dxLine) * step;
       }
     } else {
       // 水里走不动：水位漫过脚踝后整场僵尸都慢下来
@@ -4190,7 +4320,7 @@ function updateZombies(dt) {
       // 普通僵尸走 phaseMul（远冲近慢）；Boss 还要兼顾离屏入场加速
       const speedMul = z.boss ? Math.max(phaseMul, introMul) : phaseMul;
 
-      z.z += z.speed * dt * slowMul * waterMul * speedMul;
+      z.z += z.speed * dt * slowMul * waterMul * speedMul * bloodMul;
     }
 
     z.x = clamp(z.x, -CONFIG.world.halfWidth - 1, CONFIG.world.halfWidth + 1);
@@ -4963,7 +5093,9 @@ function updateSiegeShots(dt) {
     shot.timeLeft -= dt;
 
     if (shot.timeLeft <= 0) {
-      damageZombiesInRadius(shot.x, shot.z, shot.radius, shot.damage);
+      damageZombiesInRadiusHybrid(
+        shot.x, shot.z, shot.radius, shot.damage, shot.maxHpPct
+      );
       emit('delayedImpact', {
         x: shot.x,
         z: shot.z,
@@ -5178,7 +5310,8 @@ function spawnEraBoss(eraIndex) {
   if (state.zombies.some((z) => z.type === type.id)) return null;
 
   const [minX, maxX] = CONFIG.world.rightZone;
-  const baseHp = CONFIG.zombie.baseHp + (state.wave - 1) * CONFIG.zombie.hpPerWave;
+  // Boss 用自己的成长，普通僵尸的血量成长调整不会顺手削弱 Boss
+  const baseHp = CONFIG.zombie.baseHp + (state.wave - 1) * CONFIG.boss.hpPerWave;
   const hp = baseHp * type.hp;
 
   const boss = {
@@ -5467,8 +5600,8 @@ function spawnWeaponPickup() {
 }
 
 function updatePickups(dt) {
-  if (state.testMode) return;
-
+  // 落地和消失倒计时在测试模式也要跑，否则空投补给的箱子永远停在 y=11
+  // 随机武器箱的刷新仍然只在正常模式里进行，避免测试场上多出无关箱子
   // 落地
   for (const b of state.pickups) {
     if (b.landed) continue;
@@ -5491,6 +5624,8 @@ function updatePickups(dt) {
       emit('pickupExpired', { x: b.x, z: b.z, id: b.id });
     }
   }
+
+  if (state.testMode) return; // 测试模式不刷随机武器箱
 
   // 倒计时：到点换回时代武器
   if (state.playerWeapon) {
@@ -5606,6 +5741,7 @@ initUI(state, {
   useSkill,
   getSkillBag,
   getUpgradePool: buildUpgradePool,
+  getUpgradePanelCards,
   chooseUpgrade,
   triggerEnvEvent: triggerEnvEventNow,
 });

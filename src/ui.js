@@ -176,6 +176,7 @@ export function updateUI(state) {
 
   updateTierBadge(state.soldiers);
   updateCommandChip(state);
+  updateBloodChip(state);
   updateLoadingBox();
   updateWaveCountdown(state);
   updateUpgradePanel(state);
@@ -249,6 +250,22 @@ function updateCommandChip(state) {
   els.cmdIcon.innerHTML = CMD_ICONS[era];
   els.cmdBonus.textContent = `+${pct}%`;
   els.cmdChip.title = `集火伤害加成 +${pct}%`;
+}
+
+/* 血月回兵：击杀数和已回兵数只在血月期间显示 */
+function updateBloodChip(state) {
+  if (!els.bloodChip) return;
+  const show = state.status === 'playing' && state.bloodMoon;
+  els.bloodChip.hidden = !show;
+  if (!show) return;
+  const kills = state.bloodMoonKills | 0;
+  const healed = state.bloodMoonHealed | 0;
+  if (els.bloodKills.textContent !== String(kills)) {
+    els.bloodKills.textContent = String(kills);
+  }
+  if (els.bloodHealed.textContent !== String(healed)) {
+    els.bloodHealed.textContent = String(healed);
+  }
 }
 
 /* 兵种档位徽标：当前兵种 + 距下一阶还差几个兵。
@@ -348,16 +365,24 @@ function updateUpgradePanel(state) {
 
   if (els.upgradeVersion !== state.upgradePanel.version) {
     els.upgradeVersion = state.upgradePanel.version;
-    const pool = actions && actions.getUpgradePool ? actions.getUpgradePool() : [];
-    const counts = state.upgradePanel.pickCounts || {};
-    els.upgradeGrid.innerHTML = pool.map((c) => {
+    // 卡面由玩法层算好：格子顺序在面板打开时锁死，每格取「这一组当前还能升的那张」。
+    // 点了「攻城槽」之后同一格原地变成「攻城升级」，再点一次就再 +1 级，
+    // 既不会整列重排，也不会出现灰掉/消失的卡
+    const cards = actions && actions.getUpgradePanelCards
+      ? actions.getUpgradePanelCards()
+      : (actions && actions.getUpgradePool
+        ? actions.getUpgradePool().map((c) => ({ ...c, count: 0 }))
+        : []);
+
+    els.upgradeGrid.innerHTML = cards.map((c) => {
       // 本次面板里点过几次：1 次蓝框，2 次及以上橙黄框，方便看清重复升级
-      const n = counts[c.id] || 0;
+      const n = c.count || 0;
       const pickedClass = n >= 2 ? ' is-picked-2' : n === 1 ? ' is-picked-1' : '';
+      const emoji = UPGRADE_EMOJI[c.id] || UPGRADE_EMOJI[c.id.replace(/(Upgrade|Unlock)$/, '')] || '⭐';
       return `
       <button class="upgrade-choice${pickedClass}" type="button" data-upgrade-id="${c.id}">
         ${n > 0 ? `<span class="upgrade-choice__picks">×${n}</span>` : ''}
-        <strong>${c.name} ${UPGRADE_EMOJI[c.id] || '⭐'}</strong>
+        <strong>${c.name} ${emoji}</strong>
         <span>${c.desc}</span>
       </button>
     `;
@@ -513,6 +538,9 @@ function buildDom() {
       <div class="cmd-chip" data-cmd-chip hidden>
         <span class="cmd-chip__icon" data-cmd-icon></span>
         <span data-cmd-bonus>+0%</span>
+      </div>
+      <div class="blood-chip" data-blood-chip hidden>
+        血月 · 击杀 <span data-blood-kills>0</span> · 回兵 +<span data-blood-healed>0</span>
       </div>
     </div>
     <button class="pause-btn" type="button" data-pause aria-label="暂停">
@@ -739,6 +767,9 @@ function buildDom() {
     waveNext: hud.querySelector('[data-wave-next]'),
     scoreText: hud.querySelector('[data-score]'),
     cmdChip: hud.querySelector('[data-cmd-chip]'),
+    bloodChip: hud.querySelector('[data-blood-chip]'),
+    bloodKills: hud.querySelector('[data-blood-kills]'),
+    bloodHealed: hud.querySelector('[data-blood-healed]'),
     cmdIcon: hud.querySelector('[data-cmd-icon]'),
     cmdBonus: hud.querySelector('[data-cmd-bonus]'),
     startScreen,
@@ -963,8 +994,39 @@ function bindEvents() {
     if (actions && actions.returnToMenu) actions.returnToMenu();
   });
 
-  // 升级面板：按钮会随版本重绘，用事件委托接点击
+  // 升级面板：按钮会随版本重绘，用事件委托接点击。
+  // 不能只用 click —— 每次点选后下一帧会 innerHTML 重建所有按钮，
+  // 如果第二次按下和抬起之间正好夹着这次重建，浏览器就找不到
+  // mousedown/mouseup 的共同祖先，click 事件根本不会产生（快速连点必丢一下）。
+  // 改成按下记 id、抬起提交，不依赖按下的那个按钮还活着。
+  let pressCard = null;
+  els.upgradeGrid.addEventListener('pointerdown', (e) => {
+    const btn = e.target.closest && e.target.closest('[data-upgrade-id]');
+    if (!btn || btn.disabled) {
+      pressCard = null;
+      return;
+    }
+    pressCard = { id: btn.dataset.upgradeId, x: e.clientX, y: e.clientY };
+  });
+
+  window.addEventListener('pointerup', (e) => {
+    const p = pressCard;
+    pressCard = null;
+    if (!p) return;
+    // 拖动超过 16px 当成在滚动列表，不算点选
+    if (Math.hypot(e.clientX - p.x, e.clientY - p.y) > 16) return;
+    initAudio();
+    playClick();
+    if (actions && actions.chooseUpgrade) actions.chooseUpgrade(p.id);
+  });
+
+  window.addEventListener('pointercancel', () => {
+    pressCard = null;
+  });
+
+  // 键盘操作（Enter/空格）不产生指针事件，detail === 0 的 click 才是键盘来的
   els.upgradeGrid.addEventListener('click', (e) => {
+    if (e.detail !== 0) return;
     const btn = e.target.closest('[data-upgrade-id]');
     if (!btn) return;
     initAudio();
