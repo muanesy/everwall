@@ -852,6 +852,25 @@ let fxFade = null;        // 换图用的全屏淡入淡出遮罩
 let fxBloodMoon = null;   // 血月的全屏红色暗角
 const FX_P_MAX = 500;
 const fxPool = Array.from({ length: FX_P_MAX }, () => ({ life: 0, maxLife: 1, vx: 0, vy: 0, vz: 0, g: 0 }));
+
+// 性能：子弹和常用短特效全部复用，不再每发新建/销毁几何体和材质
+const BULLET_POOL_MAX = 220;
+const bulletPool = [];
+const bulletFree = [];
+let bulletPoolEra = -1;
+const bulletAlive = new Set();
+
+const ringPool = [];
+const flashPool = [];
+const tracerPool = [];
+let sharedRingGeo = null;
+let sharedFlashGeo = null;
+let sharedTracerGeo = null;
+
+// ?debug=1 时显示性能浮层
+let perfEl = null;
+let perfLast = 0;
+let perfFrames = 0;
 let fxGeo = null;
 let fxPos = null;
 let fxCol = null;
@@ -889,6 +908,13 @@ export function initVisuals(container, events) {
   renderer.setPixelRatio(maxPixelRatio);
   renderer.setSize(container.clientWidth, container.clientHeight);
   container.appendChild(renderer.domElement);
+
+  // ?debug=1：性能浮层，先定位瓶颈再决定削哪一层
+  if (new URLSearchParams(window.location.search).get('debug') === '1') {
+    perfEl = document.createElement('div');
+    perfEl.className = 'perf-debug';
+    document.body.appendChild(perfEl);
+  }
 
   scene = new THREE.Scene();
   scene.background = new THREE.Color(MAP.bg);
@@ -3847,6 +3873,23 @@ export function syncScene(state, dt) {
   for (const m of animMixers) m.update(dt);
 
   renderer.render(scene, camera);
+
+  if (perfEl) {
+    const now = performance.now();
+    if (!perfLast) perfLast = now;
+    perfFrames += 1;
+    if (now - perfLast >= 500) {
+      const fps = Math.round((perfFrames * 1000) / (now - perfLast));
+      const info = renderer.info.render;
+      perfEl.textContent =
+        `FPS ${fps} · calls ${info.calls} · tris ${Math.round(info.triangles / 1000)}k\n` +
+        `僵尸 ${state.zombies ? state.zombies.length : 0} · ` +
+        `子弹 ${state.bullets ? state.bullets.length : 0} · ` +
+        `特效 ${effects.length} · 弹池 ${bulletPool.length}/${bulletFree.length}`;
+      perfLast = now;
+      perfFrames = 0;
+    }
+  }
 }
 
 function soldierSlot(i, state) {
@@ -4620,24 +4663,60 @@ function syncEnemyShots(state) {
   }
 }
 
-function syncBullets(state) {  const alive = new Set();
+function ensureBulletPool() {
+  const era = currentEra ? currentEra.id : 0;
+  if (era === bulletPoolEra) return;
+
+  // 换时代后子弹外观要变；旧池整体换掉，避免把六套造型都常驻显存
+  for (const mesh of bulletMeshes.values()) mesh.visible = false;
+  bulletMeshes.clear();
+  for (const mesh of bulletPool) {
+    scene.remove(mesh);
+    disposeMesh(mesh);
+  }
+  bulletPool.length = 0;
+  bulletFree.length = 0;
+  bulletPoolEra = era;
+}
+
+function acquireBulletMesh() {
+  ensureBulletPool();
+  if (bulletFree.length) {
+    const mesh = bulletFree.pop();
+    mesh.visible = true;
+    return mesh;
+  }
+  if (bulletPool.length >= BULLET_POOL_MAX) return null;
+  const mesh = makeBulletMesh();
+  scene.add(mesh);
+  bulletPool.push(mesh);
+  return mesh;
+}
+
+function releaseBulletMesh(mesh) {
+  mesh.visible = false;
+  bulletFree.push(mesh);
+}
+
+function syncBullets(state) {
+  ensureBulletPool();
+  bulletAlive.clear();
 
   for (const b of state.bullets) {
-    alive.add(b.id);
+    bulletAlive.add(b.id);
 
     let mesh = bulletMeshes.get(b.id);
     if (!mesh) {
-      mesh = makeBulletMesh();
-      scene.add(mesh);
+      mesh = acquireBulletMesh();
+      if (!mesh) continue; // 池满时宁可少画一颗，也不临时新建
       bulletMeshes.set(b.id, mesh);
     }
     mesh.position.set(b.x, 0.9, b.z);
   }
 
   for (const [id, mesh] of bulletMeshes) {
-    if (!alive.has(id)) {
-      scene.remove(mesh);
-      disposeMesh(mesh);
+    if (!bulletAlive.has(id)) {
+      releaseBulletMesh(mesh);
       bulletMeshes.delete(id);
     }
   }
@@ -8165,13 +8244,17 @@ function getLabelTexture(title, color, sub) {
  * 特效
  * ---------------------------------------------------------- */
 function spawnMuzzleFlash(x, z) {
-  const mesh = new THREE.Mesh(
-    new THREE.SphereGeometry(0.2, 8, 8),
-    new THREE.MeshBasicMaterial({ color: 0xffd27a, transparent: true, opacity: 1 })
-  );
+  const mesh = acquirePooledMesh(flashPool, 32, () => new THREE.Mesh(
+    getFlashGeo(),
+    new THREE.MeshBasicMaterial({ transparent: true, opacity: 1 })
+  ));
+  if (!mesh) return;
+
+  mesh.material.color.setHex(0xffd27a);
+  mesh.material.opacity = 1;
+  mesh.scale.set(1, 1, 1);
   mesh.position.set(x, 0.9, z - 0.15);
-  scene.add(mesh);
-  effects.push({ mesh, life: 0, maxLife: 0.09, type: 'flash' });
+  effects.push({ mesh, life: 0, maxLife: 0.09, type: 'flash', pooled: true });
 }
 
 function spawnDust(x, z) {
@@ -8190,21 +8273,60 @@ function spawnDust(x, z) {
   effects.push({ mesh, life: 0, maxLife: 0.35, type: 'dust' });
 }
 
+function acquirePooledMesh(pool, limit, factory) {
+  let entry = pool.find((e) => !e.inUse);
+  if (!entry) {
+    if (pool.length >= limit) return null;
+    const mesh = factory();
+    mesh.visible = false;
+    scene.add(mesh);
+    entry = { inUse: false, mesh };
+    mesh.userData.poolEntry = entry;
+    pool.push(entry);
+  }
+  entry.inUse = true;
+  entry.mesh.visible = true;
+  return entry.mesh;
+}
+
+function releaseEffectMesh(mesh) {
+  mesh.visible = false;
+  if (mesh.userData.poolEntry) mesh.userData.poolEntry.inUse = false;
+}
+
+function getRingGeo() {
+  if (!sharedRingGeo) sharedRingGeo = new THREE.RingGeometry(0.18, 0.32, 20);
+  return sharedRingGeo;
+}
+
+function getFlashGeo() {
+  if (!sharedFlashGeo) sharedFlashGeo = new THREE.SphereGeometry(0.2, 8, 8);
+  return sharedFlashGeo;
+}
+
+function getTracerGeo() {
+  if (!sharedTracerGeo) sharedTracerGeo = new THREE.BoxGeometry(0.06, 0.06, 1);
+  return sharedTracerGeo;
+}
+
 function spawnRing(x, z, color, maxLife) {
-  const mesh = new THREE.Mesh(
-    new THREE.RingGeometry(0.18, 0.32, 20),
+  const mesh = acquirePooledMesh(ringPool, 64, () => new THREE.Mesh(
+    getRingGeo(),
     new THREE.MeshBasicMaterial({
-      color,
       transparent: true,
       opacity: 0.9,
       side: THREE.DoubleSide,
       depthWrite: false,
     })
-  );
+  ));
+  if (!mesh) return;
+
+  mesh.material.color.setHex(color);
+  mesh.material.opacity = 0.9;
+  mesh.scale.set(1, 1, 1);
   mesh.rotation.x = -Math.PI / 2;
   mesh.position.set(x, 0.06, z);
-  scene.add(mesh);
-  effects.push({ mesh, life: 0, maxLife, type: 'ring' });
+  effects.push({ mesh, life: 0, maxLife, type: 'ring', pooled: true });
 }
 
 /* ==========================================================
@@ -8861,14 +8983,18 @@ function spawnTracer(fromX, fromZ, toX, toZ, color, fromY = 0.8) {
   const dz = toZ - fromZ;
   const len = Math.hypot(dx, dz) || 0.1;
 
-  const mesh = new THREE.Mesh(
-    new THREE.BoxGeometry(0.06, 0.06, len),
-    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9 })
-  );
+  const mesh = acquirePooledMesh(tracerPool, 32, () => new THREE.Mesh(
+    getTracerGeo(),
+    new THREE.MeshBasicMaterial({ transparent: true })
+  ));
+  if (!mesh) return;
+
+  mesh.material.color.setHex(color);
+  mesh.material.opacity = 0.9;
+  mesh.scale.set(1, 1, len);
   mesh.position.set((fromX + toX) / 2, fromY, (fromZ + toZ) / 2);
   mesh.lookAt(toX, fromY, toZ);
-  scene.add(mesh);
-  effects.push({ mesh, life: 0, maxLife: 0.15, type: 'fade' });
+  effects.push({ mesh, life: 0, maxLife: 0.15, type: 'fade', pooled: true });
 }
 
 /* 横排技能：一道贯穿全屏的光带 */
@@ -8958,8 +9084,12 @@ function updateEffects(dt) {
       if (fx.type === 'arc') {
         spawnRing(fx.to.x, fx.to.z, fx.mesh.material.color.getHex(), 0.5);
       }
-      scene.remove(fx.mesh);
-      disposeMesh(fx.mesh);
+      if (fx.pooled) {
+        releaseEffectMesh(fx.mesh);
+      } else {
+        scene.remove(fx.mesh);
+        disposeMesh(fx.mesh);
+      }
       effects.splice(i, 1);
       continue;
     }

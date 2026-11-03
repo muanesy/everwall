@@ -411,6 +411,22 @@ canvas {
   margin-top: 3px;
 }
 
+/* ?debug=1 性能浮层：只在排查卡顿时出现 */
+.perf-debug {
+  position: fixed;
+  left: 8px;
+  bottom: 8px;
+  z-index: 60;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(120, 220, 160, 0.35);
+  background: rgba(4, 10, 8, 0.82);
+  color: #9fe3b8;
+  font: 11px/1.5 Consolas, "Courier New", monospace;
+  white-space: pre;
+  pointer-events: none;
+}
+
 .help-body code {
   padding: 1px 4px;
   border-radius: 4px;
