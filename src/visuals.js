@@ -608,10 +608,13 @@ function loadModels() {
         if (gltf) raw[extraKeys[i]] = grab(gltf, /walk/i);
       });
 
-      // Boss 的撕咬动画一次 4.8 秒里咬了三次，出拳只要中间那一段
+      // Boss 的撕咬动画一次 4.8 秒里咬了三次，每次是一个完整的 1.6 秒循环
+      //（0-1.6 / 1.6-3.2 / 3.2-4.8 的骨骼姿态完全一致）。
+      // 必须按循环边界切，首尾姿态才对得上；以前切 1.5-3.0 落在循环中间，
+      // 每拳重新播放时从收招姿势瞬间跳回半程姿势，看起来就是一下抽搐。
       const bossClip = raw.boss && raw.boss.userData.attackClip;
       if (bossClip && bossClip.duration > 4 && /bite/i.test(bossClip.name)) {
-        raw.boss.userData.attackClip = sliceClip(bossClip, 1.5, 3.0, 'BiteOnce');
+        raw.boss.userData.attackClip = sliceClip(bossClip, 0, 1.6, 'BiteOnce');
       }
 
       ZOMBIE_LOOKS.forEach((look, i) => {
