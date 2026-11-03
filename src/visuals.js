@@ -35,7 +35,7 @@ export { eraMaps, pickEraMap } from './visuals-era.js';
 import { createDayNight, nightForWave } from './visuals-daynight.js';
 import { initBarrels, updateBarrels, resetBarrels, hitTestBarrel, spawnBarrelAt } from './visuals-barrels.js';
 // 槽位正式模型：六槽位 × 六时代 × 五等级，全程序化（对应 docs/美术需求-槽位与技能.md P1）
-import { buildSlotStructure, buildLevelDots, disposeSlotStructure } from './visuals-slots.js';
+import { buildSlotStructure, buildLevelDots, disposeSlotStructure, SLOT_SCALE } from './visuals-slots.js';
 // 17 张新增地图：复用现有贴图，靠背景物/雾/光区分（见 visuals-maps.js 顶部说明）
 import { NEW_MAPS, isNewMap, buildFlank } from './visuals-maps.js';
 // 环境事件四件套（2026-11-03）：天气粒子、预警脉冲圈、熔岩地缝、电磁电弧。
@@ -6735,14 +6735,14 @@ if (typeof window !== 'undefined') window.__zombieVisuals = zombieMeshes;
 function initSlots() {
   for (const s of SLOT_DEFS) {
     const pad = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.85, 0.95, 0.08, 20),
+      new THREE.CylinderGeometry(0.85 * SLOT_SCALE, 0.95 * SLOT_SCALE, 0.08 * SLOT_SCALE, 24),
       new THREE.MeshStandardMaterial({ color: 0x1a2430, roughness: 0.85 })
     );
-    pad.position.set(s.x, 0.04, s.z);
+    pad.position.set(s.x, 0.04 * SLOT_SCALE, s.z);
     scene.add(pad);
 
     const ring = new THREE.Mesh(
-      new THREE.RingGeometry(0.72, 0.88, 24),
+      new THREE.RingGeometry(0.72 * SLOT_SCALE, 0.88 * SLOT_SCALE, 28),
       new THREE.MeshBasicMaterial({
         color: s.color,
         transparent: true,
@@ -6752,7 +6752,7 @@ function initSlots() {
       })
     );
     ring.rotation.x = -Math.PI / 2;
-    ring.position.set(s.x, 0.09, s.z);
+    ring.position.set(s.x, 0.09 * SLOT_SCALE, s.z);
     scene.add(ring);
 
     // 正式模型按「时代 + 等级」现造，时代或等级变了就整个重建

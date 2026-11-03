@@ -111,21 +111,29 @@ function clampLevel(level) {
 /* ----------------------------------------------------------
  * 槽位尺寸规格（对应 docs/美术需求-槽位与技能.md 的「尺寸与锚点」）
  *
- *   占地半径 ≤ 0.85   超了会盖住地基上的发光环（环在 0.72~0.88）
- *   高度 0.7~1.1      相机俯角 45°、槽位在 z=15 比玩家更靠近相机，
- *                     再高会把后面的僵尸和士兵挡住；5 级放宽到 1.45
+ *   占地半径 ≤ 1.20   超了会盖住地基上的发光环（环在 1.02~1.24）
+ *   高度 0.99~1.56    相机俯角 45°、槽位在 z=15 比玩家更靠近相机，
+ *                     再高会把后面的僵尸和士兵挡住；5 级放宽到 2.05
  *   y=0 就是地面      浮空或陷进地里都读作模型坏了
  *
- * 这些数字不是建议值。实测 30 个等级外形时有 20 项越线：
+ * 2026-11-03：五个槽位整体放大，占**面积**翻倍。面积 ×2 意味着
+ * 线性尺寸 ×√2，所以下面每个数都是原值乘 SLOT_SCALE 得来的，不是
+ * 随手取整——地基、光环、模型规格必须同一个倍数，否则模型会溢出
+ * 平台，或者平台大得像个空盘子。起因是投石机这类横宽结构在手机
+ * 405×720 上只有几十像素，根本看不出造的是什么。
+ *
+ * 这些数字不是建议值。实测 30 个等级外形时有 20 项越线（放大前）：
  * 指挥塔到 2.44、底部陷到 -0.41，攻城 5 级到 2.21 且半径 1.24。
  * 每个 builder 各写各的局部坐标，没人负责整体尺寸，
  * 所以在出口统一收口一次，比回头改 30 处局部数值可靠。
  * ---------------------------------------------------------- */
+export const SLOT_SCALE = Math.SQRT2;
+
 const SLOT_SPEC = {
-  maxRadius: 0.85,
-  maxHeight: 1.1,
-  maxHeightLv5: 1.45,
-  minHeight: 0.7,
+  maxRadius: 0.85 * SLOT_SCALE,      // 1.202
+  maxHeight: 1.1 * SLOT_SCALE,       // 1.556
+  maxHeightLv5: 1.45 * SLOT_SCALE,   // 2.051
+  minHeight: 0.7 * SLOT_SCALE,       // 0.990
 };
 
 /* 把造好的槽位模型压回规格内。
@@ -152,14 +160,17 @@ function fitSlotToSpec(g, lv) {
     box.getSize(size);
   }
 
-  // 超高的压、超宽的收
-  const sy = size.y > maxH ? maxH / size.y : 1;
+  // 超高的压、超宽的收。
+  // 压高留 0.4% 余量：Box3.setFromObject 对旋转过的小零件有顶点级精度损失，
+  // 正好压到 maxH 时复测会冒出来 1.560 > 1.5556 这种假越界。
+  const sy = size.y > maxH ? (maxH / size.y) * 0.996 : 1;
 
   /* 占地半径要按**角点**算，不能按直边算。
    *
-   * 地基上的发光环在半径 0.72~0.88，模型只要没伸到 0.88 以外就不会盖住它。
+   * 地基上的发光环在半径 1.02~1.24（放大前是 0.72~0.88），
+   * 模型只要没伸到 1.24 以外就不会盖住它。
    * 而"最远点"是包围盒的水平对角——0.63 见方的方块，四角到中心 0.89，
-   * 已经不在地基圈里了。第一版只拿 max(|x|,|z|) 去比 0.85，
+   * 已经不在地基圈里了。第一版只拿 max(|x|,|z|) 去比 maxRadius，
    * 方形模型会全部漏网，实测 7 项照旧越线。 */
   const maxAbsX = Math.max(Math.abs(box.min.x), Math.abs(box.max.x));
   const maxAbsZ = Math.max(Math.abs(box.min.z), Math.abs(box.max.z));
@@ -1121,7 +1132,8 @@ export function buildSlotStructure(id, era, level) {
   // 去糊弄剪影（那会让 5 级看起来只是同一个模型放大）。
   g.scale.setScalar(1 + (lv - 1) * 0.05);
 
-  // 出口统一收口：把尺寸压回文档规格（占地 ≤0.85、高 ≤1.1/1.45、底贴地）
+  // 出口统一收口：把尺寸压回文档规格（占地 ≤1.20、高 ≤1.56/2.05、底贴地）
+  // 数字跟着 SLOT_SCALE 走，别再写死——放大过一次，写死就会和规格脱节
   fitSlotToSpec(g, lv);
 
   // 收集可旋转部件，交给外部每帧推进（spinY 绕 y，其余沿用原来的 z）
@@ -1148,9 +1160,10 @@ export function buildLevelDots(level, color) {
 
   // 每个点必须有自己的材质：外面每帧按等级改 opacity，
   // 共用一份材质的话改第 1 个点会把 5 个点一起改掉（踩过）
-  const geo = new THREE.CircleGeometry(0.055, 10);
+  const geo = new THREE.CircleGeometry(0.055 * SLOT_SCALE, 10);
 
-  // 五个点排在槽位前方，间距 0.16
+  // 五个点排在槽位前方。间距和距离都按 √2 拉开，否则地基变大了、
+  // 五个点还挤在中间一小坨
   for (let i = 0; i < 5; i++) {
     const dot = new THREE.Mesh(
       geo,
@@ -1161,7 +1174,7 @@ export function buildLevelDots(level, color) {
       })
     );
     dot.rotation.x = -Math.PI / 2;
-    dot.position.set((i - 2) * 0.16, 0.1, 0.78);
+    dot.position.set((i - 2) * 0.16 * SLOT_SCALE, 0.11, 0.78 * SLOT_SCALE);
     dot.renderOrder = 3;
     g.add(dot);
   }
