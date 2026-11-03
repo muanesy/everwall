@@ -153,6 +153,61 @@ function tone(t, { type = 'sine', from = 440, to = null, dur = 0.12, gain = 0.3,
   osc.stop(t + dur + 0.05);
 }
 
+/* 僵尸嗓音：锯齿波 + 两个共振峰 + 气声。
+ * 单共振峰听起来像电子蜂鸣，加第二共振峰后才像喉咙里发出来的声音。 */
+function zombieVoice(t, {
+  base = 120,
+  dur = 0.6,
+  gain = 0.25,
+  formants = [600, 1200],
+  formantGains = [1, 0.45],
+  bend = [1.18, 0.82],
+  breath = 0.35,
+  breathFreq = 900,
+} = {}) {
+  const osc = ctx.createOscillator();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(base, t);
+  osc.frequency.linearRampToValueAtTime(
+    Math.max(20, base * bend[0]), t + dur * 0.3
+  );
+  osc.frequency.linearRampToValueAtTime(
+    Math.max(20, base * bend[1]), t + dur
+  );
+
+  const out = ctx.createGain();
+  env(out, t, gain, 0.02, dur * 0.82);
+  out.connect(master);
+
+  formants.forEach((freq, i) => {
+    const f = ctx.createBiquadFilter();
+    f.type = 'bandpass';
+    f.frequency.value = freq;
+    f.Q.value = 3 + i * 1.6;
+    const fg = ctx.createGain();
+    fg.gain.value = formantGains[i] ?? 0.45;
+    osc.connect(f).connect(fg).connect(out);
+  });
+
+  osc.start(t);
+  osc.stop(t + dur + 0.1);
+
+  if (breath > 0) {
+    const src = ctx.createBufferSource();
+    src.buffer = noiseBuf;
+    src.playbackRate.value = 0.85 + Math.random() * 0.3;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = breathFreq;
+    bp.Q.value = 1.2;
+    const bg = ctx.createGain();
+    env(bg, t, gain * breath, 0.03, dur * 0.7);
+    src.connect(bp).connect(bg).connect(master);
+    src.start(t);
+    src.stop(t + dur + 0.1);
+  }
+}
+
 /* ----------------------------------------------------------
  * 具体音效
  * ---------------------------------------------------------- */
@@ -203,6 +258,18 @@ export function playZombieDie() {
     // 月球：真空里倒下的一声脆响
     tone(t + 0.02, { type: 'square', from: 1200, to: 700, dur: 0.1, gain: 0.075 });
   }
+
+  // 死亡嚎叫：两层共振峰的下坠音，比单纯闷响更像“倒下一个东西”
+  zombieVoice(t + 0.01, {
+    base: (240 + Math.random() * 70) * VOICE.freq,
+    dur: 0.38 * VOICE.dur,
+    gain: 0.34 * VOICE.gain,
+    formants: [760 * VOICE.freq, 1500 * VOICE.freq],
+    formantGains: [1, 0.5],
+    bend: [1.15, 0.5],
+    breath: 0.5,
+    breathFreq: 1400 * VOICE.freq,
+  });
 }
 
 // 僵尸开始攻击的吼声，按类型换嗓子（type 约定见 docs/僵尸类型.md）：
@@ -229,12 +296,21 @@ export function playZombieAttack(type = 0) {
     const g = ctx.createGain();
     env(g, t, peak * VOICE.gain, 0.03, d);
 
+    // 第二共振峰：从“电子嗡”变成喉咙里的沙哑
+    const f2 = ctx.createBiquadFilter();
+    f2.type = 'bandpass';
+    f2.frequency.setValueAtTime(freq * 2.1 * VOICE.freq, t);
+    f2.Q.value = q * 0.7 * VOICE.q;
+    const g2 = ctx.createGain();
+    g2.gain.value = 0.38;
+
     const breath = ctx.createBufferSource();
     breath.buffer = noiseBuf;
     const bg = ctx.createGain();
     env(bg, t, peak * 0.4 * VOICE.gain, 0.03, d * 0.8);
 
     osc.connect(f).connect(g).connect(master);
+    osc.connect(f2).connect(g2).connect(g);
     breath.connect(bg).connect(master);
     osc.start(t);
     osc.stop(t + d + 0.05);
@@ -481,37 +557,25 @@ export function updateAudio(dt, zombieCount, playing) {
 
 function playGrowl() {
   const t = ctx.currentTime;
-  // 基频抬到 100~150 Hz，共振峰放到 600~800 Hz；
-  // 原来 68~102 Hz / 320 Hz 在手机小喇叭上几乎听不见
-  const base = 100 + Math.random() * 45;
 
-  const osc = ctx.createOscillator();
-  osc.type = 'sawtooth';
-  osc.frequency.setValueAtTime(base, t);
-  osc.frequency.linearRampToValueAtTime(base * 1.25, t + 0.25);
-  osc.frequency.linearRampToValueAtTime(base * 0.8, t + 0.65);
+  // 三种元音轮换，避免每一声都是同一个“哼哼”
+  const vowels = [
+    { base: 96,  formants: [480, 1080], gains: [1, 0.42], bend: [1.22, 0.78] },
+    { base: 116, formants: [640, 1420], gains: [1, 0.5],  bend: [1.12, 0.82] },
+    { base: 82,  formants: [420, 930],  gains: [1, 0.38], bend: [1.3, 0.72] },
+  ];
+  const v = vowels[Math.floor(Math.random() * vowels.length)];
 
-  const f = ctx.createBiquadFilter();
-  f.type = 'bandpass';
-  f.frequency.value = 620 + Math.random() * 180;
-  f.Q.value = 3.2;
-
-  const g = ctx.createGain();
-  env(g, t, 0.3, 0.14, 0.65);
-
-  // 一点气声，让吼叫不干
-  const breath = ctx.createBufferSource();
-  breath.buffer = noiseBuf;
-  const bg = ctx.createGain();
-  env(bg, t, 0.12, 0.1, 0.55);
-
-  osc.connect(f).connect(g).connect(master);
-  breath.connect(bg).connect(master);
-
-  osc.start(t);
-  osc.stop(t + 0.9);
-  breath.start(t);
-  breath.stop(t + 0.8);
+  zombieVoice(t, {
+    base: (v.base + Math.random() * 28) * VOICE.freq,
+    dur: (0.75 + Math.random() * 0.2) * VOICE.dur,
+    gain: 0.3 * VOICE.gain,
+    formants: v.formants.map((f) => f * VOICE.freq),
+    formantGains: v.gains,
+    bend: v.bend,
+    breath: 0.4,
+    breathFreq: (900 + Math.random() * 350) * VOICE.freq,
+  });
 }
 
 /* ----------------------------------------------------------
