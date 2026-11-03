@@ -163,10 +163,10 @@ export function playShoot() {
   const t = ctx.currentTime;
 
   // 枪声稍微收一点，给僵尸音效让出空间
-  noise(t, 0.11, { type: 'lowpass', freq: 3800, sweepTo: 380, gain: 0.3 });
-  noise(t, 0.045, { type: 'highpass', freq: 2400, gain: 0.09 });
+  noise(t, 0.11, { type: 'lowpass', freq: 3800, sweepTo: 380, gain: 0.18 });
+  noise(t, 0.045, { type: 'highpass', freq: 2400, gain: 0.05 });
 
-  tone(t, { type: 'sine', from: 130, to: 42, dur: 0.1, gain: 0.4 });
+  tone(t, { type: 'sine', from: 130, to: 42, dur: 0.1, gain: 0.26 });
 }
 
 // 僵尸死亡：闷响 + 一声短促的下坠
@@ -179,20 +179,20 @@ export function playZombieDie() {
     type: 'lowpass',
     freq: 900 * VOICE.freq,
     sweepTo: 160,
-    gain: 0.3 * VOICE.gain,
+    gain: 0.45 * VOICE.gain,
   });
   // 手机小喇叭对低频很弱，补一层中高频的“噗嗤”，死亡声才听得见
   noise(t + 0.01, 0.09, {
     type: 'highpass',
     freq: 1100,
-    gain: 0.14 * VOICE.gain,
+    gain: 0.36 * VOICE.gain,
   });
   tone(t, {
     type: 'triangle',
     from: 240 * (VOICE.freq > 1 ? 1.1 : 0.95),
     to: 90,
     dur: 0.18 * VOICE.dur,
-    gain: 0.24 * VOICE.gain,
+    gain: 0.36 * VOICE.gain,
   });
 
   if (VOICE.rumble) {
@@ -212,7 +212,7 @@ export function playZombieAttack(type = 0) {
   if (!ready('zombieAttack' + type, THROTTLE.zombieAttack)) return;
   const t = ctx.currentTime;
 
-  const snarl = (base, { dur = 0.5, peak = 0.21, freq = 320, q = 3 } = {}) => {
+  const snarl = (base, { dur = 0.5, peak = 0.34, freq = 320, q = 3 } = {}) => {
     // 套上地图音色：滤波中心、Q、时长、响度都按地图缩放
     const d = dur * VOICE.dur;
     const osc = ctx.createOscillator();
@@ -260,17 +260,17 @@ export function playZombieAttack(type = 0) {
 
   if (type === 1) {
     // 大块头：很低很沉，但把共振峰抬到 320，手机喇叭也能听见
-    snarl(78, { dur: 0.7, peak: 0.2, freq: 320, q: 2.5 });
+    snarl(78, { dur: 0.7, peak: 0.32, freq: 320, q: 2.5 });
     tone(t, { type: 'sine', from: 72, to: 38, dur: 0.5, gain: 0.22 });
   } else if (type === 2) {
     // 快鬼：尖利上扬再骤降，像尖叫
-    snarl(360, { dur: 0.32, peak: 0.12, freq: 1200, q: 5 });
+    snarl(360, { dur: 0.32, peak: 0.2, freq: 1200, q: 5 });
   } else if (type === 3) {
     // 精英：沙哑，滤波更窄更毛糙
-    snarl(165, { dur: 0.55, peak: 0.17, freq: 620, q: 6 });
+    snarl(165, { dur: 0.55, peak: 0.3, freq: 620, q: 6 });
   } else {
     // 普通 / 女僵尸：标准嘶吼，女僵尸音色稍尖一点
-    snarl(type === 4 ? 155 : 125, { dur: 0.5, peak: 0.17, freq: 620, q: 3.5 });
+    snarl(type === 4 ? 155 : 125, { dur: 0.5, peak: 0.28, freq: 620, q: 3.5 });
   }
 }
 
@@ -279,8 +279,8 @@ export function playBarrierHit() {
   if (!ready('barrierHit', THROTTLE.barrierHit)) return;
   const t = ctx.currentTime;
 
-  tone(t, { type: 'square', from: 1500, to: 1100, dur: 0.07, gain: 0.11 });
-  noise(t, 0.06, { type: 'bandpass', freq: 3200, q: 6, gain: 0.1 });
+  tone(t, { type: 'square', from: 1500, to: 1100, dur: 0.07, gain: 0.07 });
+  noise(t, 0.06, { type: 'bandpass', freq: 3200, q: 6, gain: 0.06 });
 }
 
 // 屏障数值生效：正数明亮上行，负数低沉下行
@@ -290,11 +290,11 @@ export function playBarrierApply(value) {
   const positive = (value ?? 1) >= 0;
 
   if (positive) {
-    tone(t, { type: 'sine', from: 660, to: 990, dur: 0.14, gain: 0.16 });
-    tone(t + 0.07, { type: 'sine', from: 990, to: 1320, dur: 0.12, gain: 0.12 });
+    tone(t, { type: 'sine', from: 660, to: 990, dur: 0.14, gain: 0.11 });
+    tone(t + 0.07, { type: 'sine', from: 990, to: 1320, dur: 0.12, gain: 0.08 });
   } else {
-    tone(t, { type: 'sawtooth', from: 320, to: 120, dur: 0.22, gain: 0.18 });
-    noise(t, 0.16, { type: 'lowpass', freq: 700, gain: 0.12 });
+    tone(t, { type: 'sawtooth', from: 320, to: 120, dur: 0.22, gain: 0.12 });
+    noise(t, 0.16, { type: 'lowpass', freq: 700, gain: 0.08 });
   }
 }
 
@@ -497,21 +497,21 @@ function playGrowl() {
   f.Q.value = 3.2;
 
   const g = ctx.createGain();
-  env(g, t, 0.17, 0.14, 0.5);
+  env(g, t, 0.3, 0.14, 0.65);
 
   // 一点气声，让吼叫不干
   const breath = ctx.createBufferSource();
   breath.buffer = noiseBuf;
   const bg = ctx.createGain();
-  env(bg, t, 0.075, 0.1, 0.45);
+  env(bg, t, 0.12, 0.1, 0.55);
 
   osc.connect(f).connect(g).connect(master);
   breath.connect(bg).connect(master);
 
   osc.start(t);
-  osc.stop(t + 0.7);
+  osc.stop(t + 0.9);
   breath.start(t);
-  breath.stop(t + 0.6);
+  breath.stop(t + 0.8);
 }
 
 /* ----------------------------------------------------------
