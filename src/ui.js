@@ -89,8 +89,8 @@ const currentMap = (() => {
 })();
 const MAP_NAMES = MAP_NAMES_ALL;
 
-/* 难度：URL 参数优先，其次记住上次选择；默认正常 */
-const DIFFICULTY_KEY = 'everwall-difficulty-v1';
+/* 难度：URL 参数优先，其次记住上次选择；默认简单 */
+const DIFFICULTY_KEY = 'everwall-difficulty-v2';
 let selectedDifficulty = (() => {
   const fromUrl = START_PARAMS.get('difficulty');
   if (fromUrl === 'easy' || fromUrl === 'normal') return fromUrl;
@@ -100,7 +100,7 @@ let selectedDifficulty = (() => {
   } catch (e) {
     // 隐私模式可能没有 localStorage，忽略
   }
-  return 'normal';
+  return 'easy';
 })();
 
 /* 一波多少秒：兜底值。实际读 state.waveDuration（game.js 统一给），
@@ -593,7 +593,7 @@ function buildDom() {
         挡住右边的僵尸潮。
       </p>
       <div class="map-picker era-picker">
-        <p class="map-picker__label">难度 <span class="map-picker__count">简单：僵尸血量 ×0.7、伤害 ×0.7</span></p>
+        <p class="map-picker__label">难度 <span class="map-picker__count">默认简单：僵尸血量 ×0.7、伤害 ×0.7</span></p>
         <div class="era-picker__grid">
           <button class="map-chip${selectedDifficulty === 'normal' ? ' is-active' : ''}" type="button" data-difficulty="normal">正常</button>
           <button class="map-chip${selectedDifficulty === 'easy' ? ' is-active' : ''}" type="button" data-difficulty="easy">简单</button>
@@ -797,7 +797,7 @@ function buildDom() {
         <p>士兵在屏幕下方自动开火，左右移动躲开尸潮。士兵数量同时是生命值，归零就结束。打碎左边的绿色屏障可以加兵，撑得越久分数越高。</p>
 
         <h3>难度</h3>
-        <p>开始页可选正常或简单。简单模式只削弱敌人：僵尸血量 ×0.7、移速 ×0.85、刷新间隔 ×1.3、同屏数量 ×0.8、敌人造成的伤害 ×0.7、Boss 血量 ×0.7。玩家火力、技能和关卡结构不变；简单模式会在波次旁边显示一个绿色「简单」标记。</p>
+        <p>开始页默认选择简单，也可以切回正常。简单模式只削弱敌人：僵尸血量 ×0.7、移速 ×0.85、刷新间隔 ×1.3、同屏数量 ×0.8、敌人造成的伤害 ×0.7、Boss 血量 ×0.7。玩家火力、技能和关卡结构不变；简单模式会在波次旁边显示一个绿色「简单」标记。</p>
 
         <h3>操作</h3>
         <ul>

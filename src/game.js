@@ -667,9 +667,9 @@ const state = {
   bloodMoon: false,      // 血月是否生效（视觉层派 bloodMoon 事件）
   bloodMoonKills: 0,     // 本次血月里真正打死的僵尸数（撞线删掉的不算）
   bloodMoonHealed: 0,    // 本次血月已回多少兵
-  difficulty: 'normal',  // normal / easy
-  startDifficulty: 'normal',
-  diff: { ...DIFFICULTY_PRESETS.normal },
+  difficulty: 'easy',    // normal / easy；新玩家默认简单
+  startDifficulty: 'easy',
+  diff: { ...DIFFICULTY_PRESETS.easy },
   timeScale: 1,
   // 槽位默认全部锁定，抽到对应卡才生效；level 0 = 未解锁，1-5 = 等级
   slots: { siege: false, support: false, closeDefense: false, command: false, summon: false },
@@ -1071,7 +1071,11 @@ function prepareMapEvent() {
   const next = {
     id,
     mapId: state.mapId,
-    wave: 1 + Math.floor(Math.random() * CONFIG.era.everyWaves),
+    // 第一波永远不排环境事件，给玩家先熟悉屏障和尸潮；
+    // 事件只落在第 2、3 波
+    wave: 2 + Math.floor(
+      Math.random() * Math.max(1, CONFIG.era.everyWaves - 1)
+    ),
     phase: 'idle',
     timer: 0,
     spots: [],
@@ -1368,8 +1372,9 @@ function resetState(opts = {}) {
   state.paused = false;
   state.testMode = !!opts.testMode;
 
-  // 难度只影响敌人强度、数量和敌人造成的伤害，不改玩家火力
-  const difficulty = opts.difficulty === 'easy' ? 'easy' : 'normal';
+  // 难度只影响敌人强度、数量和敌人造成的伤害，不改玩家火力。
+  // 没传难度时默认简单，正常模式必须显式传 'normal'。
+  const difficulty = opts.difficulty === 'normal' ? 'normal' : 'easy';
   state.difficulty = difficulty;
   state.startDifficulty = difficulty;
   state.diff = { ...DIFFICULTY_PRESETS[difficulty] };
