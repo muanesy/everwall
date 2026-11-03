@@ -243,6 +243,7 @@ let playerShadow = null;
 let playerRing = null;     // 玩家脚下的指挥光环
 let buffRing = null;       // 基因爆发的绿色攻速光环
 let commandMarkGroup = null; // 指挥槽的集火标记
+let fxToxic = null;          // 毒雾全屏层
 // 恶劣天气临时把雾压近：p 从 0 渐变到 1，结束后再渐回 0。
 // 以前是直接改 scene.fog，浓雾会"啪"一下糊脸，退场也硬切。
 const envFogFade = {
@@ -1077,6 +1078,7 @@ export function initVisuals(container, events) {
     <div class="fx-floats"></div>
     <div class="fx-toast"></div>
     <div class="fx-bloodmoon"></div>
+    <div class="fx-toxic"></div>
     <div class="fx-fade"></div>`;
   document.body.appendChild(fxLayer);
   fxBanner = fxLayer.querySelector('.fx-banner');
@@ -1087,6 +1089,7 @@ export function initVisuals(container, events) {
   fxToast = fxLayer.querySelector('.fx-toast');
   fxFade = fxLayer.querySelector('.fx-fade');
   fxBloodMoon = fxLayer.querySelector('.fx-bloodmoon');
+  fxToxic = fxLayer.querySelector('.fx-toxic');
 
   window.addEventListener('resize', resize);
   resize();
@@ -1350,15 +1353,28 @@ export function initVisuals(container, events) {
   // 毒雾/熔岩地面区：直接铺一层持续的区域
   events.addEventListener('envZoneStart', (e) => {
     const d = e.detail;
+    let hasToxic = false;
     for (const z of d.zones || []) {
       spawnGroundArea(
         z.x,
         z.z,
         z.radius,
         z.kind === 'lava' ? 0xff6a2a : 0x8fe36a,
-        d.duration || 5
+        d.duration || 5,
+        0.2
       );
+      if (z.kind === 'toxic') {
+        hasToxic = true;
+        spawnToxicFogArea(z.x, z.z, z.radius, d.duration || 5);
+      }
     }
+    // 毒雾额外压一层全屏绿色雾，做出「大面积挡视线」的压迫感；
+    // 透明度比天气浓雾低一档，还能看清脚下和僵尸轮廓
+    if (hasToxic && fxToxic) fxToxic.classList.add('show');
+  });
+
+  events.addEventListener('envEventEnd', () => {
+    if (fxToxic) fxToxic.classList.remove('show');
   });
 
   events.addEventListener('envQuake', () => {
@@ -1895,6 +1911,7 @@ function doSwitchMapLook(mapId) {
   envFogFade.target = 0;
   envFogFade.base = null;
   envFogFade.color = null;
+  if (fxToxic) fxToxic.classList.remove('show');
 
   // 背景色与雾
   scene.background = new THREE.Color(m.bg);
@@ -8679,13 +8696,13 @@ function spawnRebootFx(removed = []) {
 }
 
 /* 地面范围圈：给圆形技能标出覆盖范围 */
-function spawnGroundArea(x, z, radius, color, maxLife = 0.7) {
+function spawnGroundArea(x, z, radius, color, maxLife = 0.7, opacity = 0.14) {
   const disc = new THREE.Mesh(
     new THREE.CircleGeometry(radius, 48),
     new THREE.MeshBasicMaterial({
       color,
       transparent: true,
-      opacity: 0.14,
+      opacity,
       side: THREE.DoubleSide,
       depthWrite: false,
     })
@@ -8733,6 +8750,34 @@ function spawnPlagueFog(x, z, radius) {
   group.position.set(x, 0, z);
   scene.add(group);
   effects.push({ mesh: group, life: 0, maxLife: 5.4, type: 'plagueFog' });
+}
+
+/* 环境事件毒雾：一大片贴地绿雾，覆盖整个毒圈 */
+function spawnToxicFogArea(x, z, radius, life = 6) {
+  const group = new THREE.Group();
+  const count = 14;
+  for (let i = 0; i < count; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.sqrt(Math.random()) * radius * 0.85;
+    const puff = new THREE.Mesh(
+      new THREE.SphereGeometry(1.0 + Math.random() * 0.9, 8, 6),
+      new THREE.MeshBasicMaterial({
+        color: 0x8fe36a,
+        transparent: true,
+        opacity: 0.1,
+        depthWrite: false,
+      })
+    );
+    puff.position.set(
+      Math.cos(a) * r,
+      0.35 + Math.random() * 0.8,
+      Math.sin(a) * r
+    );
+    group.add(puff);
+  }
+  group.position.set(x, 0, z);
+  scene.add(group);
+  effects.push({ mesh: group, life: 0, maxLife: life, type: 'toxicFogArea' });
 }
 
 /* 箭雨：圆形覆盖区 + 一批箭矢从上方落进圈里 */
@@ -8911,6 +8956,14 @@ function updateEffects(dt) {
       const fade = t < 0.82 ? 1 : (1 - t) / 0.18;
       for (const puff of fx.mesh.children) {
         puff.material.opacity = 0.12 * fade;
+      }
+    } else if (fx.type === 'toxicFogArea') {
+      // 环境事件毒雾：前 20% 淡入、后 20% 淡出，中间缓慢翻涌
+      fx.mesh.scale.setScalar(1 + t * 0.25);
+      fx.mesh.rotation.y = t * 0.35;
+      const fade = t < 0.2 ? t / 0.2 : (t > 0.8 ? (1 - t) / 0.2 : 1);
+      for (const puff of fx.mesh.children) {
+        puff.material.opacity = 0.1 * fade;
       }
     } else if (fx.type === 'arc' || fx.type === 'arrow') {
       const x = fx.from.x + (fx.to.x - fx.from.x) * t;

@@ -770,6 +770,30 @@ canvas {
       rgba(78, 6, 4, 0.66) 100%);
 }
 
+/* ---------- 毒雾全屏层 ----------
+ * 环境事件的毒雾会盖住整个画面，比天气浓雾淡一档：
+ * 能看清脚下的毒圈和僵尸轮廓，但远处会糊掉。 */
+
+.fx-toxic {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 6;
+  opacity: 0;
+  transition: opacity 0.9s ease;
+  background:
+    radial-gradient(ellipse 65% 50% at 28% 62%,
+      rgba(140, 235, 110, 0.34), rgba(90, 190, 70, 0) 70%),
+    radial-gradient(ellipse 60% 45% at 74% 36%,
+      rgba(110, 215, 85, 0.3), rgba(70, 160, 60, 0) 70%),
+    radial-gradient(ellipse at 50% 50%,
+      rgba(80, 170, 60, 0.1) 30%, rgba(30, 80, 30, 0.3) 100%);
+}
+
+.fx-toxic.show {
+  opacity: 1;
+}
+
 /* ---------- 兵种档位徽标（左上角，血条下面） ---------- */
 
 .tier {

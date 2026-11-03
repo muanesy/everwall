@@ -772,7 +772,22 @@ events.addEventListener('meteorImpact', (e) => {
   if (state.status !== 'playing') return;
   const d = e.detail || {};
   const radius = Number(d.radius) || 2.6;
-  damageZombiesInRadius(d.x, d.z, radius, 70);
+
+  if (state.era >= CONFIG.era.count - 1) {
+    // 终幕：陨石改成最大生命百分比，Boss 减半
+    const r2 = radius * radius;
+    for (let i = state.zombies.length - 1; i >= 0; i--) {
+      const zb = state.zombies[i];
+      const dx = zb.x - d.x;
+      const dz = zb.z - d.z;
+      if (dx * dx + dz * dz > r2) continue;
+      const maxHp = Math.max(1, zb.maxHp || zb.hp);
+      damageZombieAt(i, maxHp * (zb.boss ? 0.125 : 0.25));
+    }
+  } else {
+    damageZombiesInRadius(d.x, d.z, radius, 70);
+  }
+
   if (Math.hypot(state.player.x - d.x, state.player.z - d.z) < radius) {
     damageArmy(10, 'env');
   }
@@ -957,8 +972,10 @@ function envEventName(ev) {
 
 // 清掉当前环境事件的运行时状态（换图、重开、测试模式强切事件时共用）
 function clearEnvRuntime() {
-  if (state.envEvent?.phase === 'active' && state.envEvent.id === 'weather') {
-    emit('envWeatherEnd', {});
+  if (state.envEvent?.phase === 'active') {
+    // 通知画面层收掉毒雾全屏层等持续特效
+    emit('envEventEnd', { id: state.envEvent.id });
+    if (state.envEvent.id === 'weather') emit('envWeatherEnd', {});
   }
   state.envEvent = null;
   state.envZones.length = 0;
@@ -1059,7 +1076,8 @@ function buildEnvSpots(ev) {
   }
 
   if (ev.id === 'toxic' || ev.id === 'lava') {
-    const radius = ev.id === 'toxic' ? 2.5 : 2.4;
+    // 范围翻倍：毒圈/熔岩区要能盖住整片战场，而不是脚下一个小圆
+    const radius = ev.id === 'toxic' ? 5.5 : 5.2;
     const points = topDensestPoints(2);
     const playerZone = {
       x: clampX(state.player.x + (Math.random() * 2 - 1) * 2.4),
@@ -1093,9 +1111,10 @@ function startEnvActive(ev) {
     setEnvDebuff(0.8, 1, 1.5, 3);
     for (let i = state.zombies.length - 1; i >= 0; i--) {
       const z = state.zombies[i];
-      z.envStunUntil = now + (z.boss ? 0.4 : 0.8);
+      // 2026-11-03：停顿从 0.8 秒提到 2 秒，掉血从 5% 提到 15%；Boss 仍然减半
+      z.envStunUntil = now + (z.boss ? 1.0 : 2.0);
       const maxHp = Math.max(1, z.maxHp || z.hp);
-      damageZombieAt(i, maxHp * (z.boss ? 0.025 : 0.05));
+      damageZombieAt(i, maxHp * (z.boss ? 0.075 : 0.15));
     }
     emit('envQuake', {});
     emit('skillNotice', {
@@ -1129,7 +1148,10 @@ function startEnvActive(ev) {
         radius: spot.radius,
         kind: ev.id,
         until: now + active,
-        pct: ev.id === 'toxic' ? 0.02 : 0.04,
+        // 终幕时代环境事件全部改吃百分比伤害：毒雾 3%/秒、熔岩 5%/秒
+        pct: ev.id === 'toxic'
+          ? (state.era >= CONFIG.era.count - 1 ? 0.03 : 0.02)
+          : (state.era >= CONFIG.era.count - 1 ? 0.05 : 0.04),
         playerDps: ev.id === 'toxic' ? 1 : 2,
       });
     }
