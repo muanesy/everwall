@@ -610,6 +610,8 @@ const state = {
     version: 0,
     pickCounts: {},   // 本次面板里每张卡点了几次：1 次蓝框，2 次及以上橙黄框
     picked: [],       // 本次面板的点选顺序：{ id, name, count }，给面板顶部做「本轮已选」
+    poolOrder: [],    // 面板打开那一刻的卡序。卡被点掉后 can() 变 false 会退出卡池，
+                      // 不锁顺序的话整列会往前挪一格，玩家接着点原位置就点到别的卡了
   },
   upgradeCarry: 0,
   // 地图环境事件：{ id, wave, phase, timer, spots, weatherKind }
@@ -1876,6 +1878,8 @@ if (typeof window !== 'undefined') {
   window.__convertExpiredSkills = convertExpiredSkills;
   // 事件总线：排查"某条事件到底派没派"时只能靠它，控制台里 __events.addEventListener(...)
   window.__events = events;
+  // 升级面板正常只在换地图时弹出，要单独测面板交互（连点、卡序）得能手动开
+  window.__openUpgradePanel = openUpgradePanel;
 }
 
 /* ----------------------------------------------------------
@@ -2966,6 +2970,9 @@ function openUpgradePanel() {
   state.upgradePanel.timeLeft = 30;
   state.upgradePanel.pickCounts = {};
   state.upgradePanel.picked = [];
+  // 锁住这次面板的卡序：点过的卡 apply() 后 can() 就变 false、立刻退出卡池，
+  // 不锁的话每点一次整个网格都会重排，第二下很容易点到隔壁那张
+  state.upgradePanel.poolOrder = buildUpgradePool().map((c) => c.id);
   state.upgradePanel.version += 1;
   emit('upgradePanelOpen', { picks });
 }
@@ -4175,8 +4182,19 @@ function updateZombies(dt) {
       z.z = CONFIG.world.killZ;
       z.aggro = true;
 
-      if (Math.abs(dx) > 0.05) {
-        z.x += Math.sign(dx) * CONFIG.zombie.lineSlideSpeed * dt * slowMul;
+      // 滑行的一步不能跨过玩家：lineSlideSpeed(15) 在 60fps 下单帧就有 0.25、
+      // 掉帧到 20fps 能到 0.75，远大于 0.05 的死区。原来直接按整步走，
+      // 一定会从玩家左侧一步跳到右侧、下一帧再跳回来，永远收敛不了 ——
+      // Boss 现在停在线上不出删，这段循环会一直跑，画面就是整只左右抽搐。
+      // 这里按剩余距离收一步，最多走到"距玩家 0.05"就停住。
+      // 注意 dx 是循环开头算的，上面吸附力已经改过 z.x，所以重算一次
+      const dxLine = state.player.x - z.x;
+      if (Math.abs(dxLine) > 0.05) {
+        const step = Math.min(
+          CONFIG.zombie.lineSlideSpeed * dt * slowMul,
+          Math.abs(dxLine) - 0.05
+        );
+        z.x += Math.sign(dxLine) * step;
       }
     } else {
       // 水里走不动：水位漫过脚踝后整场僵尸都慢下来

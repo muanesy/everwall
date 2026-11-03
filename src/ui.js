@@ -350,12 +350,35 @@ function updateUpgradePanel(state) {
     els.upgradeVersion = state.upgradePanel.version;
     const pool = actions && actions.getUpgradePool ? actions.getUpgradePool() : [];
     const counts = state.upgradePanel.pickCounts || {};
-    els.upgradeGrid.innerHTML = pool.map((c) => {
+
+    // 用面板打开时锁住的卡序重绘：点过的卡 apply() 之后 can() 就变 false、
+    // 立刻从池子里消失。如果直接拿新池子重绘，整列会往前挪一格 ——
+    // 刚亮起的蓝框看着"跑到隔壁那张卡上"，第二下也点到了别的卡。
+    // 所以点掉的卡留在原位置灰掉，整次面板的排版不再变动。
+    const byId = new Map(pool.map((c) => [c.id, c]));
+    const pickedById = new Map((state.upgradePanel.picked || []).map((p) => [p.id, p]));
+    const order = state.upgradePanel.poolOrder || [];
+    const cards = [];
+    for (const id of order) {
+      const live = byId.get(id);
+      if (live) {
+        cards.push(live);
+        byId.delete(id);
+        continue;
+      }
+      // 没点过就消失的卡（依赖别的卡才成立）直接收掉，不留空格
+      const used = pickedById.get(id);
+      if (used) cards.push({ id, name: used.name, desc: '本轮已选，不能再选', used: true });
+    }
+    // 卡序表之后才进池的（理论上没有，兜个底）补在末尾
+    for (const c of byId.values()) cards.push(c);
+
+    els.upgradeGrid.innerHTML = cards.map((c) => {
       // 本次面板里点过几次：1 次蓝框，2 次及以上橙黄框，方便看清重复升级
       const n = counts[c.id] || 0;
       const pickedClass = n >= 2 ? ' is-picked-2' : n === 1 ? ' is-picked-1' : '';
       return `
-      <button class="upgrade-choice${pickedClass}" type="button" data-upgrade-id="${c.id}">
+      <button class="upgrade-choice${pickedClass}${c.used ? ' is-used' : ''}" type="button" data-upgrade-id="${c.id}"${c.used ? ' disabled' : ''}>
         ${n > 0 ? `<span class="upgrade-choice__picks">×${n}</span>` : ''}
         <strong>${c.name} ${UPGRADE_EMOJI[c.id] || '⭐'}</strong>
         <span>${c.desc}</span>
@@ -963,8 +986,39 @@ function bindEvents() {
     if (actions && actions.returnToMenu) actions.returnToMenu();
   });
 
-  // 升级面板：按钮会随版本重绘，用事件委托接点击
+  // 升级面板：按钮会随版本重绘，用事件委托接点击。
+  // 不能只用 click —— 每次点选后下一帧会 innerHTML 重建所有按钮，
+  // 如果第二次按下和抬起之间正好夹着这次重建，浏览器就找不到
+  // mousedown/mouseup 的共同祖先，click 事件根本不会产生（快速连点必丢一下）。
+  // 改成按下记 id、抬起提交，不依赖按下的那个按钮还活着。
+  let pressCard = null;
+  els.upgradeGrid.addEventListener('pointerdown', (e) => {
+    const btn = e.target.closest && e.target.closest('[data-upgrade-id]');
+    if (!btn || btn.disabled) {
+      pressCard = null;
+      return;
+    }
+    pressCard = { id: btn.dataset.upgradeId, x: e.clientX, y: e.clientY };
+  });
+
+  window.addEventListener('pointerup', (e) => {
+    const p = pressCard;
+    pressCard = null;
+    if (!p) return;
+    // 拖动超过 16px 当成在滚动列表，不算点选
+    if (Math.hypot(e.clientX - p.x, e.clientY - p.y) > 16) return;
+    initAudio();
+    playClick();
+    if (actions && actions.chooseUpgrade) actions.chooseUpgrade(p.id);
+  });
+
+  window.addEventListener('pointercancel', () => {
+    pressCard = null;
+  });
+
+  // 键盘操作（Enter/空格）不产生指针事件，detail === 0 的 click 才是键盘来的
   els.upgradeGrid.addEventListener('click', (e) => {
+    if (e.detail !== 0) return;
     const btn = e.target.closest('[data-upgrade-id]');
     if (!btn) return;
     initAudio();

@@ -1067,8 +1067,21 @@ canvas {
   color: #8fc2ff;
 }
 
+/* 角标是 span，会被下面的 `.upgrade-choice span { color: var(--muted) }` 压成灰色，
+   看起来像"没点中"。补一条更高优先级的，×1 才是蓝的 */
+.upgrade-choice .upgrade-choice__picks {
+  color: #8fc2ff;
+}
+
 .is-picked-2 .upgrade-choice__picks {
   color: #ffc46b;
+}
+
+/* 本次面板里已经点掉、不能再选的卡：留在原位置灰掉，避免网格重排 */
+.upgrade-choice.is-used,
+.upgrade-choice.is-used:hover {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .upgrade-choice strong {
