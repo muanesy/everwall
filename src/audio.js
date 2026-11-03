@@ -162,10 +162,11 @@ export function playShoot() {
   if (!ready('shoot', THROTTLE.shoot)) return;
   const t = ctx.currentTime;
 
-  noise(t, 0.11, { type: 'lowpass', freq: 3800, sweepTo: 380, gain: 0.34 });
-  noise(t, 0.045, { type: 'highpass', freq: 2400, gain: 0.1 });
+  // 枪声稍微收一点，给僵尸音效让出空间
+  noise(t, 0.11, { type: 'lowpass', freq: 3800, sweepTo: 380, gain: 0.3 });
+  noise(t, 0.045, { type: 'highpass', freq: 2400, gain: 0.09 });
 
-  tone(t, { type: 'sine', from: 130, to: 42, dur: 0.1, gain: 0.45 });
+  tone(t, { type: 'sine', from: 130, to: 42, dur: 0.1, gain: 0.4 });
 }
 
 // 僵尸死亡：闷响 + 一声短促的下坠
@@ -178,23 +179,23 @@ export function playZombieDie() {
     type: 'lowpass',
     freq: 900 * VOICE.freq,
     sweepTo: 160,
-    gain: 0.2 * VOICE.gain,
+    gain: 0.3 * VOICE.gain,
   });
   tone(t, {
     type: 'triangle',
     from: 180 * (VOICE.freq > 1 ? 1.1 : 0.95),
     to: 60,
     dur: 0.18 * VOICE.dur,
-    gain: 0.16 * VOICE.gain,
+    gain: 0.24 * VOICE.gain,
   });
 
   if (VOICE.rumble) {
     // 熔岩：尸体倒下的同时溅起一小撮火星
-    noise(t + 0.04, 0.16, { type: 'highpass', freq: 2600, gain: 0.07 });
+    noise(t + 0.04, 0.16, { type: 'highpass', freq: 2600, gain: 0.105 });
   }
   if (VOICE.ring) {
     // 月球：真空里倒下的一声脆响
-    tone(t + 0.02, { type: 'square', from: 1200, to: 700, dur: 0.1, gain: 0.05 });
+    tone(t + 0.02, { type: 'square', from: 1200, to: 700, dur: 0.1, gain: 0.075 });
   }
 }
 
@@ -205,7 +206,7 @@ export function playZombieAttack(type = 0) {
   if (!ready('zombieAttack' + type, THROTTLE.zombieAttack)) return;
   const t = ctx.currentTime;
 
-  const snarl = (base, { dur = 0.5, peak = 0.14, freq = 320, q = 3 } = {}) => {
+  const snarl = (base, { dur = 0.5, peak = 0.21, freq = 320, q = 3 } = {}) => {
     // 套上地图音色：滤波中心、Q、时长、响度都按地图缩放
     const d = dur * VOICE.dur;
     const osc = ctx.createOscillator();
@@ -247,7 +248,7 @@ export function playZombieAttack(type = 0) {
     }
     // 火山：底下压一层低频轰鸣
     if (VOICE.rumble) {
-      tone(t, { type: 'sine', from: 44, to: 30, dur: d * 1.2, gain: 0.12 * VOICE.gain });
+      tone(t, { type: 'sine', from: 44, to: 30, dur: d * 1.2, gain: 0.18 * VOICE.gain });
     }
   };
 
@@ -488,13 +489,13 @@ function playGrowl() {
   f.Q.value = 4;
 
   const g = ctx.createGain();
-  env(g, t, 0.1, 0.14, 0.5);
+  env(g, t, 0.15, 0.14, 0.5);
 
   // 一点气声，让吼叫不干
   const breath = ctx.createBufferSource();
   breath.buffer = noiseBuf;
   const bg = ctx.createGain();
-  env(bg, t, 0.05, 0.1, 0.45);
+  env(bg, t, 0.075, 0.1, 0.45);
 
   osc.connect(f).connect(g).connect(master);
   breath.connect(bg).connect(master);
