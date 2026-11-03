@@ -518,13 +518,20 @@ const CONFIG = {
     weapons: [
       // 三发扇形：打单体目标只有中间一发能中（实测 0.39×），
       // 但打群体是 1.85×，这是它的定位，别为了单体好看把散布收窄
-      { kind: 'shotgun', name: '霰弹枪', bullets: 3, spread: 2.8,
+      // 中世纪用弩名，其他时代保持枪名，避免热兵器出现在中世纪
+      { kind: 'shotgun', name: '霰弹枪', medievalName: '散射弩',
+        medievalDesc: '三发扇形，近身压制（群体 ×1.85 / 单体 ×0.39）',
+        bullets: 3, spread: 2.8,
         intervalMul: 1.45, damageMul: 0.55, tint: 0xffb04a,
         desc: '三发扇形，近身压制（群体 ×1.85 / 单体 ×0.39）' },
-      { kind: 'sniper', name: '狙击枪', bullets: 1, spread: 0.12,
+      { kind: 'sniper', name: '狙击枪', medievalName: '穿透弩',
+        medievalDesc: '单发重击，必穿透',
+        bullets: 1, spread: 0.12,
         intervalMul: 2.2, damageMul: 3.2, pierce: true, tint: 0x9ad0ff,
         desc: '单发重击，必穿透' },
-      { kind: 'mg', name: '机枪', bullets: 1, spread: 1.0,
+      { kind: 'mg', name: '机枪', medievalName: '连弩',
+        medievalDesc: '快速连发，单发偏轻（DPS ×1.38）',
+        bullets: 1, spread: 1.0,
         intervalMul: 0.42, damageMul: 0.58, tint: 0x8affc0,
         desc: '泼水射速，单发偏轻（DPS ×1.38）' },
     ],
@@ -5629,7 +5636,15 @@ function spawnWeaponPickup() {
   if (state.pickups.length >= CONFIG.pickup.max) return null;
 
   const list = CONFIG.pickup.weapons;
-  const weapon = list[Math.floor(Math.random() * list.length)];
+  const base = list[Math.floor(Math.random() * list.length)];
+  // 中世纪把这把临时武器叫弩，不叫枪；只换显示名和描述，数值不变
+  const weapon = state.era === 0
+    ? {
+        ...base,
+        name: base.medievalName || base.name,
+        desc: base.medievalDesc || base.desc,
+      }
+    : base;
 
   // 落在玩家走位圈里：这个箱子是"走过去捡"的，横向必须在可走范围
   const halfW = CONFIG.world.halfWidth;
