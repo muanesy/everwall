@@ -274,7 +274,8 @@ function buildSiege(g, m, era, lv = 1) {
       loadSiegeModel().then((src) => {
         if (!src) return;
         const model = src.clone(true);
-        fitSlotModel(model, 0.86, 1.2);
+        // 1.04 已接近地基上沿（半径 0.85，四角仍落在圈内），比原来的 0.86 大约 21%
+        fitSlotModel(model, 1.04, 1.45);
         base.visible = false;
         g.add(model);
       });
