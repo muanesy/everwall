@@ -3704,8 +3704,8 @@ function updateBullets(dt) {
       continue;
     }
 
-    // 打中武器箱：直接换枪
-    if (!state.testMode && hitPickup(b.x, b.z, prevZ)) {
+    // 打中武器箱：直接换枪（测试模式保留空投补给箱的命中）
+    if (hitPickup(b.x, b.z, prevZ)) {
       state.bullets.splice(i, 1);
       continue;
     }
@@ -5600,8 +5600,8 @@ function spawnWeaponPickup() {
 }
 
 function updatePickups(dt) {
-  if (state.testMode) return;
-
+  // 落地和消失倒计时在测试模式也要跑，否则空投补给的箱子永远停在 y=11
+  // 随机武器箱的刷新仍然只在正常模式里进行，避免测试场上多出无关箱子
   // 落地
   for (const b of state.pickups) {
     if (b.landed) continue;
@@ -5624,6 +5624,8 @@ function updatePickups(dt) {
       emit('pickupExpired', { x: b.x, z: b.z, id: b.id });
     }
   }
+
+  if (state.testMode) return; // 测试模式不刷随机武器箱
 
   // 倒计时：到点换回时代武器
   if (state.playerWeapon) {
