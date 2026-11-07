@@ -1,4 +1,6 @@
-# 广告里的游戏
+# 万古防线 / EVERWALL
+
+**在线玩：https://muanesy.github.io/everwall/**
 
 抖音 AI 实训营作品原型。把《向僵尸开炮》虚假广告里那种玩法真的做出来：竖屏、俯视角、2.5D 的生存射击小游戏。
 
@@ -114,8 +116,7 @@ http://localhost:8765/?map=lava
 - 原生 JavaScript，无构建步骤，不需要安装 Node.js
 - 竖屏正交相机，固定俯视角
 
-## 现在的状态
+## 发布
 
-骨架已搭好，用色块占位。可以移动、自动开火、僵尸生成并推进、掉血、死亡、复活、重新开始。
-
-下一步：把色块换成 AI 生成的模型，加地面贴图和打击特效。
+- **在线玩**：https://muanesy.github.io/everwall/ （GitHub Pages，手机电脑都能开）
+- **离线包**：Releases 里的 `everwall-release.zip`，解压后双击 `start-game.bat`（需要 Python）
